@@ -2,7 +2,6 @@
 
 #![allow(dead_code)]
 
-use crate::config::WindowDecoration;
 use regex::Regex;
 
 /// A pattern for matching window properties
@@ -62,8 +61,8 @@ pub struct Rule {
     /// Require the window to have no parent
     pub require_no_parent: Option<bool>,
 
-    /// Decoration style for matching windows
-    pub decoration: Option<WindowDecoration>,
+    /// Force SSD even if the app only supports CSD
+    pub force_ssd: bool,
     /// Pixels to swallow from the top of matching windows
     pub swallow_top: Option<i32>,
 }
@@ -74,7 +73,7 @@ impl Rule {
         &self,
         app_id: Option<&str>,
         title: Option<&str>,
-        decoration_hint: u32,
+        decoration_hint: Option<u32>,
         has_parent: bool,
     ) -> bool {
         // If no app_id/title criteria are set, match the rule for empty windows
@@ -119,7 +118,7 @@ impl Rule {
             _ => false,
         };
 
-        let csd_only = decoration_hint == 0;
+        let csd_only = decoration_hint == Some(0);
         let csd_matches = match self.require_csd_only {
             Some(true) => csd_only,
             Some(false) => !csd_only,
@@ -141,15 +140,15 @@ pub fn apply_rules(
     rules: &[Rule],
     app_id: Option<&str>,
     title: Option<&str>,
-    decoration_hint: u32,
+    decoration_hint: Option<u32>,
     has_parent: bool,
 ) -> AppliedRules {
     let mut applied = AppliedRules::default();
 
     for rule in rules {
         if rule.matches(app_id, title, decoration_hint, has_parent) {
-            if let Some(decoration) = rule.decoration {
-                applied.decoration = Some(decoration);
+            if rule.force_ssd {
+                applied.force_ssd = true;
             }
             if let Some(swallow_top) = rule.swallow_top {
                 applied.swallow_top = Some(swallow_top);
@@ -163,7 +162,7 @@ pub fn apply_rules(
 /// Result of applying rules to a window
 #[derive(Debug, Clone, Default)]
 pub struct AppliedRules {
-    pub decoration: Option<WindowDecoration>,
+    pub force_ssd: bool,
     pub swallow_top: Option<i32>,
 }
 
@@ -194,9 +193,9 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(rule.matches(Some("foot"), None, 3, false));
-        assert!(rule.matches(Some("foot"), Some("Terminal"), 3, false));
-        assert!(!rule.matches(Some("chromium"), None, 3, false));
+        assert!(rule.matches(Some("foot"), None, Some(3), false));
+        assert!(rule.matches(Some("foot"), Some("Terminal"), Some(3), false));
+        assert!(!rule.matches(Some("chromium"), None, Some(3), false));
     }
 
     #[test]
@@ -206,9 +205,9 @@ mod tests {
             ..Default::default()
         };
 
-        assert!(rule.matches(Some("mate-dictionary"), None, 3, false));
-        assert!(rule.matches(Some("mate-calc"), None, 3, false));
-        assert!(!rule.matches(Some("gnome-calculator"), None, 3, false));
+        assert!(rule.matches(Some("mate-dictionary"), None, Some(3), false));
+        assert!(rule.matches(Some("mate-calc"), None, Some(3), false));
+        assert!(!rule.matches(Some("gnome-calculator"), None, Some(3), false));
     }
 
     #[test]
@@ -218,7 +217,7 @@ mod tests {
             ..Default::default()
         }];
 
-        let applied = apply_rules(&rules, Some("foot"), None, 3, false);
-        assert!(applied.decoration.is_none());
+        let applied = apply_rules(&rules, Some("foot"), None, Some(3), false);
+        assert!(!applied.force_ssd);
     }
 }

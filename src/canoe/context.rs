@@ -239,12 +239,18 @@ impl Context {
             window.parent.is_some(),
         );
 
-        if let Some(decoration) = applied.decoration {
-            window.decoration = Some(decoration);
+        // hint 0 = only_supports_csd, hint 1 = prefers_csd
+        // Respect CSD preference for both cases
+        let prefers_csd = matches!(window.decoration_hint, Some(0) | Some(1));
+
+        let decoration = if applied.force_ssd {
+            WindowDecoration::Ssd
+        } else if prefers_csd {
+            WindowDecoration::Csd
         } else {
-            // Force SSD unless explicitly overridden by a rule.
-            window.decoration = Some(WindowDecoration::Ssd);
-        }
+            WindowDecoration::Ssd
+        };
+        window.decoration = Some(decoration);
         window.set_swallow_top(applied.swallow_top.unwrap_or(0));
 
         if matches!(window.decoration, Some(WindowDecoration::Csd)) {

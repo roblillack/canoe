@@ -219,7 +219,7 @@ struct RuleFile {
     title: Option<StringOrVec>,
     app_id_regex: Option<String>,
     title_regex: Option<String>,
-    decoration: Option<String>,
+    force_ssd: Option<bool>,
     swallow_top: Option<i32>,
 }
 
@@ -455,16 +455,6 @@ fn compile_regex(value: Option<String>) -> Option<Regex> {
     Regex::new(&pattern).ok()
 }
 
-fn parse_decoration(value: Option<String>) -> Option<WindowDecoration> {
-    let value = value?;
-
-    match value.to_lowercase().as_str() {
-        "csd" => Some(WindowDecoration::Csd),
-        "ssd" => Some(WindowDecoration::Ssd),
-        _ => None,
-    }
-}
-
 fn config_path() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     Some(home.join(".config").join("canoe").join("canoe.toml"))
@@ -484,7 +474,7 @@ fn rules_from_file(rules: Vec<RuleFile>) -> Vec<Rule> {
                 title_regex: compile_regex(rule.title_regex),
                 require_csd_only,
                 require_no_parent,
-                decoration: parse_decoration(rule.decoration),
+                force_ssd: rule.force_ssd.unwrap_or(false),
                 swallow_top: rule.swallow_top,
             }
         })

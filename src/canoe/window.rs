@@ -149,8 +149,8 @@ pub struct Window {
 
     /// Decoration mode
     pub decoration: Option<WindowDecoration>,
-    /// Decoration hint from client
-    pub decoration_hint: u32,
+    /// Decoration hint from client (None = not received yet)
+    pub decoration_hint: Option<u32>,
 
     /// Current operator (move/resize)
     pub operator: Operator,
@@ -204,7 +204,7 @@ impl Window {
             hidden: false,
             clip_state: ClipState::Unknown,
             decoration: None,
-            decoration_hint: 0,
+            decoration_hint: None,
             operator: Operator::None,
             unhandled_events: VecDeque::new(),
             position_undefined: true,
