@@ -1210,8 +1210,6 @@ impl Context {
     }
 
     pub(crate) fn maximize_window(&mut self, window_id: WindowId) {
-        let border_width = self.config.ui.border_width;
-        let titlebar_height = super::titlebar::titlebar_height(&self.config.ui);
         self.update_window_output_from_position(window_id);
 
         let output_id = self
@@ -1234,6 +1232,22 @@ impl Context {
             let (ox, oy, ow, oh) = out.usable_area();
             (ox, oy, ow, oh)
         };
+
+        // Only account for borders/titlebar if window uses SSD
+        let has_ssd = self
+            .windows
+            .get(&window_id)
+            .map(|w| w.borrow().decoration == Some(WindowDecoration::Ssd))
+            .unwrap_or(false);
+        let (border_width, titlebar_height) = if has_ssd {
+            (
+                self.config.ui.border_width,
+                super::titlebar::titlebar_height(&self.config.ui),
+            )
+        } else {
+            (0, 0)
+        };
+
         let swallow_top = self
             .windows
             .get(&window_id)
@@ -1311,8 +1325,6 @@ impl Context {
     fn smart_snap_half(&mut self, window_id: WindowId, side: crate::binding::action::SnapSide) {
         use super::window::{FullscreenState, SnapState};
 
-        let border_width = self.config.ui.border_width;
-        let titlebar_height = super::titlebar::titlebar_height(&self.config.ui);
         self.update_window_output_from_position(window_id);
 
         let output_id = self
@@ -1335,6 +1347,22 @@ impl Context {
             let (ox, oy, ow, oh) = out.usable_area();
             (ox, oy, ow, oh)
         };
+
+        // Only account for borders/titlebar if window uses SSD
+        let has_ssd = self
+            .windows
+            .get(&window_id)
+            .map(|w| w.borrow().decoration == Some(WindowDecoration::Ssd))
+            .unwrap_or(false);
+        let (border_width, titlebar_height) = if has_ssd {
+            (
+                self.config.ui.border_width,
+                super::titlebar::titlebar_height(&self.config.ui),
+            )
+        } else {
+            (0, 0)
+        };
+
         let swallow_top = self
             .windows
             .get(&window_id)
