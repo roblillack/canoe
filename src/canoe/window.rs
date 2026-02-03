@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 use super::titlebar::TitlebarButton;
+use super::WindowShadow;
 use crate::config::WindowDecoration;
 use crate::protocol::river_window_management_v1::client::river_window_v1::Edges;
 use crate::protocol::{RiverNodeV1, RiverOutputV1, RiverWindowV1};
@@ -160,6 +161,8 @@ pub struct Window {
     pub position_undefined: bool,
     /// Titlebar for server-side decoration
     pub titlebar: Option<super::Titlebar>,
+    /// Shadow decoration surface
+    pub shadow: Option<WindowShadow>,
     /// Hovered titlebar button (if any)
     pub titlebar_hovered: Option<TitlebarButton>,
     /// Pressed titlebar button (if any)
@@ -209,6 +212,7 @@ impl Window {
             unhandled_events: VecDeque::new(),
             position_undefined: true,
             titlebar: None,
+            shadow: None,
             titlebar_hovered: None,
             titlebar_pressed: None,
             titlebar_left_down: false,

@@ -936,11 +936,122 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
             Event::RenderStart => {
                 state.context.borrow_mut().handle_render_start();
 
-                // Update titlebars
+                // Update shadows and titlebars
                 if let Some(ref shm) = state.globals.shm {
                     let context = state.context.borrow();
                     let focused_window = context.focused_window;
                     let ui = &context.config.ui;
+
+                    for window in context.windows.values() {
+                        let mut w = window.borrow_mut();
+
+                        if w.hidden {
+                            continue;
+                        }
+
+                        let width = w.width;
+                        let height = w.height;
+                        if width <= 0 || height <= 0 {
+                            continue;
+                        }
+
+                        let is_fullscreen =
+                            !matches!(w.fullscreen, canoe::window::FullscreenState::None);
+                        let is_dragging = w.titlebar_left_down
+                            || matches!(
+                                w.operator,
+                                canoe::window::Operator::Move { .. }
+                                    | canoe::window::Operator::Resize { .. }
+                            );
+                        let base_shadow_size = ui.window_shadow_size.max(0);
+                        let mut shadow_size = if is_dragging {
+                            base_shadow_size / 2
+                        } else {
+                            base_shadow_size
+                        };
+                        if is_fullscreen || w.maximized {
+                            shadow_size = 0;
+                        }
+                        let shadow_color = ui.window_shadow_color;
+                        let use_ssd = w.decoration != Some(crate::config::WindowDecoration::Csd);
+                        let border_width = if use_ssd { ui.border_width } else { 0 };
+                        let titlebar_height = if use_ssd {
+                            canoe::titlebar::titlebar_height(ui)
+                        } else {
+                            0
+                        };
+                        let swallow_top = if use_ssd { w.swallow_top } else { 0 };
+                        let content_height = if use_ssd {
+                            (height - swallow_top).max(1)
+                        } else {
+                            height.max(1)
+                        };
+                        let frame_width = (width + border_width * 2).max(1);
+                        let frame_height =
+                            (content_height + titlebar_height + border_width * 2).max(1);
+                        let shadow_frame_height = (frame_height - (shadow_size / 2)).max(1);
+
+                        let output_scale = w
+                            .output
+                            .as_ref()
+                            .and_then(|o| o.upgrade())
+                            .map(|o| o.borrow().scale);
+                        let shadow_output_names = w
+                            .shadow
+                            .as_ref()
+                            .map(|s| s.output_names.clone())
+                            .unwrap_or_default();
+                        let shadow_surface_scale = if shadow_output_names.is_empty() {
+                            None
+                        } else {
+                            let mut max_scale = 1;
+                            for name in &shadow_output_names {
+                                if let Some(scale) = state.globals.wl_output_scales.get(name) {
+                                    max_scale = max_scale.max(*scale);
+                                }
+                            }
+                            Some(max_scale)
+                        };
+                        let scale = shadow_surface_scale.or(output_scale).unwrap_or(1);
+
+                        if let Some(ref mut shadow) = w.shadow {
+                            shadow.ensure_buffer(
+                                frame_width,
+                                frame_height,
+                                shadow_size,
+                                shm,
+                                qh,
+                                scale,
+                            );
+                            if let Some(ref compositor) = state.globals.compositor {
+                                shadow.update_input_region(compositor, qh);
+                            }
+                            let did_render = shadow.render(
+                                frame_width,
+                                shadow_frame_height,
+                                shadow_size,
+                                shadow_color,
+                                scale,
+                            );
+                            let offset_x = if use_ssd {
+                                -border_width - shadow_size
+                            } else {
+                                -shadow_size
+                            };
+                            let shadow_shift = shadow_size / 2;
+                            let offset_y = if use_ssd {
+                                -border_width - titlebar_height + swallow_top - shadow_size
+                                    + shadow_shift
+                            } else {
+                                -shadow_size + shadow_shift
+                            };
+                            shadow.set_offset(offset_x, offset_y);
+                            if did_render && shadow.buffer.is_some() {
+                                shadow.sync_next_commit();
+                                shadow.commit();
+                            }
+                        }
+                    }
 
                     for (&window_id, window) in &context.windows {
                         let mut w = window.borrow_mut();
@@ -1032,6 +1143,18 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
 
                 // Create titlebar if compositor is available
                 if let Some(ref compositor) = state.globals.compositor {
+                    // Create surface for shadow
+                    let shadow_surface =
+                        compositor.create_surface(qh, ShadowSurfaceData { window_id });
+
+                    // Create decoration for shadow (below window content)
+                    let shadow_decoration: RiverDecorationV1 =
+                        id.get_decoration_below(&shadow_surface, qh, window_id);
+
+                    // Create shadow surface
+                    let shadow = canoe::WindowShadow::new(shadow_surface, shadow_decoration);
+                    window.borrow_mut().shadow = Some(shadow);
+
                     // Create surface for titlebar
                     let surface = compositor.create_surface(qh, TitlebarSurfaceData { window_id });
 
@@ -2493,6 +2616,12 @@ struct TitlebarSurfaceData {
     window_id: canoe::WindowId,
 }
 
+// Shadow surface user data
+struct ShadowSurfaceData {
+    #[allow(dead_code)]
+    window_id: canoe::WindowId,
+}
+
 impl Dispatch<wl_surface::WlSurface, TitlebarSurfaceData> for AppState {
     fn event(
         _state: &mut Self,
@@ -2556,6 +2685,73 @@ impl Dispatch<wl_surface::WlSurface, TitlebarSurfaceData> for AppState {
             }
         } else {
             titlebar.output_names.retain(|name| *name != output_name);
+        }
+    }
+}
+
+impl Dispatch<wl_surface::WlSurface, ShadowSurfaceData> for AppState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_surface::WlSurface,
+        _event: wl_surface::Event,
+        _data: &ShadowSurfaceData,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        let (output_name, is_enter) = match &_event {
+            wl_surface::Event::Enter { output } => {
+                let name = _state
+                    .globals
+                    .wl_outputs
+                    .iter()
+                    .find_map(|(name, wl_output)| {
+                        if wl_output == output {
+                            Some(*name)
+                        } else {
+                            None
+                        }
+                    });
+                (name, true)
+            }
+            wl_surface::Event::Leave { output } => {
+                let name = _state
+                    .globals
+                    .wl_outputs
+                    .iter()
+                    .find_map(|(name, wl_output)| {
+                        if wl_output == output {
+                            Some(*name)
+                        } else {
+                            None
+                        }
+                    });
+                (name, false)
+            }
+            _ => (None, false),
+        };
+        let Some(output_name) = output_name else {
+            return;
+        };
+
+        let window = {
+            let context = _state.context.borrow();
+            context.windows.get(&_data.window_id).cloned()
+        };
+        let Some(window) = window else {
+            return;
+        };
+
+        let mut w = window.borrow_mut();
+        let Some(ref mut shadow) = w.shadow else {
+            return;
+        };
+
+        if is_enter {
+            if !shadow.output_names.contains(&output_name) {
+                shadow.output_names.push(output_name);
+            }
+        } else {
+            shadow.output_names.retain(|name| *name != output_name);
         }
     }
 }
