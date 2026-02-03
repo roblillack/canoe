@@ -945,8 +945,8 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                     for (&window_id, window) in &context.windows {
                         let mut w = window.borrow_mut();
 
-                        // Skip hidden windows
-                        if w.hidden {
+                        // Skip hidden windows or CSD windows (no titlebar for CSD)
+                        if w.hidden || w.decoration == Some(crate::config::WindowDecoration::Csd) {
                             continue;
                         }
 

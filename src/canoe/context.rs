@@ -252,13 +252,6 @@ impl Context {
         };
         window.decoration = Some(decoration);
         window.set_swallow_top(applied.swallow_top.unwrap_or(0));
-
-        if matches!(window.decoration, Some(WindowDecoration::Csd)) {
-            window.titlebar = None;
-            window.titlebar_hovered = None;
-            window.titlebar_pressed = None;
-            window.titlebar_left_down = false;
-        }
     }
 
     /// Focus a window
@@ -1082,7 +1075,7 @@ impl Context {
                 w.y,
                 w.width,
                 w.height,
-                w.titlebar.is_some(),
+                w.decoration == Some(WindowDecoration::Ssd),
                 w.swallow_top,
             )
         };
