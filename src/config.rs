@@ -53,6 +53,7 @@ pub enum Mode {
     Default,
     Floating,
     Passthrough,
+    DesktopIcons,
 }
 
 /// Window decoration style

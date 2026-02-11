@@ -144,6 +144,8 @@ pub struct Window {
     pub floating: bool,
     /// Hidden state
     pub hidden: bool,
+    /// Sequence number assigned when minimized (for ordering icons)
+    pub minimize_seq: u64,
     /// Clip state
     pub clip_state: ClipState,
 
@@ -202,6 +204,7 @@ impl Window {
             pending_unfullscreen_restore: false,
             floating: false,
             hidden: false,
+            minimize_seq: 0,
             clip_state: ClipState::Unknown,
             decoration: None,
             decoration_hint: None,

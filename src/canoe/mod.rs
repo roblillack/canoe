@@ -12,7 +12,7 @@ pub mod titlebar;
 pub mod window;
 
 pub use context::Context;
-pub use desktop::DesktopSurface;
+pub use desktop::{DesktopSurface, IconTheme};
 pub use menu::{MenuItem, MenuTheme, WindowMenu};
 pub use output::{Output, OutputId};
 pub use seat::{PointerTarget, Seat, SeatId};

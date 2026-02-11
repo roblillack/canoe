@@ -782,6 +782,80 @@ fn ensure_desktop_surface(
     ));
 }
 
+fn render_desktop_surface(
+    state: &mut AppState,
+    output_id: canoe::OutputId,
+    qh: &QueueHandle<AppState>,
+) {
+    let (Some(shm), Some(compositor)) = (
+        state.globals.shm.as_ref(),
+        state.globals.compositor.as_ref(),
+    ) else {
+        return;
+    };
+
+    let (bg_color, icons, icon_theme, font_name, font_size, scale) = {
+        let mut context = state.context.borrow_mut();
+        let bg_color = context.config.ui.desktop_background;
+        let icon_theme = canoe::IconTheme {
+            bg: context.config.ui.menu_bg,
+            text: context.config.ui.menu_text,
+            highlight_bg: context.config.ui.menu_highlight_bg,
+            highlight_text: context.config.ui.menu_highlight_text,
+            titlebar_bg: context.config.ui.titlebar_bg_inactive,
+            titlebar_text: context.config.ui.titlebar_text_inactive,
+            border: 0x404040FF,
+        };
+        let font_name = context.config.ui.font_name.clone();
+        let font_size = context.config.ui.font_size;
+        let scale = context
+            .outputs
+            .get(&output_id)
+            .map(|o| o.borrow().scale)
+            .unwrap_or(1);
+        let icons = context.collect_minimized_icons(output_id);
+        (bg_color, icons, icon_theme, font_name, font_size, scale)
+    };
+
+    let output = {
+        let context = state.context.borrow();
+        context.outputs.get(&output_id).cloned()
+    };
+    let Some(output) = output else {
+        return;
+    };
+
+    let mut out = output.borrow_mut();
+    let Some(desktop) = out.desktop_surface.as_mut() else {
+        return;
+    };
+    if !desktop.configured {
+        return;
+    }
+
+    desktop.ensure_buffer(shm, qh, scale);
+    desktop.render_with_icons(
+        bg_color,
+        &icons,
+        &icon_theme,
+        scale,
+        font_name.as_deref(),
+        font_size,
+    );
+    desktop.update_input_region(compositor, qh);
+    desktop.commit();
+}
+
+fn render_all_desktop_surfaces(state: &mut AppState, qh: &QueueHandle<AppState>) {
+    let output_ids: Vec<canoe::OutputId> = {
+        let context = state.context.borrow();
+        context.outputs.keys().copied().collect()
+    };
+    for output_id in output_ids {
+        render_desktop_surface(state, output_id, qh);
+    }
+}
+
 impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
     fn event(
         state: &mut Self,
@@ -931,7 +1005,36 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
             }
             Event::ManageStart => {
                 state.context.borrow_mut().handle_manage_start();
+                // If in icon focus mode, validate that the selected icon still exists
+                {
+                    let mut context = state.context.borrow_mut();
+                    if let Some(output_id) = context.icon_focus_output {
+                        let selected_still_valid = context
+                            .outputs
+                            .get(&output_id)
+                            .and_then(|o| {
+                                o.borrow()
+                                    .desktop_surface
+                                    .as_ref()
+                                    .and_then(|d| d.selected_icon)
+                            })
+                            .map(|wid| {
+                                context
+                                    .windows
+                                    .get(&wid)
+                                    .map(|w| w.borrow().hidden)
+                                    .unwrap_or(false)
+                            })
+                            .unwrap_or(false);
+                        if !selected_still_valid {
+                            if let Some(seat_id) = context.current_seat {
+                                context.exit_icon_focus(seat_id);
+                            }
+                        }
+                    }
+                }
                 state.context.borrow().finish_manage();
+                render_all_desktop_surfaces(state, qh);
             }
             Event::RenderStart => {
                 state.context.borrow_mut().handle_render_start();
@@ -1488,6 +1591,9 @@ impl Dispatch<RiverSeatV1, canoe::SeatId> for AppState {
                     drop(context);
                     state.context.borrow_mut().close_window_menu();
                     let mut context = state.context.borrow_mut();
+                    if context.icon_focus_output.is_some() {
+                        context.exit_icon_focus(*seat_id);
+                    }
                     context.focus(wid);
                     context.handle_window_interaction(*seat_id, wid);
                 }
@@ -1590,24 +1696,17 @@ impl Dispatch<ZwlrLayerSurfaceV1, canoe::LayerSurfaceKind> for AppState {
                         let Some(output) = output else {
                             return;
                         };
-                        let mut out = output.borrow_mut();
-                        let Some(desktop) = out.desktop_surface.as_mut() else {
-                            return;
-                        };
-                        if (desktop.width, desktop.height) != (width as i32, height as i32) {
-                            desktop.reset_buffer();
+                        {
+                            let mut out = output.borrow_mut();
+                            let Some(desktop) = out.desktop_surface.as_mut() else {
+                                return;
+                            };
+                            if (desktop.width, desktop.height) != (width as i32, height as i32) {
+                                desktop.reset_buffer();
+                            }
+                            desktop.configure(width as i32, height as i32);
                         }
-                        desktop.configure(width as i32, height as i32);
-                        if let (Some(shm), Some(compositor)) = (
-                            state.globals.shm.as_ref(),
-                            state.globals.compositor.as_ref(),
-                        ) {
-                            desktop.ensure_buffer(shm, qh);
-                            let bg_color = state.context.borrow().config.ui.desktop_background;
-                            desktop.render(bg_color);
-                            desktop.update_input_region(compositor, qh);
-                            desktop.commit();
-                        }
+                        render_desktop_surface(state, *output_id, qh);
                     }
                     canoe::LayerSurfaceKind::Menu => {
                         let mut context = state.context.borrow_mut();
@@ -1805,6 +1904,22 @@ impl Dispatch<RiverXkbBindingV1, (canoe::SeatId, usize)> for AppState {
                     }
                     binding::Action::WindowMenuCycleApp => {
                         handle_window_menu_cycle_app(state, qh);
+                    }
+                    binding::Action::IconSelectNext
+                    | binding::Action::IconSelectPrev
+                    | binding::Action::IconSelectUp
+                    | binding::Action::IconSelectDown => {
+                        state.context.borrow_mut().execute_action(action, *seat_id);
+                        render_all_desktop_surfaces(state, qh);
+                    }
+                    binding::Action::IconActivate => {
+                        state.context.borrow_mut().execute_action(action, *seat_id);
+                        render_all_desktop_surfaces(state, qh);
+                        request_manage_dirty(state);
+                    }
+                    binding::Action::IconCancel => {
+                        state.context.borrow_mut().execute_action(action, *seat_id);
+                        render_all_desktop_surfaces(state, qh);
                     }
                     _ => {
                         seat.borrow_mut().queue_action(action);
@@ -2267,11 +2382,89 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                             }
                             match target {
                                 canoe::PointerTarget::Desktop(output_id) => {
-                                    if button == crate::config::button::RIGHT {
-                                        let (px, py) = {
-                                            let seat_ref = seat.borrow();
-                                            (seat_ref.last_surface_x, seat_ref.last_surface_y)
+                                    let (px, py) = {
+                                        let seat_ref = seat.borrow();
+                                        (seat_ref.last_surface_x, seat_ref.last_surface_y)
+                                    };
+                                    if button == crate::config::button::LEFT {
+                                        // Hit-test desktop icons
+                                        let hit = {
+                                            let context = state.context.borrow();
+                                            let scale = context
+                                                .outputs
+                                                .get(&output_id)
+                                                .map(|o| o.borrow().scale)
+                                                .unwrap_or(1);
+                                            context.outputs.get(&output_id).and_then(|o| {
+                                                o.borrow()
+                                                    .desktop_surface
+                                                    .as_ref()
+                                                    .and_then(|d| d.icon_at(px, py, scale))
+                                            })
                                         };
+                                        if let Some(icon_window_id) = hit {
+                                            // Check for double-click to restore
+                                            let now = Instant::now();
+                                            let is_double = {
+                                                let seat_ref = seat.borrow();
+                                                seat_ref
+                                                    .last_icon_click
+                                                    .map(|(last_wid, when)| {
+                                                        last_wid == icon_window_id
+                                                            && now.duration_since(when)
+                                                                <= CLOSE_DOUBLE_CLICK
+                                                    })
+                                                    .unwrap_or(false)
+                                            };
+                                            seat.borrow_mut().last_icon_click =
+                                                Some((icon_window_id, now));
+                                            if is_double {
+                                                // Double-click: restore the window
+                                                {
+                                                    let context = state.context.borrow();
+                                                    if let Some(window) =
+                                                        context.windows.get(&icon_window_id)
+                                                    {
+                                                        let mut w = window.borrow_mut();
+                                                        w.show();
+                                                        w.place_top();
+                                                    }
+                                                }
+                                                {
+                                                    let seat_id = *seat_id;
+                                                    state
+                                                        .context
+                                                        .borrow_mut()
+                                                        .exit_icon_focus(seat_id);
+                                                }
+                                                state.context.borrow_mut().focus(icon_window_id);
+                                                seat.borrow_mut().last_icon_click = None;
+                                                render_all_desktop_surfaces(state, _qh);
+                                                request_manage_dirty(state);
+                                            } else {
+                                                // Single click: select icon and enter icon focus mode
+                                                let seat_id = *seat_id;
+                                                state.context.borrow_mut().enter_icon_focus(
+                                                    output_id,
+                                                    icon_window_id,
+                                                    seat_id,
+                                                );
+                                                render_desktop_surface(state, output_id, _qh);
+                                                request_manage_dirty(state);
+                                            }
+                                        } else {
+                                            // Clicked empty space: deselect and exit icon mode
+                                            seat.borrow_mut().last_icon_click = None;
+                                            {
+                                                let seat_id = *seat_id;
+                                                state.context.borrow_mut().exit_icon_focus(seat_id);
+                                            }
+                                            render_desktop_surface(state, output_id, _qh);
+                                            seat.borrow_mut()
+                                                .queue_action(binding::Action::ClearFocus);
+                                            request_manage_dirty(state);
+                                        }
+                                    } else if button == crate::config::button::RIGHT {
                                         let mut context = state.context.borrow_mut();
                                         if context.window_menu.is_some() {
                                             context.close_window_menu();
@@ -2289,9 +2482,12 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                                         );
                                         update_menu_hover_from_global(state, *seat_id, _qh);
                                         seat.borrow_mut().menu_click_button = Some(button);
+                                        seat.borrow_mut().queue_action(binding::Action::ClearFocus);
+                                        request_manage_dirty(state);
+                                    } else {
+                                        seat.borrow_mut().queue_action(binding::Action::ClearFocus);
+                                        request_manage_dirty(state);
                                     }
-                                    seat.borrow_mut().queue_action(binding::Action::ClearFocus);
-                                    request_manage_dirty(state);
                                 }
                                 canoe::PointerTarget::Menu => {
                                     seat.borrow_mut().menu_click_button = Some(button);
