@@ -408,48 +408,208 @@ fn rgba_to_argb(rgba: u32) -> u32 {
     (a << 24) | (r << 16) | (g << 8) | b
 }
 
-/// Load an icon for the given app_id from `~/.config/canoe/icons/`.
-/// Tries `<app_id>.svg` first, then `<app_id>.png`. Returns `None` if neither exists.
+/// Load an icon for the given app_id.
+///
+/// Priority: user override (`~/.config/canoe/icons/`) > XDG desktop icon > None (first-char).
 pub fn load_icon_for_app(app_id: &str, size_px: i32) -> Option<tiny_skia::Pixmap> {
-    let home = std::env::var("HOME").ok()?;
-    let dir = std::path::PathBuf::from(home)
-        .join(".config")
-        .join("canoe")
-        .join("icons");
     let size = size_px.max(1) as u32;
 
-    // Try SVG first
-    let svg_path = dir.join(format!("{}.svg", app_id));
-    if let Ok(svg_data) = std::fs::read_to_string(&svg_path) {
-        let opt = usvg::Options::default();
-        if let Ok(tree) = usvg::Tree::from_str(&svg_data, &opt) {
-            if let Some(mut pixmap) = tiny_skia::Pixmap::new(size, size) {
-                let tree_size = tree.size();
-                let scale_x = size as f32 / tree_size.width();
-                let scale_y = size as f32 / tree_size.height();
-                let scale = scale_x.min(scale_y);
-                let scaled_w = tree_size.width() * scale;
-                let scaled_h = tree_size.height() * scale;
-                let tx = (size as f32 - scaled_w) * 0.5;
-                let ty = (size as f32 - scaled_h) * 0.5;
-                let transform =
-                    tiny_skia::Transform::from_scale(scale, scale).post_translate(tx, ty);
-                let mut pixmap_mut = pixmap.as_mut();
-                resvg::render(&tree, transform, &mut pixmap_mut);
+    // 1. User override from ~/.config/canoe/icons/
+    if let Ok(home) = std::env::var("HOME") {
+        let dir = std::path::PathBuf::from(home)
+            .join(".config")
+            .join("canoe")
+            .join("icons");
+        if let Some(pixmap) = load_icon_file(&dir, app_id, size) {
+            return Some(pixmap);
+        }
+    }
+
+    // 2. XDG desktop file icon lookup
+    if let Some(pixmap) = load_xdg_icon(app_id, size) {
+        return Some(pixmap);
+    }
+
+    None
+}
+
+/// Try loading `<name>.svg` or `<name>.png` from the given directory.
+fn load_icon_file(dir: &std::path::Path, name: &str, size: u32) -> Option<tiny_skia::Pixmap> {
+    let svg_path = dir.join(format!("{}.svg", name));
+    if let Some(pixmap) = rasterize_svg_file(&svg_path, size) {
+        return Some(pixmap);
+    }
+    let png_path = dir.join(format!("{}.png", name));
+    load_png_file(&png_path, size)
+}
+
+fn rasterize_svg_file(path: &std::path::Path, size: u32) -> Option<tiny_skia::Pixmap> {
+    let svg_data = std::fs::read_to_string(path).ok()?;
+    rasterize_svg(&svg_data, size)
+}
+
+fn rasterize_svg(svg_data: &str, size: u32) -> Option<tiny_skia::Pixmap> {
+    let opt = usvg::Options::default();
+    let tree = usvg::Tree::from_str(svg_data, &opt).ok()?;
+    let mut pixmap = tiny_skia::Pixmap::new(size, size)?;
+    let tree_size = tree.size();
+    let scale_x = size as f32 / tree_size.width();
+    let scale_y = size as f32 / tree_size.height();
+    let scale = scale_x.min(scale_y);
+    let scaled_w = tree_size.width() * scale;
+    let scaled_h = tree_size.height() * scale;
+    let tx = (size as f32 - scaled_w) * 0.5;
+    let ty = (size as f32 - scaled_h) * 0.5;
+    let transform = tiny_skia::Transform::from_scale(scale, scale).post_translate(tx, ty);
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+    Some(pixmap)
+}
+
+fn load_png_file(path: &std::path::Path, size: u32) -> Option<tiny_skia::Pixmap> {
+    let data = std::fs::read(path).ok()?;
+    let src = tiny_skia::Pixmap::decode_png(&data).ok()?;
+    scale_pixmap(&src, size)
+}
+
+/// Look up an icon via XDG desktop files and the hicolor icon theme.
+fn load_xdg_icon(app_id: &str, size: u32) -> Option<tiny_skia::Pixmap> {
+    let icon_name = read_desktop_icon_name(app_id)?;
+
+    // If the Icon value is an absolute path, load it directly.
+    let icon_path = std::path::Path::new(&icon_name);
+    if icon_path.is_absolute() {
+        return load_icon_by_path(icon_path, size);
+    }
+
+    // Search hicolor icon theme across XDG data directories.
+    find_hicolor_icon(&icon_name, size)
+}
+
+/// Find `<app-id>.desktop` in XDG data dirs and return the `Icon=` value.
+fn read_desktop_icon_name(app_id: &str) -> Option<String> {
+    let filename = format!("{}.desktop", app_id);
+    for dir in xdg_data_dirs() {
+        let path = dir.join("applications").join(&filename);
+        if let Some(name) = parse_desktop_icon(&path) {
+            return Some(name);
+        }
+    }
+    None
+}
+
+/// Parse a .desktop file and return the Icon= value from [Desktop Entry].
+fn parse_desktop_icon(path: &std::path::Path) -> Option<String> {
+    let content = std::fs::read_to_string(path).ok()?;
+    let mut in_entry = false;
+    for line in content.lines() {
+        let line = line.trim();
+        if line.starts_with('[') {
+            in_entry = line == "[Desktop Entry]";
+            continue;
+        }
+        if in_entry {
+            if let Some(value) = line.strip_prefix("Icon=") {
+                let value = value.trim();
+                if !value.is_empty() {
+                    return Some(value.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Load an icon from an absolute file path (SVG or PNG).
+fn load_icon_by_path(path: &std::path::Path, size: u32) -> Option<tiny_skia::Pixmap> {
+    match path.extension().and_then(|e| e.to_str()) {
+        Some("svg") => rasterize_svg_file(path, size),
+        Some("png") => load_png_file(path, size),
+        _ => None,
+    }
+}
+
+/// Search the hicolor icon theme for the given icon name, returning the
+/// largest available rasterized to `size`.
+fn find_hicolor_icon(icon_name: &str, size: u32) -> Option<tiny_skia::Pixmap> {
+    // Prefer scalable SVG, then the largest fixed-size icon.
+    // Standard hicolor sizes, largest first.
+    const SIZES: &[u32] = &[512, 256, 128, 96, 72, 64, 48, 36, 32, 24, 22, 16];
+
+    for dir in xdg_data_dirs() {
+        let theme_dir = dir.join("icons").join("hicolor");
+
+        // Try scalable first.
+        let svg = theme_dir
+            .join("scalable")
+            .join("apps")
+            .join(format!("{}.svg", icon_name));
+        if let Some(pixmap) = rasterize_svg_file(&svg, size) {
+            return Some(pixmap);
+        }
+
+        // Try fixed sizes, largest first.
+        for &s in SIZES {
+            let subdir = format!("{}x{}", s, s);
+            let png = theme_dir
+                .join(&subdir)
+                .join("apps")
+                .join(format!("{}.png", icon_name));
+            if let Some(pixmap) = load_png_file(&png, size) {
+                return Some(pixmap);
+            }
+            let svg = theme_dir
+                .join(&subdir)
+                .join("apps")
+                .join(format!("{}.svg", icon_name));
+            if let Some(pixmap) = rasterize_svg_file(&svg, size) {
                 return Some(pixmap);
             }
         }
     }
 
-    // Try PNG
-    let png_path = dir.join(format!("{}.png", app_id));
-    if let Ok(png_data) = std::fs::read(&png_path) {
-        if let Ok(src) = tiny_skia::Pixmap::decode_png(&png_data) {
-            return scale_pixmap(&src, size);
+    // Last resort: check pixmaps directories.
+    for dir in xdg_data_dirs() {
+        let pixmaps = dir.join("pixmaps");
+        let png = pixmaps.join(format!("{}.png", icon_name));
+        if let Some(pixmap) = load_png_file(&png, size) {
+            return Some(pixmap);
+        }
+        let svg = pixmaps.join(format!("{}.svg", icon_name));
+        if let Some(pixmap) = rasterize_svg_file(&svg, size) {
+            return Some(pixmap);
         }
     }
 
     None
+}
+
+/// Return XDG data directories: $XDG_DATA_HOME then $XDG_DATA_DIRS.
+fn xdg_data_dirs() -> Vec<std::path::PathBuf> {
+    let mut dirs = Vec::new();
+
+    // $XDG_DATA_HOME (default: $HOME/.local/share)
+    if let Ok(v) = std::env::var("XDG_DATA_HOME") {
+        if !v.is_empty() {
+            dirs.push(std::path::PathBuf::from(v));
+        }
+    } else if let Ok(home) = std::env::var("HOME") {
+        dirs.push(std::path::PathBuf::from(home).join(".local").join("share"));
+    }
+
+    // $XDG_DATA_DIRS (default: /usr/local/share:/usr/share)
+    let data_dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_default();
+    if data_dirs.is_empty() {
+        dirs.push(std::path::PathBuf::from("/usr/local/share"));
+        dirs.push(std::path::PathBuf::from("/usr/share"));
+    } else {
+        for p in data_dirs.split(':') {
+            if !p.is_empty() {
+                dirs.push(std::path::PathBuf::from(p));
+            }
+        }
+    }
+
+    dirs
 }
 
 /// Scale a pixmap to the target size, preserving aspect ratio and centering.
