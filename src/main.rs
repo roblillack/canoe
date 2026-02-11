@@ -787,6 +787,19 @@ fn render_desktop_surface(
     output_id: canoe::OutputId,
     qh: &QueueHandle<AppState>,
 ) {
+    // Check dirty flag early to skip all work when nothing changed.
+    {
+        let context = state.context.borrow();
+        let is_dirty = context
+            .outputs
+            .get(&output_id)
+            .and_then(|o| o.borrow().desktop_surface.as_ref().map(|d| d.dirty))
+            .unwrap_or(false);
+        if !is_dirty {
+            return;
+        }
+    }
+
     let (Some(shm), Some(compositor)) = (
         state.globals.shm.as_ref(),
         state.globals.compositor.as_ref(),
@@ -844,6 +857,7 @@ fn render_desktop_surface(
     );
     desktop.update_input_region(compositor, qh);
     desktop.commit();
+    desktop.dirty = false;
 }
 
 fn render_all_desktop_surfaces(state: &mut AppState, qh: &QueueHandle<AppState>) {
@@ -2430,6 +2444,7 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                                                         w.place_top();
                                                     }
                                                 }
+                                                state.context.borrow().mark_all_desktops_dirty();
                                                 {
                                                     let seat_id = *seat_id;
                                                     state

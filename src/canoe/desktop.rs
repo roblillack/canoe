@@ -6,6 +6,7 @@ use memmap2::MmapMut;
 use resvg::{tiny_skia, usvg};
 use std::fs::File;
 use std::os::fd::AsFd;
+use std::rc::Rc;
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_surface,
 };
@@ -27,7 +28,7 @@ pub struct DesktopIcon {
     pub window_id: WindowId,
     pub title: String,
     pub app_id: Option<String>,
-    pub icon: Option<tiny_skia::Pixmap>,
+    pub icon: Option<Rc<tiny_skia::Pixmap>>,
 }
 
 /// Computed icon position on the desktop surface.
@@ -54,6 +55,7 @@ pub struct DesktopSurface {
     pub selected_icon: Option<WindowId>,
     pub icon_cols: i32,
     icons: Vec<DesktopIconLayout>,
+    pub dirty: bool,
 }
 
 impl DesktopSurface {
@@ -78,6 +80,7 @@ impl DesktopSurface {
             selected_icon: None,
             icon_cols: 1,
             icons: Vec::new(),
+            dirty: true,
         }
     }
 
@@ -85,6 +88,7 @@ impl DesktopSurface {
         self.width = width.max(1);
         self.height = height.max(1);
         self.configured = true;
+        self.dirty = true;
     }
 
     pub fn reset_buffer(&mut self) {
@@ -96,6 +100,7 @@ impl DesktopSurface {
         }
         self.memfile = None;
         self.mmap = None;
+        self.dirty = true;
     }
 
     pub fn ensure_buffer<D>(&mut self, shm: &wl_shm::WlShm, qh: &QueueHandle<D>, scale: i32)

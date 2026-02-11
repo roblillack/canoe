@@ -60,7 +60,7 @@ pub struct Context {
 
     /// Cache for desktop icon images, keyed by (app_id, size_px).
     /// `None` value means "looked up but not found" — avoids repeated disk lookups.
-    icon_cache: HashMap<(String, i32), Option<tiny_skia::Pixmap>>,
+    icon_cache: HashMap<(String, i32), Option<Rc<tiny_skia::Pixmap>>>,
 
     /// Window menu surface and state
     pub window_menu: Option<WindowMenu>,
@@ -1188,6 +1188,7 @@ impl Context {
             self.next_minimize_seq += 1;
             w.hide();
         }
+        self.mark_all_desktops_dirty();
         if !was_focused {
             return;
         }
@@ -1941,13 +1942,22 @@ impl Context {
         items
     }
 
+    /// Mark all desktop surfaces as needing re-render.
+    pub fn mark_all_desktops_dirty(&self) {
+        for output in self.outputs.values() {
+            if let Some(desktop) = output.borrow_mut().desktop_surface.as_mut() {
+                desktop.dirty = true;
+            }
+        }
+    }
+
     /// Look up a cached desktop icon image, loading from disk on first access.
-    fn get_icon(&mut self, app_id: &str, size_px: i32) -> Option<&tiny_skia::Pixmap> {
+    fn get_icon(&mut self, app_id: &str, size_px: i32) -> Option<Rc<tiny_skia::Pixmap>> {
         let key = (app_id.to_string(), size_px);
         self.icon_cache
             .entry(key)
-            .or_insert_with(|| super::desktop::load_icon_for_app(app_id, size_px))
-            .as_ref()
+            .or_insert_with(|| super::desktop::load_icon_for_app(app_id, size_px).map(Rc::new))
+            .clone()
     }
 
     /// Collect minimized windows for an output, sorted by minimize order.
@@ -2001,10 +2011,9 @@ impl Context {
         entries
             .into_iter()
             .map(|(_, window_id, title, app_id)| {
-                let icon: Option<tiny_skia::Pixmap> = app_id
+                let icon = app_id
                     .as_deref()
-                    .and_then(|id| self.get_icon(id, icon_size_px))
-                    .cloned();
+                    .and_then(|id| self.get_icon(id, icon_size_px));
                 super::desktop::DesktopIcon {
                     window_id,
                     title,
@@ -2042,12 +2051,17 @@ impl Context {
         };
 
         if let Some(window) = self.windows.get(&window_id) {
+            let was_hidden;
             {
                 let mut w = window.borrow_mut();
+                was_hidden = w.hidden;
                 if w.hidden {
                     w.show();
                 }
                 w.place_top();
+            }
+            if was_hidden {
+                self.mark_all_desktops_dirty();
             }
             self.focus(window_id);
         }
@@ -2159,6 +2173,7 @@ impl Context {
         if let Some(output) = self.outputs.get(&output_id) {
             if let Some(desktop) = output.borrow_mut().desktop_surface.as_mut() {
                 desktop.selected_icon = Some(window_id);
+                desktop.dirty = true;
             }
         }
         self.icon_focus_output = Some(output_id);
@@ -2175,6 +2190,7 @@ impl Context {
             if let Some(output) = self.outputs.get(&output_id) {
                 if let Some(desktop) = output.borrow_mut().desktop_surface.as_mut() {
                     desktop.selected_icon = None;
+                    desktop.dirty = true;
                 }
             }
         }
@@ -2222,6 +2238,7 @@ impl Context {
 
         if let Some(window_id) = desktop.icon_window_at_index(new_idx as usize) {
             desktop.selected_icon = Some(window_id);
+            desktop.dirty = true;
         }
     }
 
@@ -2248,6 +2265,7 @@ impl Context {
                 w.place_top();
             }
         }
+        self.mark_all_desktops_dirty();
         self.exit_icon_focus(seat_id);
         self.focus(window_id);
     }
