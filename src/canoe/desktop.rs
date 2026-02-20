@@ -224,7 +224,30 @@ impl DesktopSurface {
         };
 
         let selected = self.selected_icon;
-        let label_font_size = font_size * 0.67;
+        let label_font_size = font_size * 0.80;
+        // Use a non-bold variant for icon labels by stripping bold-related
+        // fontconfig properties and forcing regular weight.
+        let label_font_query = {
+            let base = font_name.unwrap_or("sans");
+            let parts: Vec<&str> = base
+                .split(':')
+                .filter(|part| {
+                    let lower = part.to_ascii_lowercase();
+                    !lower.starts_with("style=")
+                        && !lower.starts_with("weight=")
+                        && lower != "bold"
+                })
+                .collect();
+            let family = if parts.is_empty() { "sans" } else { parts[0] };
+            let mut query = String::from(family);
+            for &part in &parts[1..] {
+                query.push(':');
+                query.push_str(part);
+            }
+            query.push_str(":weight=regular");
+            query
+        };
+        let label_font_name: Option<&str> = Some(label_font_query.as_str());
 
         for (i, icon) in desktop_icons.iter().enumerate() {
             let layout = &self.icons[i];
@@ -309,18 +332,22 @@ impl DesktopSurface {
                 renderer.blit_pixmap(icon.icon.as_ref().unwrap(), ix + icon_offset_x, iy);
             }
 
-            // Draw label background if selected
+            // Render window title centered below icon
             let label_y = iy + icon_px;
             let label_h = ICON_LABEL_HEIGHT * scale;
-            if is_selected {
-                renderer.fill_rect(ix, label_y, cell_w, label_h, label_bg);
-            }
-
-            // Render window title centered below icon
             let scaled_label_size = label_font_size * scale as f32;
-            let text_w = super::font::measure_text(font_name, scaled_label_size, &icon.title)
+            let text_w = super::font::measure_text(label_font_name, scaled_label_size, &icon.title)
                 .unwrap_or(0.0) as i32;
             let pad = (cell_w - text_w).max(0) / 2;
+
+            // Draw label background if selected, sized to the text
+            if is_selected {
+                let margin = 2 * scale;
+                let bg_w = (text_w + margin * 2).min(cell_w);
+                let bg_x = ix + (cell_w - bg_w) / 2;
+                renderer.fill_rect(bg_x, label_y, bg_w, label_h, label_bg);
+            }
+
             renderer.render_text(
                 &icon.title,
                 ix,
@@ -330,7 +357,7 @@ impl DesktopSurface {
                 scale,
                 label_text,
                 label_font_size,
-                font_name,
+                label_font_name,
                 pad,
             );
         }
