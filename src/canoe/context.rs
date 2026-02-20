@@ -2100,10 +2100,12 @@ impl Context {
             return;
         }
 
+        let mut visibility_changed = false;
         if let Some(prev_id) = self.window_menu_alt_tab_preview.take() {
             if self.window_menu_alt_tab_preview_was_hidden {
                 if let Some(prev_window) = self.windows.get(&prev_id) {
                     prev_window.borrow_mut().hide();
+                    visibility_changed = true;
                 }
             }
         }
@@ -2120,6 +2122,7 @@ impl Context {
                 if w.hidden {
                     was_hidden = true;
                     w.show();
+                    visibility_changed = true;
                 }
                 w.place_top();
             }
@@ -2127,13 +2130,18 @@ impl Context {
             self.window_menu_alt_tab_preview = Some(window_id);
             self.window_menu_alt_tab_preview_was_hidden = was_hidden;
         }
+        if visibility_changed {
+            self.mark_all_desktops_dirty();
+        }
     }
 
     fn restore_alt_tab_state(&mut self) {
+        let mut visibility_changed = false;
         if let Some(prev_id) = self.window_menu_alt_tab_preview.take() {
             if self.window_menu_alt_tab_preview_was_hidden {
                 if let Some(prev_window) = self.windows.get(&prev_id) {
                     prev_window.borrow_mut().hide();
+                    visibility_changed = true;
                 }
             }
         }
@@ -2150,6 +2158,9 @@ impl Context {
         }
 
         self.clear_alt_tab_state();
+        if visibility_changed {
+            self.mark_all_desktops_dirty();
+        }
     }
 
     fn restore_stack_order(&self, order: &[WindowId]) {
