@@ -260,6 +260,35 @@ impl Context {
 
     /// Focus a window
     pub fn focus(&mut self, window_id: WindowId) {
+        // Unfullscreen any fullscreen window when switching to a different window.
+        // We cannot rely on self.focused_window here because focus_preview (used
+        // during alt-tab) may have already changed it.
+        let fullscreen_ids: Vec<WindowId> = self
+            .windows
+            .iter()
+            .filter_map(|(&id, w)| {
+                if id != window_id
+                    && !matches!(w.borrow().fullscreen, super::window::FullscreenState::None)
+                {
+                    Some(id)
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if !fullscreen_ids.is_empty() {
+            for fs_id in &fullscreen_ids {
+                if let Some(window) = self.windows.get(fs_id) {
+                    let mut w = window.borrow_mut();
+                    w.exit_fullscreen();
+                    w.pending_unfullscreen_restore = true;
+                }
+            }
+            if let Some(ref rwm) = self.rwm {
+                rwm.manage_dirty();
+            }
+        }
+
         // Move to front of focus stack
         self.focus_stack.retain(|&id| id != window_id);
         self.focus_stack.insert(0, window_id);
