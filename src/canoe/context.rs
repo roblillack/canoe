@@ -2338,7 +2338,52 @@ impl Context {
             }
         }
 
-        let shape = cursor_shape_for_edges(edges);
+        if edges != 0 {
+            let shape = cursor_shape_for_edges(edges);
+            seat.borrow_mut().set_cursor_shape(shape);
+            return;
+        }
+
+        // For WM-owned surfaces, force a sensible cursor so the previous
+        // application's cursor doesn't leak through. Over desktop icons we
+        // show the pointer (hand); everywhere else on our surfaces, the
+        // default arrow.
+        let (target, surface_x, surface_y) = {
+            let seat_ref = seat.borrow();
+            (
+                seat_ref.pointer_target,
+                seat_ref.last_surface_x,
+                seat_ref.last_surface_y,
+            )
+        };
+
+        let shape = match target {
+            super::PointerTarget::Desktop(output_id) => {
+                let on_icon = self
+                    .outputs
+                    .get(&output_id)
+                    .and_then(|o| {
+                        let o = o.borrow();
+                        let scale = o.scale;
+                        o.desktop_surface
+                            .as_ref()
+                            .and_then(|d| d.icon_at(surface_x, surface_y, scale))
+                    })
+                    .is_some();
+                if on_icon {
+                    Some(CursorShape::Pointer)
+                } else {
+                    Some(CursorShape::Default)
+                }
+            }
+            super::PointerTarget::Menu | super::PointerTarget::Titlebar(_) => {
+                Some(CursorShape::Default)
+            }
+            // MenuShield hides the cursor via wl_pointer.set_cursor directly,
+            // so don't touch it here.
+            super::PointerTarget::MenuShield(_) | super::PointerTarget::None => None,
+        };
+
         seat.borrow_mut().set_cursor_shape(shape);
     }
 }

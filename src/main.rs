@@ -2371,6 +2371,9 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                             state, &seat, output_id, surface_x, surface_y,
                         );
                         update_menu_hover_from_surface(state, output_id, surface_x, surface_y, _qh);
+                        if matches!(target, canoe::PointerTarget::Desktop(_)) {
+                            state.context.borrow_mut().update_cursor_for_seat(*seat_id);
+                        }
                     } else if let canoe::PointerTarget::Titlebar(window_id) = target {
                         let changed = update_titlebar_hover_from_surface(
                             state, window_id, surface_x, surface_y,
