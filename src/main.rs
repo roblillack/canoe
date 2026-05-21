@@ -13,13 +13,29 @@ use protocol::*;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
-use std::os::fd::AsFd;
+use std::os::fd::{AsFd, AsRawFd};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant};
 
+use nix::fcntl::OFlag;
+use nix::libc;
 use nix::poll::{poll, PollFd, PollFlags};
-use nix::sys::signal::{SigSet, Signal};
-use nix::sys::signalfd::{SfdFlags, SignalFd};
+use nix::sys::signal::{sigaction, SaFlags, SigAction, SigHandler, SigSet, Signal};
+use nix::unistd::pipe2;
+
+static SIGNAL_WRITE_FD: AtomicI32 = AtomicI32::new(-1);
+
+extern "C" fn forward_signal(sig: libc::c_int) {
+    let fd = SIGNAL_WRITE_FD.load(Ordering::Relaxed);
+    if fd < 0 {
+        return;
+    }
+    let byte = sig as u8;
+    unsafe {
+        libc::write(fd, &byte as *const u8 as *const libc::c_void, 1);
+    }
+}
 
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_output, wl_pointer, wl_region, wl_registry, wl_seat, wl_shm,
@@ -2657,15 +2673,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Err("River window manager protocol not available".into());
     }
 
-    // Set up signal handling
-    let mut mask = SigSet::empty();
-    mask.add(Signal::SIGINT);
-    mask.add(Signal::SIGTERM);
-    mask.add(Signal::SIGQUIT);
-    mask.add(Signal::SIGCHLD);
-    mask.thread_block()?;
+    // Set up signal handling via a self-pipe so the poll loop can wake on signals.
+    let (signal_read_fd, signal_write_fd) = pipe2(OFlag::O_CLOEXEC | OFlag::O_NONBLOCK)?;
+    SIGNAL_WRITE_FD.store(signal_write_fd.as_raw_fd(), Ordering::Relaxed);
+    // The write end must outlive the signal handler that references its fd.
+    std::mem::forget(signal_write_fd);
 
-    let signal_fd = SignalFd::with_flags(&mask, SfdFlags::SFD_NONBLOCK)?;
+    let action = SigAction::new(
+        SigHandler::Handler(forward_signal),
+        SaFlags::SA_RESTART,
+        SigSet::empty(),
+    );
+    for sig in [
+        Signal::SIGINT,
+        Signal::SIGTERM,
+        Signal::SIGQUIT,
+        Signal::SIGCHLD,
+    ] {
+        unsafe { sigaction(sig, &action)? };
+    }
 
     // Run startup commands
     for cmd in &state.context.borrow().config.startup_cmds.clone() {
@@ -2682,7 +2708,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mut poll_fds = [
             PollFd::new(wayland_fd, PollFlags::POLLIN),
-            PollFd::new(signal_fd.as_fd(), PollFlags::POLLIN),
+            PollFd::new(signal_read_fd.as_fd(), PollFlags::POLLIN),
         ];
 
         // Poll for events (None = infinite timeout)
@@ -2718,25 +2744,35 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(|r| r.contains(PollFlags::POLLIN))
             .unwrap_or(false)
         {
-            if let Ok(Some(sig_info)) = signal_fd.read_signal() {
-                match Signal::try_from(sig_info.ssi_signo as i32) {
-                    Ok(Signal::SIGINT) | Ok(Signal::SIGTERM) | Ok(Signal::SIGQUIT) => {
-                        state.context.borrow_mut().running = false;
-                    }
-                    Ok(Signal::SIGCHLD) => {
-                        // Reap child processes
-                        loop {
-                            match nix::sys::wait::waitpid(
-                                None,
-                                Some(nix::sys::wait::WaitPidFlag::WNOHANG),
-                            ) {
-                                Ok(nix::sys::wait::WaitStatus::StillAlive) => break,
-                                Ok(_) => continue,
-                                Err(_) => break,
+            let mut buf = [0u8; 32];
+            loop {
+                match nix::unistd::read(signal_read_fd.as_raw_fd(), &mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        for &byte in &buf[..n] {
+                            match Signal::try_from(byte as i32) {
+                                Ok(Signal::SIGINT) | Ok(Signal::SIGTERM) | Ok(Signal::SIGQUIT) => {
+                                    state.context.borrow_mut().running = false;
+                                }
+                                Ok(Signal::SIGCHLD) => loop {
+                                    match nix::sys::wait::waitpid(
+                                        None,
+                                        Some(nix::sys::wait::WaitPidFlag::WNOHANG),
+                                    ) {
+                                        Ok(nix::sys::wait::WaitStatus::StillAlive) => break,
+                                        Ok(_) => continue,
+                                        Err(_) => break,
+                                    }
+                                },
+                                _ => {}
                             }
                         }
+                        if n < buf.len() {
+                            break;
+                        }
                     }
-                    _ => {}
+                    Err(nix::errno::Errno::EAGAIN) | Err(nix::errno::Errno::EINTR) => break,
+                    Err(_) => break,
                 }
             }
         }

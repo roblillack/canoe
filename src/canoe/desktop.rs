@@ -11,7 +11,7 @@ use wayland_client::protocol::{
 use wayland_client::QueueHandle;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 
-use super::OutputId;
+use super::{shmfile, OutputId};
 
 /// Transparent desktop surface for receiving pointer input.
 pub struct DesktopSurface {
@@ -80,28 +80,21 @@ impl DesktopSurface {
 
         let stride = self.width * 4;
         let size = stride * self.height;
-        let memfd = match memfd::MemfdOptions::default()
-            .close_on_exec(true)
-            .create("canoe-desktop")
-        {
-            Ok(fd) => fd,
+        let memfile = match shmfile::create("canoe-desktop", size as i64) {
+            Ok(f) => f,
             Err(_) => {
                 return;
             }
         };
 
-        if memfd.as_file().set_len(size as u64).is_err() {
-            return;
-        }
-
-        let mmap = match unsafe { memmap2::MmapMut::map_mut(memfd.as_file()) } {
+        let mmap = match unsafe { memmap2::MmapMut::map_mut(&memfile) } {
             Ok(m) => m,
             Err(_) => {
                 return;
             }
         };
 
-        let pool = shm.create_pool(memfd.as_file().as_fd(), size, qh, ());
+        let pool = shm.create_pool(memfile.as_fd(), size, qh, ());
         let buffer = pool.create_buffer(
             0,
             self.width,
@@ -112,7 +105,7 @@ impl DesktopSurface {
             (),
         );
 
-        self.memfile = Some(memfd.into_file());
+        self.memfile = Some(memfile);
         self.mmap = Some(mmap);
         self.pool = Some(pool);
         self.buffer = Some(buffer);
