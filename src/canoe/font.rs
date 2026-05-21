@@ -4,7 +4,7 @@ use fontconfig_sys as fc;
 use freetype::freetype as ft;
 use std::cell::RefCell;
 use std::ffi::{CStr, CString};
-use std::os::raw::c_int;
+use std::os::raw::{c_char, c_int};
 use std::path::{Path, PathBuf};
 use std::ptr;
 use std::sync::OnceLock;
@@ -270,7 +270,7 @@ fn match_font(pattern: &str) -> Option<FontMatch> {
             index = 0;
         }
 
-        let path = CStr::from_ptr(file_ptr as *const i8)
+        let path = CStr::from_ptr(file_ptr as *const c_char)
             .to_string_lossy()
             .into_owned();
         fc::FcPatternDestroy(font);

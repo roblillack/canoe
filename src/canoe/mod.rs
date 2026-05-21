@@ -8,6 +8,7 @@ mod output;
 mod render;
 mod seat;
 mod shield;
+mod shmfile;
 pub mod titlebar;
 pub mod window;
 
