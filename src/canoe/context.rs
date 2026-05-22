@@ -2179,6 +2179,11 @@ impl Context {
     }
 
     /// Enter desktop icon keyboard focus mode.
+    ///
+    /// Sets local selection state synchronously and queues the protocol-bound
+    /// work (clear keyboard focus, switch seat mode) as actions so they run
+    /// inside the next manage sequence. Callers must follow up with
+    /// `manage_dirty` to trigger that sequence.
     pub fn enter_icon_focus(&mut self, output_id: OutputId, window_id: WindowId, seat_id: SeatId) {
         // Set the selected icon on the desktop surface
         if let Some(output) = self.outputs.get(&output_id) {
@@ -2188,10 +2193,12 @@ impl Context {
             }
         }
         self.icon_focus_output = Some(output_id);
-        self.clear_keyboard_focus();
         if let Some(seat) = self.seats.get(&seat_id) {
-            seat.borrow_mut()
-                .switch_mode(crate::config::Mode::DesktopIcons);
+            let mut seat_ref = seat.borrow_mut();
+            seat_ref.queue_action(Action::ClearFocus);
+            seat_ref.queue_action(Action::SwitchMode {
+                mode: crate::config::Mode::DesktopIcons,
+            });
         }
     }
 

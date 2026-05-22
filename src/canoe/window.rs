@@ -311,6 +311,13 @@ impl Window {
             if let Some(ref rwm_window) = self.rwm_window {
                 rwm_window.show();
             }
+            // Force the titlebar to re-render + commit on the next render
+            // sequence. Without a fresh commit the decoration surface stays
+            // unmapped after rwm_window.show() and no wl_pointer.Enter
+            // event fires for it, so titlebar clicks never reach us.
+            if let Some(ref mut titlebar) = self.titlebar {
+                titlebar.dirty = true;
+            }
         }
     }
 

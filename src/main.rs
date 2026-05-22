@@ -2452,28 +2452,14 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                                             seat.borrow_mut().last_icon_click =
                                                 Some((icon_window_id, now));
                                             if is_double {
-                                                // Double-click: restore the window
-                                                {
-                                                    let context = state.context.borrow();
-                                                    if let Some(window) =
-                                                        context.windows.get(&icon_window_id)
-                                                    {
-                                                        let mut w = window.borrow_mut();
-                                                        w.show();
-                                                        w.place_top();
-                                                    }
-                                                }
-                                                state.context.borrow().mark_all_desktops_dirty();
-                                                {
-                                                    let seat_id = *seat_id;
-                                                    state
-                                                        .context
-                                                        .borrow_mut()
-                                                        .exit_icon_focus(seat_id);
-                                                }
-                                                state.context.borrow_mut().focus(icon_window_id);
-                                                seat.borrow_mut().last_icon_click = None;
-                                                render_all_desktop_surfaces(state, _qh);
+                                                // Defer through Action::IconActivate so focus_window
+                                                // (window-management state) runs inside a manage
+                                                // sequence; the preceding single click already
+                                                // selected this icon via enter_icon_focus.
+                                                let mut seat_mut = seat.borrow_mut();
+                                                seat_mut.last_icon_click = None;
+                                                seat_mut.queue_action(binding::Action::IconActivate);
+                                                drop(seat_mut);
                                                 request_manage_dirty(state);
                                             } else {
                                                 // Single click: select icon and enter icon focus mode
@@ -2487,15 +2473,42 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                                                 request_manage_dirty(state);
                                             }
                                         } else {
-                                            // Clicked empty space: deselect and exit icon mode
+                                            // Clicked empty space: clear local icon-mode state
+                                            // synchronously, then queue the protocol-bound mode
+                                            // switch + clear-focus to run inside the next manage
+                                            // sequence (this is a wl_pointer event, not part of
+                                            // any river manage sequence).
                                             seat.borrow_mut().last_icon_click = None;
                                             {
-                                                let seat_id = *seat_id;
-                                                state.context.borrow_mut().exit_icon_focus(seat_id);
+                                                let mut context = state.context.borrow_mut();
+                                                if let Some(focused_output) =
+                                                    context.icon_focus_output.take()
+                                                {
+                                                    if let Some(output) =
+                                                        context.outputs.get(&focused_output)
+                                                    {
+                                                        if let Some(desktop) = output
+                                                            .borrow_mut()
+                                                            .desktop_surface
+                                                            .as_mut()
+                                                        {
+                                                            desktop.selected_icon = None;
+                                                            desktop.dirty = true;
+                                                        }
+                                                    }
+                                                }
                                             }
                                             render_desktop_surface(state, output_id, _qh);
-                                            seat.borrow_mut()
-                                                .queue_action(binding::Action::ClearFocus);
+                                            {
+                                                let mut seat_mut = seat.borrow_mut();
+                                                seat_mut
+                                                    .queue_action(binding::Action::ClearFocus);
+                                                seat_mut.queue_action(
+                                                    binding::Action::SwitchMode {
+                                                        mode: crate::config::Mode::Default,
+                                                    },
+                                                );
+                                            }
                                             request_manage_dirty(state);
                                         }
                                     } else if button == crate::config::button::RIGHT {
