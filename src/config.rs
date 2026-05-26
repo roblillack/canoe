@@ -124,8 +124,16 @@ pub struct UiConfig {
     pub button_bg: u32,
     pub button_highlight: u32,
     pub button_shadow: u32,
-    pub window_shadow_size: i32,
-    pub window_shadow_color: u32,
+    /// Master toggle for all window/menu drop shadows.
+    pub shadows_enabled: bool,
+    /// Soft shadow size for the focused window.
+    pub shadows_active_size: i32,
+    /// Soft shadow size for non-focused windows.
+    pub shadows_inactive_size: i32,
+    /// Shadow color for windows. Menus use the soft window shadow style
+    /// (sized by [`shadows_active_size`]) when shadows are enabled, and fall
+    /// back to a built-in retro L-shape drop shadow otherwise.
+    pub shadows_color: u32,
     pub font_name: Option<String>,
     pub font_size: f32,
     pub desktop_background: u32,
@@ -165,8 +173,10 @@ impl Default for UiConfig {
             button_bg: 0xC0C0C0FF,
             button_highlight: 0xFFFFFFFF,
             button_shadow: 0x808080FF,
-            window_shadow_size: 20,
-            window_shadow_color: 0x00000040,
+            shadows_enabled: true,
+            shadows_active_size: 20,
+            shadows_inactive_size: 10,
+            shadows_color: 0x00000033,
             font_name: None,
             font_size: 12.0,
             desktop_background: 0x008080FF,
@@ -278,9 +288,11 @@ struct UiConfigFile {
     button_highlight: Option<u32>,
     #[serde(default, deserialize_with = "deserialize_opt_color")]
     button_shadow: Option<u32>,
-    window_shadow_size: Option<i32>,
+    shadows_enabled: Option<bool>,
+    shadows_active_size: Option<i32>,
+    shadows_inactive_size: Option<i32>,
     #[serde(default, deserialize_with = "deserialize_opt_color")]
-    window_shadow_color: Option<u32>,
+    shadows_color: Option<u32>,
     font_name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_opt_f32")]
     font_size: Option<f32>,
@@ -366,11 +378,17 @@ impl UiConfig {
         if let Some(color) = overrides.button_shadow {
             self.button_shadow = color;
         }
-        if let Some(size) = overrides.window_shadow_size {
-            self.window_shadow_size = size.max(0);
+        if let Some(enabled) = overrides.shadows_enabled {
+            self.shadows_enabled = enabled;
         }
-        if let Some(color) = overrides.window_shadow_color {
-            self.window_shadow_color = color;
+        if let Some(size) = overrides.shadows_active_size {
+            self.shadows_active_size = size.max(0);
+        }
+        if let Some(size) = overrides.shadows_inactive_size {
+            self.shadows_inactive_size = size.max(0);
+        }
+        if let Some(color) = overrides.shadows_color {
+            self.shadows_color = color;
         }
         if let Some(font_name) = overrides.font_name {
             let trimmed = font_name.trim().to_string();
@@ -664,6 +682,51 @@ mod tests {
         assert!(ui.icons_text.is_none());
         assert!(ui.icons_highlight_bg.is_none());
         assert!(ui.icons_highlight_text.is_none());
+    }
+
+    #[test]
+    fn test_shadow_config_parsing() {
+        let contents = r##"
+            [ui]
+            shadows_enabled = false
+            shadows_active_size = 24
+            shadows_inactive_size = 6
+            shadows_color = "#11223344"
+        "##;
+
+        let file_config = toml::from_str::<FileConfig>(contents).expect("parse config");
+        let mut ui = UiConfig::default();
+        ui.apply(file_config.ui.expect("ui present"));
+
+        assert!(!ui.shadows_enabled);
+        assert_eq!(ui.shadows_active_size, 24);
+        assert_eq!(ui.shadows_inactive_size, 6);
+        assert_eq!(ui.shadows_color, 0x11223344);
+    }
+
+    #[test]
+    fn test_shadow_config_defaults() {
+        let ui = UiConfig::default();
+        assert!(ui.shadows_enabled);
+        assert_eq!(ui.shadows_active_size, 20);
+        assert_eq!(ui.shadows_inactive_size, 10);
+        assert_eq!(ui.shadows_color, 0x00000033);
+    }
+
+    #[test]
+    fn test_shadow_size_clamped_to_zero() {
+        let contents = r#"
+            [ui]
+            shadows_active_size = -5
+            shadows_inactive_size = -1
+        "#;
+
+        let file_config = toml::from_str::<FileConfig>(contents).expect("parse config");
+        let mut ui = UiConfig::default();
+        ui.apply(file_config.ui.expect("ui present"));
+
+        assert_eq!(ui.shadows_active_size, 0);
+        assert_eq!(ui.shadows_inactive_size, 0);
     }
 
     #[test]

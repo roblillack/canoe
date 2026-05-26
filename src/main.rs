@@ -222,8 +222,12 @@ fn open_window_menu_with_items(
             .hovered
             .and_then(|idx| menu.items.get(idx).map(|item| item.window_id));
     }
-    let mut local_x = pointer.0.max(0);
-    let mut local_y = pointer.1.max(0);
+    // Position the surface so the menu title row sits under the cursor:
+    // horizontally one half-row-height in from the menu's left edge,
+    // vertically at the title row's vertical center.
+    let (anchor_x, anchor_y) = menu.pointer_anchor();
+    let mut local_x = (pointer.0 - anchor_x).max(0);
+    let mut local_y = (pointer.1 - anchor_y).max(0);
     if ow > 0 && oh > 0 {
         if centered {
             local_x = ((ow - menu.width) / 2).max(0);
@@ -1111,22 +1115,15 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
 
                         let is_fullscreen =
                             !matches!(w.fullscreen, canoe::window::FullscreenState::None);
-                        let is_dragging = w.titlebar_left_down
-                            || matches!(
-                                w.operator,
-                                canoe::window::Operator::Move { .. }
-                                    | canoe::window::Operator::Resize { .. }
-                            );
-                        let base_shadow_size = ui.window_shadow_size.max(0);
-                        let mut shadow_size = if is_dragging {
-                            base_shadow_size / 2
+                        let is_focused = focused_window == Some(w.id);
+                        let shadow_size = if !ui.shadows_enabled || is_fullscreen || w.maximized {
+                            0
+                        } else if is_focused {
+                            ui.shadows_active_size.max(0)
                         } else {
-                            base_shadow_size
+                            ui.shadows_inactive_size.max(0)
                         };
-                        if is_fullscreen || w.maximized {
-                            shadow_size = 0;
-                        }
-                        let shadow_color = ui.window_shadow_color;
+                        let shadow_color = ui.shadows_color;
                         let use_ssd = w.decoration != Some(crate::config::WindowDecoration::Csd);
                         let border_width = if use_ssd { ui.border_width } else { 0 };
                         let titlebar_height = if use_ssd {

@@ -11,7 +11,7 @@ use wayland_client::protocol::{
 use wayland_client::QueueHandle;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 
-use super::{font, render::Renderer, shmfile, OutputId, WindowId};
+use super::{font, render::Renderer, shadow::draw_shadow_soft, shmfile, OutputId, WindowId};
 
 /// Menu entry data.
 #[derive(Debug, Clone)]
@@ -52,10 +52,12 @@ const ITEM_PADDING_Y: i32 = 4;
 const ICON_SIZE: i32 = 10;
 const ICON_GAP: i32 = 6;
 const ACTIVE_DIAMOND_SIZE: i32 = 8;
-const SHADOW_SIZE: i32 = 3;
+
+/// Fallback flat drop-shadow size used when soft shadows are disabled.
+const L_SHADOW_SIZE: i32 = 3;
+const L_SHADOW_COLOR: u32 = 0x404040FF;
 
 const BORDER_COLOR: u32 = 0x000000FF;
-const SHADOW_COLOR: u32 = 0x404040FF;
 
 #[derive(Debug, Clone)]
 pub struct MenuTheme {
@@ -67,6 +69,11 @@ pub struct MenuTheme {
     pub highlight_text: u32,
     pub titlebar_bg: u32,
     pub titlebar_text: u32,
+    /// When true, render a soft drop shadow with [`shadow_size`] / [`shadow_color`].
+    /// When false, fall back to the flat L-shape drop shadow.
+    pub shadows_enabled: bool,
+    pub shadow_size: i32,
+    pub shadow_color: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -102,6 +109,49 @@ impl MenuTheme {
             highlight_text: ui.menu_highlight_text,
             titlebar_bg: ui.titlebar_bg_inactive,
             titlebar_text: ui.titlebar_text_inactive,
+            shadows_enabled: ui.shadows_enabled,
+            shadow_size: ui.shadows_active_size.max(0),
+            shadow_color: ui.shadows_color,
+        }
+    }
+
+    /// Pixels of shadow that extend to the left of the menu content.
+    pub fn shadow_left(&self) -> i32 {
+        if self.shadows_enabled {
+            self.shadow_size
+        } else {
+            0
+        }
+    }
+
+    /// Pixels of shadow that extend above the menu content. Soft mode uses
+    /// half the nominal size so the shadow looks like it's cast by a light
+    /// source above the menu (matching the window drop shadow).
+    pub fn shadow_top(&self) -> i32 {
+        if self.shadows_enabled {
+            self.shadow_size / 2
+        } else {
+            0
+        }
+    }
+
+    /// Pixels of shadow that extend to the right of the menu content.
+    pub fn shadow_right(&self) -> i32 {
+        if self.shadows_enabled {
+            self.shadow_size
+        } else {
+            L_SHADOW_SIZE
+        }
+    }
+
+    /// Pixels of shadow that extend below the menu content. Soft mode uses
+    /// 1.5x the nominal size to account for the downward offset of the
+    /// rendered shape; matches the window drop shadow.
+    pub fn shadow_bottom(&self) -> i32 {
+        if self.shadows_enabled {
+            self.shadow_size + self.shadow_size / 2
+        } else {
+            L_SHADOW_SIZE
         }
     }
 }
@@ -146,8 +196,8 @@ impl WindowMenu {
     pub fn item_at(&self, x: i32, y: i32) -> Option<usize> {
         let content_w = self.menu_width();
         let content_h = self.menu_height();
-        let content_x = MENU_BORDER;
-        let content_y = MENU_BORDER;
+        let content_x = self.theme.shadow_left() + MENU_BORDER;
+        let content_y = self.theme.shadow_top() + MENU_BORDER;
         let content_w = content_w - MENU_BORDER * 2;
         let content_h = content_h - MENU_BORDER * 2;
         if x < content_x
@@ -296,10 +346,14 @@ impl WindowMenu {
         let item_h = item_height(&theme);
         let header_h = if header_title.is_some() { item_h } else { 0 };
         let scale = self.scale.max(1);
+        let content_x_px = theme.shadow_left() * scale;
+        let content_y_px = theme.shadow_top() * scale;
         let row_ctx = MenuRowContext {
             menu_w,
             item_h,
             scale,
+            content_x_px,
+            content_y_px,
             theme: &theme,
         };
 
@@ -342,7 +396,7 @@ impl WindowMenu {
         }
 
         let region = compositor.create_region(qh, ());
-        region.add(0, 0, menu_w, menu_h);
+        region.add(self.theme.shadow_left(), self.theme.shadow_top(), menu_w, menu_h);
         self.surface.set_input_region(Some(&region));
         region.destroy();
     }
@@ -357,11 +411,23 @@ impl WindowMenu {
     }
 
     fn menu_width(&self) -> i32 {
-        (self.width - SHADOW_SIZE).max(0)
+        (self.width - self.theme.shadow_left() - self.theme.shadow_right()).max(0)
     }
 
     fn menu_height(&self) -> i32 {
-        (self.height - SHADOW_SIZE).max(0)
+        (self.height - self.theme.shadow_top() - self.theme.shadow_bottom()).max(0)
+    }
+
+    /// Surface-local offset (x, y) of the point that should sit under the
+    /// pointer when the menu is opened: horizontally one half-row-height in
+    /// from the menu's left edge, vertically at the vertical center of the
+    /// title (first) row.
+    pub fn pointer_anchor(&self) -> (i32, i32) {
+        let half_row = item_height(&self.theme) / 2;
+        (
+            self.theme.shadow_left() + half_row,
+            self.theme.shadow_top() + MENU_BORDER + half_row,
+        )
     }
 
     fn header_height(&self) -> i32 {
@@ -414,17 +480,19 @@ fn measure_menu(items: &[MenuItem], theme: &MenuTheme, header_title: Option<&str
         }
     }
     let row_count = items.len() as i32 + if header_title.is_some() { 1 } else { 0 };
+    let pad_w = theme.shadow_left() + theme.shadow_right();
+    let pad_h = theme.shadow_top() + theme.shadow_bottom();
     if !has_font {
         let menu_w = 120;
         let menu_h = (row_count * item_height(theme)).max(1) + MENU_BORDER * 2;
-        return (menu_w + SHADOW_SIZE, menu_h + SHADOW_SIZE);
+        return (menu_w + pad_w, menu_h + pad_h);
     }
 
     let content_w = ITEM_PADDING_X * 2 + ICON_SIZE + ICON_GAP + max_width.ceil() as i32;
     let content_h = item_height(theme) * row_count;
     let menu_w = content_w + MENU_BORDER * 2;
     let menu_h = content_h + MENU_BORDER * 2;
-    (menu_w + SHADOW_SIZE, menu_h + SHADOW_SIZE)
+    (menu_w + pad_w, menu_h + pad_h)
 }
 
 fn items_hash(items: &[MenuItem]) -> u64 {
@@ -488,20 +556,31 @@ impl WindowMenu {
         let scale = self.scale.max(1);
         let menu_w_px = menu_w * scale;
         let menu_h_px = menu_h * scale;
+        let content_x_px = self.theme.shadow_left() * scale;
+        let content_y_px = self.theme.shadow_top() * scale;
 
-        draw_shadow(
+        draw_menu_shadow(
             &mut renderer,
-            menu_w_px,
-            menu_h_px,
-            rgba_to_argb(SHADOW_COLOR),
+            &self.theme,
+            menu_w,
+            menu_h,
+            content_x_px,
+            content_y_px,
+            scale,
         );
 
-        renderer.fill_rect(0, 0, menu_w_px, menu_h_px, rgba_to_argb(self.theme.bg));
+        renderer.fill_rect(
+            content_x_px,
+            content_y_px,
+            menu_w_px,
+            menu_h_px,
+            rgba_to_argb(self.theme.bg),
+        );
 
         draw_border_rect(
             &mut renderer,
-            0,
-            0,
+            content_x_px,
+            content_y_px,
             menu_w_px,
             menu_h_px,
             rgba_to_argb(BORDER_COLOR),
@@ -513,6 +592,8 @@ impl WindowMenu {
             menu_w,
             item_h,
             scale,
+            content_x_px,
+            content_y_px,
             theme: &self.theme,
         };
         if let Some(title) = self.header_title.as_deref() {
@@ -532,6 +613,10 @@ struct MenuRowContext<'a> {
     menu_w: i32,
     item_h: i32,
     scale: i32,
+    /// Buffer-space x offset of the menu content area (left edge), in pixels.
+    content_x_px: i32,
+    /// Buffer-space y offset of the menu content area (top edge), in pixels.
+    content_y_px: i32,
     theme: &'a MenuTheme,
 }
 
@@ -540,8 +625,8 @@ fn draw_menu_header(renderer: &mut Renderer, title: &str, row_y: i32, ctx: &Menu
     let text_color = rgba_to_argb(ctx.theme.titlebar_text);
 
     renderer.fill_rect(
-        MENU_BORDER * ctx.scale,
-        row_y * ctx.scale,
+        ctx.content_x_px + MENU_BORDER * ctx.scale,
+        ctx.content_y_px + row_y * ctx.scale,
         (ctx.menu_w - MENU_BORDER * 2) * ctx.scale,
         ctx.item_h * ctx.scale,
         bg,
@@ -551,8 +636,8 @@ fn draw_menu_header(renderer: &mut Renderer, title: &str, row_y: i32, ctx: &Menu
     let text_area_w = ctx.menu_w - MENU_BORDER * 2 - text_start_x + MENU_BORDER;
     renderer.render_text(
         title,
-        text_start_x * ctx.scale,
-        row_y * ctx.scale,
+        ctx.content_x_px + text_start_x * ctx.scale,
+        ctx.content_y_px + row_y * ctx.scale,
         text_area_w * ctx.scale,
         ctx.item_h * ctx.scale,
         ctx.scale,
@@ -587,8 +672,8 @@ fn draw_menu_row(
     };
 
     renderer.fill_rect(
-        MENU_BORDER * ctx.scale,
-        row_y * ctx.scale,
+        ctx.content_x_px + MENU_BORDER * ctx.scale,
+        ctx.content_y_px + row_y * ctx.scale,
         (ctx.menu_w - MENU_BORDER * 2) * ctx.scale,
         ctx.item_h * ctx.scale,
         bg,
@@ -598,8 +683,8 @@ fn draw_menu_row(
     if item.hidden {
         draw_dashed_rect(
             renderer,
-            start_x * ctx.scale,
-            (row_y + (ctx.item_h - ICON_SIZE) / 2) * ctx.scale,
+            ctx.content_x_px + start_x * ctx.scale,
+            ctx.content_y_px + (row_y + (ctx.item_h - ICON_SIZE) / 2) * ctx.scale,
             ICON_SIZE * ctx.scale,
             ICON_SIZE * ctx.scale,
             icon_color,
@@ -608,8 +693,8 @@ fn draw_menu_row(
     if item.active {
         draw_diamond(
             renderer,
-            (start_x + (ICON_SIZE - ACTIVE_DIAMOND_SIZE) / 2) * ctx.scale,
-            (row_y + (ctx.item_h - ACTIVE_DIAMOND_SIZE) / 2) * ctx.scale,
+            ctx.content_x_px + (start_x + (ICON_SIZE - ACTIVE_DIAMOND_SIZE) / 2) * ctx.scale,
+            ctx.content_y_px + (row_y + (ctx.item_h - ACTIVE_DIAMOND_SIZE) / 2) * ctx.scale,
             ACTIVE_DIAMOND_SIZE * ctx.scale,
             text_color,
         );
@@ -619,8 +704,8 @@ fn draw_menu_row(
     let text_area_w = ctx.menu_w - MENU_BORDER * 2 - text_start_x + MENU_BORDER;
     renderer.render_text(
         &item.title,
-        text_start_x * ctx.scale,
-        row_y * ctx.scale,
+        ctx.content_x_px + text_start_x * ctx.scale,
+        ctx.content_y_px + row_y * ctx.scale,
         text_area_w * ctx.scale,
         ctx.item_h * ctx.scale,
         ctx.scale,
@@ -663,25 +748,57 @@ fn draw_border_rect(
     renderer.fill_rect(x + width - 1, y, 1, height, color_argb);
 }
 
-fn draw_shadow(renderer: &mut Renderer, menu_width: i32, menu_height: i32, color_argb: u32) {
-    if menu_width <= 0 || menu_height <= 0 {
+fn draw_menu_shadow(
+    renderer: &mut Renderer,
+    theme: &MenuTheme,
+    menu_w: i32,
+    menu_h: i32,
+    content_x_px: i32,
+    content_y_px: i32,
+    scale: i32,
+) {
+    if menu_w <= 0 || menu_h <= 0 {
         return;
     }
 
-    renderer.fill_rect(
-        SHADOW_SIZE,
-        menu_height,
-        menu_width,
-        SHADOW_SIZE,
-        color_argb,
-    );
-    renderer.fill_rect(
-        menu_width,
-        SHADOW_SIZE,
-        SHADOW_SIZE,
-        menu_height,
-        color_argb,
-    );
+    if theme.shadows_enabled {
+        if theme.shadow_size <= 0 {
+            return;
+        }
+        // Shrink the rendered shape height by size/2 so the falloff sits
+        // lower in the buffer; combined with the asymmetric padding from
+        // MenuTheme::shadow_top/bottom this produces the same "light from
+        // above" offset as the window drop shadow.
+        let frame_h_shrunk = (menu_h - theme.shadow_size / 2).max(1);
+        draw_shadow_soft(
+            renderer,
+            menu_w,
+            frame_h_shrunk,
+            theme.shadow_size,
+            0,
+            theme.shadow_color,
+            scale,
+        );
+    } else {
+        let l_size = L_SHADOW_SIZE * scale;
+        let menu_w_px = menu_w * scale;
+        let menu_h_px = menu_h * scale;
+        let color = rgba_to_argb(L_SHADOW_COLOR);
+        renderer.fill_rect(
+            content_x_px + l_size,
+            content_y_px + menu_h_px,
+            menu_w_px,
+            l_size,
+            color,
+        );
+        renderer.fill_rect(
+            content_x_px + menu_w_px,
+            content_y_px + l_size,
+            l_size,
+            menu_h_px,
+            color,
+        );
+    }
 }
 
 #[allow(clippy::too_many_arguments)]

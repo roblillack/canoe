@@ -278,7 +278,7 @@ fn clear_buffer(pixels: &mut [u8]) {
     }
 }
 
-fn draw_shadow_soft(
+pub(super) fn draw_shadow_soft(
     renderer: &mut Renderer,
     frame_width: i32,
     frame_height: i32,
