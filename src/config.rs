@@ -153,7 +153,7 @@ impl Default for UiConfig {
             border_active: BorderLayers::default(),
             border_inactive: BorderLayers::default(),
             titlebar_text_active: 0xFFFFFFFF,
-            titlebar_text_inactive: 0xFFFFFFFF,
+            titlebar_text_inactive: 0x000000FF,
             titlebar_bg_active: 0x000080FF,
             titlebar_bg_inactive: 0xFFFFFFFF,
             menu_bg: 0xC0C0C0FF,
