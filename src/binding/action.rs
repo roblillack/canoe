@@ -101,6 +101,19 @@ pub enum Action {
     /// Restore keyboard focus to the last focused window
     RestoreFocus,
 
+    /// Move desktop icon selection to next icon
+    IconSelectNext,
+    /// Move desktop icon selection to previous icon
+    IconSelectPrev,
+    /// Move desktop icon selection up one row
+    IconSelectUp,
+    /// Move desktop icon selection down one row
+    IconSelectDown,
+    /// Activate (restore) the selected desktop icon
+    IconActivate,
+    /// Cancel desktop icon selection and exit icon mode
+    IconCancel,
+
     /// Custom function action
     CustomFn { func: CustomFn, arg: Arg },
 }
@@ -272,6 +285,63 @@ pub fn default_xkb_bindings(
             Keysym::m.raw(),
             main,
             Action::HideFocused,
+            super::BindingEvent::Pressed,
+        ),
+        // Desktop icon navigation (DesktopIcons mode)
+        (
+            Mode::DesktopIcons,
+            Keysym::Right.raw(),
+            NONE,
+            Action::IconSelectNext,
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::DesktopIcons,
+            Keysym::Tab.raw(),
+            NONE,
+            Action::IconSelectNext,
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::DesktopIcons,
+            Keysym::Left.raw(),
+            NONE,
+            Action::IconSelectPrev,
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::DesktopIcons,
+            Keysym::Tab.raw(),
+            shift,
+            Action::IconSelectPrev,
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::DesktopIcons,
+            Keysym::Up.raw(),
+            NONE,
+            Action::IconSelectUp,
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::DesktopIcons,
+            Keysym::Down.raw(),
+            NONE,
+            Action::IconSelectDown,
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::DesktopIcons,
+            Keysym::Return.raw(),
+            NONE,
+            Action::IconActivate,
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::DesktopIcons,
+            Keysym::Escape.raw(),
+            NONE,
+            Action::IconCancel,
             super::BindingEvent::Pressed,
         ),
     ]

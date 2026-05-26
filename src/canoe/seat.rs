@@ -66,6 +66,9 @@ pub struct Seat {
     /// Last close-button click for double-click detection
     pub last_close_click: Option<(WindowId, Instant)>,
 
+    /// Last desktop icon click for double-click detection
+    pub last_icon_click: Option<(WindowId, Instant)>,
+
     /// Pending actions to execute during manage phase
     pub unhandled_actions: VecDeque<Action>,
 
@@ -101,6 +104,7 @@ impl Seat {
             window_below_pointer: None,
             menu_click_button: None,
             last_close_click: None,
+            last_icon_click: None,
             unhandled_actions: VecDeque::new(),
             xkb_bindings: Vec::new(),
             pointer_bindings: Vec::new(),

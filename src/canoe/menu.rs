@@ -11,7 +11,7 @@ use wayland_client::protocol::{
 use wayland_client::QueueHandle;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 
-use super::{font, render::Renderer, OutputId, WindowId};
+use super::{font, render::Renderer, shmfile, OutputId, WindowId};
 
 /// Menu entry data.
 #[derive(Debug, Clone)]
@@ -233,28 +233,21 @@ impl WindowMenu {
 
         let stride = buffer_width * 4;
         let size = stride * buffer_height;
-        let memfd = match memfd::MemfdOptions::default()
-            .close_on_exec(true)
-            .create("canoe-menu")
-        {
-            Ok(fd) => fd,
+        let memfile = match shmfile::create("canoe-menu", size as i64) {
+            Ok(f) => f,
             Err(_) => {
                 return;
             }
         };
 
-        if memfd.as_file().set_len(size as u64).is_err() {
-            return;
-        }
-
-        let mmap = match unsafe { memmap2::MmapMut::map_mut(memfd.as_file()) } {
+        let mmap = match unsafe { memmap2::MmapMut::map_mut(&memfile) } {
             Ok(m) => m,
             Err(_) => {
                 return;
             }
         };
 
-        let pool = shm.create_pool(memfd.as_file().as_fd(), size, qh, ());
+        let pool = shm.create_pool(memfile.as_fd(), size, qh, ());
         let buffer = pool.create_buffer(
             0,
             buffer_width,
@@ -265,7 +258,7 @@ impl WindowMenu {
             (),
         );
 
-        self.memfile = Some(memfd.into_file());
+        self.memfile = Some(memfile);
         self.mmap = Some(mmap);
         self.pool = Some(pool);
         self.buffer = Some(buffer);

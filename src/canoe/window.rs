@@ -144,6 +144,8 @@ pub struct Window {
     pub floating: bool,
     /// Hidden state
     pub hidden: bool,
+    /// Sequence number assigned when minimized (for ordering icons)
+    pub minimize_seq: u64,
     /// Clip state
     pub clip_state: ClipState,
 
@@ -202,6 +204,7 @@ impl Window {
             pending_unfullscreen_restore: false,
             floating: false,
             hidden: false,
+            minimize_seq: 0,
             clip_state: ClipState::Unknown,
             decoration: None,
             decoration_hint: None,
@@ -307,6 +310,13 @@ impl Window {
             self.hidden = false;
             if let Some(ref rwm_window) = self.rwm_window {
                 rwm_window.show();
+            }
+            // Force the titlebar to re-render + commit on the next render
+            // sequence. Without a fresh commit the decoration surface stays
+            // unmapped after rwm_window.show() and no wl_pointer.Enter
+            // event fires for it, so titlebar clicks never reach us.
+            if let Some(ref mut titlebar) = self.titlebar {
+                titlebar.dirty = true;
             }
         }
     }

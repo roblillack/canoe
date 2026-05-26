@@ -5,6 +5,7 @@ use crate::config::{load_config, Config, WindowDecoration};
 use crate::protocol::river_window_management_v1::client::river_window_v1::Edges;
 use crate::protocol::*;
 use crate::rule;
+use resvg::tiny_skia;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape as CursorShape;
 
 use std::cell::RefCell;
@@ -44,6 +45,7 @@ pub struct Context {
     next_window_id: WindowId,
     next_output_id: OutputId,
     next_seat_id: SeatId,
+    next_minimize_seq: u64,
 
     // Configuration
     pub config: Config,
@@ -52,6 +54,13 @@ pub struct Context {
     pub running: bool,
     pub session_locked: bool,
     startup_unminimize_done: bool,
+
+    /// Output with active icon keyboard focus
+    pub icon_focus_output: Option<OutputId>,
+
+    /// Cache for desktop icon images, keyed by (app_id, size_px).
+    /// `None` value means "looked up but not found" — avoids repeated disk lookups.
+    icon_cache: HashMap<(String, i32), Option<Rc<tiny_skia::Pixmap>>>,
 
     /// Window menu surface and state
     pub window_menu: Option<WindowMenu>,
@@ -87,12 +96,17 @@ impl Context {
             next_window_id: 0,
             next_output_id: 0,
             next_seat_id: 0,
+            next_minimize_seq: 0,
 
             config: load_config(),
 
             running: true,
             session_locked: false,
             startup_unminimize_done: false,
+
+            icon_focus_output: None,
+
+            icon_cache: HashMap::new(),
 
             window_menu: None,
             window_menu_mode: None,
@@ -494,6 +508,24 @@ impl Context {
             }
             Action::RestoreFocus => {
                 self.restore_focus_from_stack();
+            }
+            Action::IconSelectNext => {
+                self.icon_navigate(1, 0);
+            }
+            Action::IconSelectPrev => {
+                self.icon_navigate(-1, 0);
+            }
+            Action::IconSelectUp => {
+                self.icon_navigate(0, -1);
+            }
+            Action::IconSelectDown => {
+                self.icon_navigate(0, 1);
+            }
+            Action::IconActivate => {
+                self.icon_activate(seat_id);
+            }
+            Action::IconCancel => {
+                self.exit_icon_focus(seat_id);
             }
             Action::CustomFn { func, ref arg } => {
                 let state = self.get_state();
@@ -1013,15 +1045,15 @@ impl Context {
 
     /// Start pointer move operation
     fn start_pointer_move(&mut self, seat_id: SeatId) {
-        // First, focus the window under the pointer
+        // First, focus the window under the pointer; bail out if there is none
+        // (e.g. clicking on the desktop) so we don't move an unrelated window.
         if let Some(seat) = self.seats.get(&seat_id) {
             let window_below = seat.borrow().window_below_pointer.clone();
-            if let Some(weak) = window_below {
-                if let Some(window) = weak.upgrade() {
-                    let wid = window.borrow().id;
-                    self.focus(wid);
-                }
-            }
+            let Some(window) = window_below.and_then(|w| w.upgrade()) else {
+                return;
+            };
+            let wid = window.borrow().id;
+            self.focus(wid);
         }
 
         // Now move the focused window
@@ -1045,15 +1077,15 @@ impl Context {
 
     /// Start pointer resize operation
     fn start_pointer_resize(&mut self, seat_id: SeatId) {
-        // First, focus the window under the pointer
+        // First, focus the window under the pointer; bail out if there is none
+        // (e.g. clicking on the desktop) so we don't resize an unrelated window.
         if let Some(seat) = self.seats.get(&seat_id) {
             let window_below = seat.borrow().window_below_pointer.clone();
-            if let Some(weak) = window_below {
-                if let Some(window) = weak.upgrade() {
-                    let wid = window.borrow().id;
-                    self.focus(wid);
-                }
-            }
+            let Some(window) = window_below.and_then(|w| w.upgrade()) else {
+                return;
+            };
+            let wid = window.borrow().id;
+            self.focus(wid);
         }
 
         // Now resize the focused window
@@ -1180,8 +1212,12 @@ impl Context {
     pub(crate) fn hide_window(&mut self, window_id: WindowId) {
         let was_focused = self.focused_window == Some(window_id);
         if let Some(window) = self.windows.get(&window_id) {
-            window.borrow_mut().hide();
+            let mut w = window.borrow_mut();
+            w.minimize_seq = self.next_minimize_seq;
+            self.next_minimize_seq += 1;
+            w.hide();
         }
+        self.mark_all_desktops_dirty();
         if !was_focused {
             return;
         }
@@ -1935,6 +1971,88 @@ impl Context {
         items
     }
 
+    /// Mark all desktop surfaces as needing re-render.
+    pub fn mark_all_desktops_dirty(&self) {
+        for output in self.outputs.values() {
+            if let Some(desktop) = output.borrow_mut().desktop_surface.as_mut() {
+                desktop.dirty = true;
+            }
+        }
+    }
+
+    /// Look up a cached desktop icon image, loading from disk on first access.
+    fn get_icon(&mut self, app_id: &str, size_px: i32) -> Option<Rc<tiny_skia::Pixmap>> {
+        let key = (app_id.to_string(), size_px);
+        self.icon_cache
+            .entry(key)
+            .or_insert_with(|| super::desktop::load_icon_for_app(app_id, size_px).map(Rc::new))
+            .clone()
+    }
+
+    /// Collect minimized windows for an output, sorted by minimize order.
+    pub fn collect_minimized_icons(
+        &mut self,
+        output_id: OutputId,
+    ) -> Vec<super::desktop::DesktopIcon> {
+        let output = match self.outputs.get(&output_id) {
+            Some(o) => o,
+            None => return Vec::new(),
+        };
+        let output_ref = output.borrow();
+
+        let scale = output_ref.scale.max(1);
+        let icon_size_px = super::desktop::ICON_SIZE * scale;
+
+        // Collect window data into a temp vec to avoid holding borrow of self.windows
+        // while calling self.get_icon.
+        let mut entries: Vec<(u64, WindowId, String, Option<String>)> = self
+            .windows
+            .iter()
+            .filter_map(|(&window_id, window)| {
+                let w = window.borrow();
+                if !w.hidden {
+                    return None;
+                }
+                let matches = w
+                    .output
+                    .as_ref()
+                    .and_then(|o| o.upgrade())
+                    .map(|o| o.borrow().id == output_ref.id)
+                    .unwrap_or(false);
+                if !matches {
+                    return None;
+                }
+                let title = w
+                    .title
+                    .as_ref()
+                    .filter(|t| !t.is_empty())
+                    .cloned()
+                    .or_else(|| w.app_id.clone())
+                    .unwrap_or_else(|| format!("Window {}", window_id));
+                let app_id = w.app_id.clone();
+                Some((w.minimize_seq, window_id, title, app_id))
+            })
+            .collect();
+        drop(output_ref);
+
+        entries.sort_by_key(|(seq, _, _, _)| *seq);
+
+        entries
+            .into_iter()
+            .map(|(_, window_id, title, app_id)| {
+                let icon = app_id
+                    .as_deref()
+                    .and_then(|id| self.get_icon(id, icon_size_px));
+                super::desktop::DesktopIcon {
+                    window_id,
+                    title,
+                    app_id,
+                    icon,
+                }
+            })
+            .collect()
+    }
+
     /// Update menu hover based on surface-local pointer position.
     pub fn update_menu_hover(&mut self, x: i32, y: i32) -> bool {
         if let Some(menu) = self.window_menu.as_mut() {
@@ -1962,12 +2080,17 @@ impl Context {
         };
 
         if let Some(window) = self.windows.get(&window_id) {
+            let was_hidden;
             {
                 let mut w = window.borrow_mut();
+                was_hidden = w.hidden;
                 if w.hidden {
                     w.show();
                 }
                 w.place_top();
+            }
+            if was_hidden {
+                self.mark_all_desktops_dirty();
             }
             self.focus(window_id);
         }
@@ -2006,10 +2129,12 @@ impl Context {
             return;
         }
 
+        let mut visibility_changed = false;
         if let Some(prev_id) = self.window_menu_alt_tab_preview.take() {
             if self.window_menu_alt_tab_preview_was_hidden {
                 if let Some(prev_window) = self.windows.get(&prev_id) {
                     prev_window.borrow_mut().hide();
+                    visibility_changed = true;
                 }
             }
         }
@@ -2026,6 +2151,7 @@ impl Context {
                 if w.hidden {
                     was_hidden = true;
                     w.show();
+                    visibility_changed = true;
                 }
                 w.place_top();
             }
@@ -2033,13 +2159,18 @@ impl Context {
             self.window_menu_alt_tab_preview = Some(window_id);
             self.window_menu_alt_tab_preview_was_hidden = was_hidden;
         }
+        if visibility_changed {
+            self.mark_all_desktops_dirty();
+        }
     }
 
     fn restore_alt_tab_state(&mut self) {
+        let mut visibility_changed = false;
         if let Some(prev_id) = self.window_menu_alt_tab_preview.take() {
             if self.window_menu_alt_tab_preview_was_hidden {
                 if let Some(prev_window) = self.windows.get(&prev_id) {
                     prev_window.borrow_mut().hide();
+                    visibility_changed = true;
                 }
             }
         }
@@ -2056,6 +2187,9 @@ impl Context {
         }
 
         self.clear_alt_tab_state();
+        if visibility_changed {
+            self.mark_all_desktops_dirty();
+        }
     }
 
     fn restore_stack_order(&self, order: &[WindowId]) {
@@ -2071,6 +2205,116 @@ impl Context {
         self.window_menu_alt_tab_focused = None;
         self.window_menu_alt_tab_preview = None;
         self.window_menu_alt_tab_preview_was_hidden = false;
+    }
+
+    /// Enter desktop icon keyboard focus mode.
+    ///
+    /// Sets local selection state synchronously and queues the protocol-bound
+    /// work (clear keyboard focus, switch seat mode) as actions so they run
+    /// inside the next manage sequence. Callers must follow up with
+    /// `manage_dirty` to trigger that sequence.
+    pub fn enter_icon_focus(&mut self, output_id: OutputId, window_id: WindowId, seat_id: SeatId) {
+        // Set the selected icon on the desktop surface
+        if let Some(output) = self.outputs.get(&output_id) {
+            if let Some(desktop) = output.borrow_mut().desktop_surface.as_mut() {
+                desktop.selected_icon = Some(window_id);
+                desktop.dirty = true;
+            }
+        }
+        self.icon_focus_output = Some(output_id);
+        if let Some(seat) = self.seats.get(&seat_id) {
+            let mut seat_ref = seat.borrow_mut();
+            seat_ref.queue_action(Action::ClearFocus);
+            seat_ref.queue_action(Action::SwitchMode {
+                mode: crate::config::Mode::DesktopIcons,
+            });
+        }
+    }
+
+    /// Exit desktop icon keyboard focus mode.
+    pub fn exit_icon_focus(&mut self, seat_id: SeatId) {
+        if let Some(output_id) = self.icon_focus_output.take() {
+            if let Some(output) = self.outputs.get(&output_id) {
+                if let Some(desktop) = output.borrow_mut().desktop_surface.as_mut() {
+                    desktop.selected_icon = None;
+                    desktop.dirty = true;
+                }
+            }
+        }
+        if let Some(seat) = self.seats.get(&seat_id) {
+            seat.borrow_mut().switch_mode(crate::config::Mode::Default);
+        }
+    }
+
+    /// Navigate icon selection by (dx, dy) in the icon grid.
+    pub fn icon_navigate(&mut self, dx: i32, dy: i32) {
+        let Some(output_id) = self.icon_focus_output else {
+            return;
+        };
+        let Some(output) = self.outputs.get(&output_id) else {
+            return;
+        };
+        let mut out = output.borrow_mut();
+        let Some(desktop) = out.desktop_surface.as_mut() else {
+            return;
+        };
+        let count = desktop.icon_count() as i32;
+        if count == 0 {
+            return;
+        }
+        let cols = desktop.icon_cols.max(1);
+        let current_idx = desktop.selected_icon_index().unwrap_or(0) as i32;
+        let col = current_idx % cols;
+        let row = current_idx / cols;
+
+        let new_idx = if dy != 0 {
+            // Move up/down by row
+            let new_row = row + dy;
+            let candidate = new_row * cols + col;
+            if candidate < 0 || candidate >= count {
+                // Stay at current position if out of bounds
+                current_idx
+            } else {
+                candidate
+            }
+        } else {
+            // Move left/right linearly with wrapping
+            let candidate = current_idx + dx;
+            ((candidate % count) + count) % count
+        };
+
+        if let Some(window_id) = desktop.icon_window_at_index(new_idx as usize) {
+            desktop.selected_icon = Some(window_id);
+            desktop.dirty = true;
+        }
+    }
+
+    /// Activate (restore) the selected desktop icon window.
+    pub fn icon_activate(&mut self, seat_id: SeatId) {
+        let Some(output_id) = self.icon_focus_output else {
+            return;
+        };
+        let selected = self.outputs.get(&output_id).and_then(|o| {
+            o.borrow()
+                .desktop_surface
+                .as_ref()
+                .and_then(|d| d.selected_icon)
+        });
+        let Some(window_id) = selected else {
+            self.exit_icon_focus(seat_id);
+            return;
+        };
+        // Show and focus the window
+        if let Some(window) = self.windows.get(&window_id) {
+            {
+                let mut w = window.borrow_mut();
+                w.show();
+                w.place_top();
+            }
+        }
+        self.mark_all_desktops_dirty();
+        self.exit_icon_focus(seat_id);
+        self.focus(window_id);
     }
 
     /// Update the cursor shape based on resize state or border hover.
@@ -2130,7 +2374,52 @@ impl Context {
             }
         }
 
-        let shape = cursor_shape_for_edges(edges);
+        if edges != 0 {
+            let shape = cursor_shape_for_edges(edges);
+            seat.borrow_mut().set_cursor_shape(shape);
+            return;
+        }
+
+        // For WM-owned surfaces, force a sensible cursor so the previous
+        // application's cursor doesn't leak through. Over desktop icons we
+        // show the pointer (hand); everywhere else on our surfaces, the
+        // default arrow.
+        let (target, surface_x, surface_y) = {
+            let seat_ref = seat.borrow();
+            (
+                seat_ref.pointer_target,
+                seat_ref.last_surface_x,
+                seat_ref.last_surface_y,
+            )
+        };
+
+        let shape = match target {
+            super::PointerTarget::Desktop(output_id) => {
+                let on_icon = self
+                    .outputs
+                    .get(&output_id)
+                    .and_then(|o| {
+                        let o = o.borrow();
+                        let scale = o.scale;
+                        o.desktop_surface
+                            .as_ref()
+                            .and_then(|d| d.icon_at(surface_x, surface_y, scale))
+                    })
+                    .is_some();
+                if on_icon {
+                    Some(CursorShape::Pointer)
+                } else {
+                    Some(CursorShape::Default)
+                }
+            }
+            super::PointerTarget::Menu | super::PointerTarget::Titlebar(_) => {
+                Some(CursorShape::Default)
+            }
+            // MenuShield hides the cursor via wl_pointer.set_cursor directly,
+            // so don't touch it here.
+            super::PointerTarget::MenuShield(_) | super::PointerTarget::None => None,
+        };
+
         seat.borrow_mut().set_cursor_shape(shape);
     }
 }
