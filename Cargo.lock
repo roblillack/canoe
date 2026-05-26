@@ -61,7 +61,7 @@ checksum = "1fbdf580320f38b612e485521afda1ee26d10cc9884efaaa750d383e13e3c5f4"
 
 [[package]]
 name = "canoe"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "bitflags 2.10.0",
  "freetype",

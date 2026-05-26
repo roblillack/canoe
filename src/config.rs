@@ -53,6 +53,7 @@ pub enum Mode {
     Default,
     Floating,
     Passthrough,
+    DesktopIcons,
 }
 
 /// Window decoration style
@@ -128,6 +129,23 @@ pub struct UiConfig {
     pub font_name: Option<String>,
     pub font_size: f32,
     pub desktop_background: u32,
+    /// Whether minimized-window icons are shown on the desktop.
+    pub icons_enabled: bool,
+    /// Font for icon labels. When `None`, falls back to a regular-weight
+    /// variant of [`UiConfig::font_name`].
+    pub icons_font_name: Option<String>,
+    /// Font size for icon labels. When `None`, falls back to
+    /// [`UiConfig::font_size`] * 0.80.
+    pub icons_font_size: Option<f32>,
+    /// Label color for non-selected icons. When `None`, falls back to
+    /// [`UiConfig::menu_text`].
+    pub icons_text: Option<u32>,
+    /// Background for the selected icon and its label. When `None`, falls
+    /// back to [`UiConfig::menu_highlight_bg`].
+    pub icons_highlight_bg: Option<u32>,
+    /// Text color for the selected icon and its label. When `None`, falls
+    /// back to [`UiConfig::menu_highlight_text`].
+    pub icons_highlight_text: Option<u32>,
 }
 
 impl Default for UiConfig {
@@ -137,7 +155,7 @@ impl Default for UiConfig {
             border_active: BorderLayers::default(),
             border_inactive: BorderLayers::default(),
             titlebar_text_active: 0xFFFFFFFF,
-            titlebar_text_inactive: 0xFFFFFFFF,
+            titlebar_text_inactive: 0x000000FF,
             titlebar_bg_active: 0x000080FF,
             titlebar_bg_inactive: 0xFFFFFFFF,
             menu_bg: 0xC0C0C0FF,
@@ -152,6 +170,12 @@ impl Default for UiConfig {
             font_name: None,
             font_size: 12.0,
             desktop_background: 0x008080FF,
+            icons_enabled: true,
+            icons_font_name: None,
+            icons_font_size: None,
+            icons_text: None,
+            icons_highlight_bg: None,
+            icons_highlight_text: None,
         }
     }
 }
@@ -262,6 +286,16 @@ struct UiConfigFile {
     font_size: Option<f32>,
     #[serde(default, deserialize_with = "deserialize_opt_color")]
     desktop_background: Option<u32>,
+    icons_enabled: Option<bool>,
+    icons_font_name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_opt_f32")]
+    icons_font_size: Option<f32>,
+    #[serde(default, deserialize_with = "deserialize_opt_color")]
+    icons_text: Option<u32>,
+    #[serde(default, deserialize_with = "deserialize_opt_color")]
+    icons_highlight_bg: Option<u32>,
+    #[serde(default, deserialize_with = "deserialize_opt_color")]
+    icons_highlight_text: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -351,6 +385,29 @@ impl UiConfig {
         }
         if let Some(color) = overrides.desktop_background {
             self.desktop_background = color;
+        }
+        if let Some(enabled) = overrides.icons_enabled {
+            self.icons_enabled = enabled;
+        }
+        if let Some(font_name) = overrides.icons_font_name {
+            let trimmed = font_name.trim().to_string();
+            self.icons_font_name = if trimmed.is_empty() {
+                None
+            } else {
+                Some(trimmed)
+            };
+        }
+        if let Some(font_size) = overrides.icons_font_size {
+            self.icons_font_size = Some(font_size);
+        }
+        if let Some(color) = overrides.icons_text {
+            self.icons_text = Some(color);
+        }
+        if let Some(color) = overrides.icons_highlight_bg {
+            self.icons_highlight_bg = Some(color);
+        }
+        if let Some(color) = overrides.icons_highlight_text {
+            self.icons_highlight_text = Some(color);
         }
     }
 }
@@ -572,6 +629,41 @@ mod tests {
         assert_eq!(prefixes, &vec!["mate-".to_string()]);
         assert_eq!(rule.require_csd_only, None);
         assert_eq!(rule.require_no_parent, None);
+    }
+
+    #[test]
+    fn test_icons_config_parsing() {
+        let contents = r##"
+            [ui]
+            icons_enabled = false
+            icons_font_name = "Monospace"
+            icons_font_size = 9.5
+            icons_text = "#101010"
+            icons_highlight_bg = "#FFD000"
+            icons_highlight_text = "#000000"
+        "##;
+
+        let file_config = toml::from_str::<FileConfig>(contents).expect("parse config");
+        let mut ui = UiConfig::default();
+        ui.apply(file_config.ui.expect("ui present"));
+
+        assert!(!ui.icons_enabled);
+        assert_eq!(ui.icons_font_name.as_deref(), Some("Monospace"));
+        assert_eq!(ui.icons_font_size, Some(9.5));
+        assert_eq!(ui.icons_text, Some(0x101010FF));
+        assert_eq!(ui.icons_highlight_bg, Some(0xFFD000FF));
+        assert_eq!(ui.icons_highlight_text, Some(0x000000FF));
+    }
+
+    #[test]
+    fn test_icons_config_defaults() {
+        let ui = UiConfig::default();
+        assert!(ui.icons_enabled);
+        assert!(ui.icons_font_name.is_none());
+        assert!(ui.icons_font_size.is_none());
+        assert!(ui.icons_text.is_none());
+        assert!(ui.icons_highlight_bg.is_none());
+        assert!(ui.icons_highlight_text.is_none());
     }
 
     #[test]

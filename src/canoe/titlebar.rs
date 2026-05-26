@@ -1,6 +1,7 @@
 //! Titlebar rendering for windows
 
 use super::render::Renderer;
+use super::shmfile;
 use crate::config::UiConfig;
 use crate::protocol::RiverDecorationV1;
 use resvg::{tiny_skia, usvg};
@@ -236,6 +237,8 @@ pub struct Titlebar {
     pub output_names: Vec<u32>,
     /// Whether titlebar needs redraw
     pub dirty: bool,
+    /// Whether the surface currently has a buffer attached (i.e. is visible)
+    pub mapped: bool,
     last_title: Option<String>,
     last_is_active: bool,
     last_is_maximized: bool,
@@ -266,6 +269,7 @@ impl Titlebar {
             button_cache: None,
             output_names: Vec::new(),
             dirty: true,
+            mapped: false,
             last_title: None,
             last_is_active: false,
             last_is_maximized: false,
@@ -335,34 +339,22 @@ impl Titlebar {
             let stride = buffer_width * 4;
             let size = stride * buffer_height;
 
-            // Create memfd for shared memory
-            let memfd = match memfd::MemfdOptions::default()
-                .close_on_exec(true)
-                .create("canoe-titlebar")
-            {
-                Ok(fd) => fd,
+            let memfile = match shmfile::create("canoe-titlebar", size as i64) {
+                Ok(f) => f,
                 Err(_) => {
                     return;
                 }
             };
 
-            // Set size
-            if memfd.as_file().set_len(size as u64).is_err() {
-                return;
-            }
-
-            // Create mmap
-            let mmap = match unsafe { memmap2::MmapMut::map_mut(memfd.as_file()) } {
+            let mmap = match unsafe { memmap2::MmapMut::map_mut(&memfile) } {
                 Ok(m) => m,
                 Err(_) => {
                     return;
                 }
             };
 
-            // Create wl_shm_pool
-            let pool = shm.create_pool(memfd.as_file().as_fd(), size, qh, ());
+            let pool = shm.create_pool(memfile.as_fd(), size, qh, ());
 
-            // Create buffer
             let buffer = pool.create_buffer(
                 0,
                 buffer_width,
@@ -373,8 +365,7 @@ impl Titlebar {
                 (),
             );
 
-            // Store everything
-            self.memfile = Some(memfd.into_file());
+            self.memfile = Some(memfile);
             self.mmap = Some(mmap);
             self.pool = Some(pool);
             self.buffer = Some(buffer);
@@ -941,13 +932,28 @@ impl Titlebar {
     }
 
     /// Commit the titlebar surface
-    pub fn commit(&self) {
+    pub fn commit(&mut self) {
         if let Some(ref buffer) = self.buffer {
             self.surface.attach(Some(buffer), 0, 0);
             self.surface
                 .damage_buffer(0, 0, self.buffer_width, self.buffer_height);
             self.surface.commit();
+            self.mapped = true;
         }
+    }
+
+    /// Detach the buffer so the surface becomes invisible. Used when a window
+    /// switches to client-side decoration at runtime.
+    pub fn unmap(&mut self) {
+        self.surface.attach(None, 0, 0);
+        self.surface.commit();
+        self.mapped = false;
+        self.dirty = true;
+        self.last_title = None;
+        self.last_is_active = false;
+        self.last_is_maximized = false;
+        self.last_hovered = None;
+        self.last_left_down = false;
     }
 
     /// Limit input to the frame (titlebar + borders), let content receive clicks.

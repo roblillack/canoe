@@ -9,11 +9,12 @@ mod render;
 mod seat;
 mod shadow;
 mod shield;
+mod shmfile;
 pub mod titlebar;
 pub mod window;
 
 pub use context::Context;
-pub use desktop::DesktopSurface;
+pub use desktop::{regular_weight_font_query, DesktopSurface, IconTheme};
 pub use menu::{MenuItem, MenuTheme, WindowMenu};
 pub use output::{Output, OutputId};
 pub use seat::{PointerTarget, Seat, SeatId};
