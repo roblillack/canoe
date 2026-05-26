@@ -242,7 +242,21 @@ impl DesktopSurface {
         };
         let label_font_name: Option<&str> = Some(label_font_query.as_str());
 
-        for (i, icon) in desktop_icons.iter().enumerate() {
+        // Render order: non-selected first, selected last so its (possibly
+        // wider) label overlays neighbouring labels.
+        let mut order: Vec<usize> = (0..desktop_icons.len()).collect();
+        if let Some(sel) = selected {
+            if let Some(pos) = order
+                .iter()
+                .position(|&i| desktop_icons[i].window_id == sel)
+            {
+                let idx = order.remove(pos);
+                order.push(idx);
+            }
+        }
+
+        for &i in &order {
+            let icon = &desktop_icons[i];
             let layout = &self.icons[i];
             let is_selected = selected == Some(icon.window_id);
 
@@ -325,33 +339,45 @@ impl DesktopSurface {
                 renderer.blit_pixmap(icon.icon.as_ref().unwrap(), ix + icon_offset_x, iy);
             }
 
-            // Render window title centered below icon
+            // Render window title centered below icon. Non-selected labels
+            // are truncated with an ellipsis to fit within the cell so they
+            // don't overlap neighbours; the selected label is allowed to
+            // overflow up to 5x the icon width before being truncated.
             let label_y = iy + icon_px;
             let label_h = ICON_LABEL_HEIGHT * scale;
             let scaled_label_size = label_font_size * scale as f32;
-            let text_w = super::font::measure_text(label_font_name, scaled_label_size, &icon.title)
-                .unwrap_or(0.0) as i32;
-            let pad = (cell_w - text_w).max(0) / 2;
+            let max_label_w = if is_selected { icon_px * 5 } else { cell_w };
+            let display_title = truncate_with_ellipsis(
+                &icon.title,
+                max_label_w,
+                label_font_name,
+                scaled_label_size,
+            );
+            let text_w =
+                super::font::measure_text(label_font_name, scaled_label_size, &display_title)
+                    .unwrap_or(0.0) as i32;
+            let icon_center_x = ix + cell_w / 2;
+            let label_x = icon_center_x - text_w / 2;
 
             // Draw label background if selected, sized to the text
             if is_selected {
                 let margin = 2 * scale;
-                let bg_w = (text_w + margin * 2).min(cell_w);
-                let bg_x = ix + (cell_w - bg_w) / 2;
+                let bg_x = label_x - margin;
+                let bg_w = text_w + margin * 2;
                 renderer.fill_rect(bg_x, label_y, bg_w, label_h, label_bg);
             }
 
             renderer.render_text(
-                &icon.title,
-                ix,
+                &display_title,
+                label_x,
                 label_y,
-                cell_w,
+                text_w.max(1),
                 label_h,
                 scale,
                 label_text,
                 label_font_size,
                 label_font_name,
-                pad,
+                0,
             );
         }
     }
@@ -423,6 +449,44 @@ pub struct IconTheme {
     pub titlebar_bg: u32,
     pub titlebar_text: u32,
     pub border: u32,
+}
+
+/// Return `text` shortened with a trailing `…` so its rendered width fits
+/// within `max_width`. Returns the original string if it already fits.
+fn truncate_with_ellipsis(
+    text: &str,
+    max_width: i32,
+    font: Option<&str>,
+    font_size: f32,
+) -> String {
+    if max_width <= 0 || text.is_empty() {
+        return String::new();
+    }
+    let measure = |s: &str| super::font::measure_text(font, font_size, s).unwrap_or(0.0) as i32;
+    if measure(text) <= max_width {
+        return text.to_string();
+    }
+    const ELLIPSIS: &str = "\u{2026}";
+    let ell_w = measure(ELLIPSIS);
+    if ell_w >= max_width {
+        return ELLIPSIS.to_string();
+    }
+    let target = max_width - ell_w;
+    let chars: Vec<char> = text.chars().collect();
+    let mut lo = 0usize;
+    let mut hi = chars.len();
+    while lo < hi {
+        let mid = lo + (hi - lo).div_ceil(2);
+        let candidate: String = chars[..mid].iter().collect();
+        if measure(&candidate) <= target {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    let mut out: String = chars[..lo].iter().collect();
+    out.push_str(ELLIPSIS);
+    out
 }
 
 fn rgba_to_argb(rgba: u32) -> u32 {
