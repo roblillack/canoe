@@ -1016,15 +1016,15 @@ impl Context {
 
     /// Start pointer move operation
     fn start_pointer_move(&mut self, seat_id: SeatId) {
-        // First, focus the window under the pointer
+        // First, focus the window under the pointer; bail out if there is none
+        // (e.g. clicking on the desktop) so we don't move an unrelated window.
         if let Some(seat) = self.seats.get(&seat_id) {
             let window_below = seat.borrow().window_below_pointer.clone();
-            if let Some(weak) = window_below {
-                if let Some(window) = weak.upgrade() {
-                    let wid = window.borrow().id;
-                    self.focus(wid);
-                }
-            }
+            let Some(window) = window_below.and_then(|w| w.upgrade()) else {
+                return;
+            };
+            let wid = window.borrow().id;
+            self.focus(wid);
         }
 
         // Now move the focused window
@@ -1048,15 +1048,15 @@ impl Context {
 
     /// Start pointer resize operation
     fn start_pointer_resize(&mut self, seat_id: SeatId) {
-        // First, focus the window under the pointer
+        // First, focus the window under the pointer; bail out if there is none
+        // (e.g. clicking on the desktop) so we don't resize an unrelated window.
         if let Some(seat) = self.seats.get(&seat_id) {
             let window_below = seat.borrow().window_below_pointer.clone();
-            if let Some(weak) = window_below {
-                if let Some(window) = weak.upgrade() {
-                    let wid = window.borrow().id;
-                    self.focus(wid);
-                }
-            }
+            let Some(window) = window_below.and_then(|w| w.upgrade()) else {
+                return;
+            };
+            let wid = window.borrow().id;
+            self.focus(wid);
         }
 
         // Now resize the focused window
