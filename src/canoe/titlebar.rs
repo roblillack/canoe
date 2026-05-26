@@ -237,6 +237,8 @@ pub struct Titlebar {
     pub output_names: Vec<u32>,
     /// Whether titlebar needs redraw
     pub dirty: bool,
+    /// Whether the surface currently has a buffer attached (i.e. is visible)
+    pub mapped: bool,
     last_title: Option<String>,
     last_is_active: bool,
     last_is_maximized: bool,
@@ -267,6 +269,7 @@ impl Titlebar {
             button_cache: None,
             output_names: Vec::new(),
             dirty: true,
+            mapped: false,
             last_title: None,
             last_is_active: false,
             last_is_maximized: false,
@@ -929,13 +932,28 @@ impl Titlebar {
     }
 
     /// Commit the titlebar surface
-    pub fn commit(&self) {
+    pub fn commit(&mut self) {
         if let Some(ref buffer) = self.buffer {
             self.surface.attach(Some(buffer), 0, 0);
             self.surface
                 .damage_buffer(0, 0, self.buffer_width, self.buffer_height);
             self.surface.commit();
+            self.mapped = true;
         }
+    }
+
+    /// Detach the buffer so the surface becomes invisible. Used when a window
+    /// switches to client-side decoration at runtime.
+    pub fn unmap(&mut self) {
+        self.surface.attach(None, 0, 0);
+        self.surface.commit();
+        self.mapped = false;
+        self.dirty = true;
+        self.last_title = None;
+        self.last_is_active = false;
+        self.last_is_maximized = false;
+        self.last_hovered = None;
+        self.last_left_down = false;
     }
 
     /// Limit input to the frame (titlebar + borders), let content receive clicks.
