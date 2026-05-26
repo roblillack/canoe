@@ -2540,25 +2540,52 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                                             request_manage_dirty(state);
                                         }
                                     } else if button == crate::config::button::RIGHT {
-                                        let mut context = state.context.borrow_mut();
-                                        if context.window_menu.is_some() {
-                                            context.close_window_menu();
+                                        let icon_hit = {
+                                            let context = state.context.borrow();
+                                            let scale = context
+                                                .outputs
+                                                .get(&output_id)
+                                                .map(|o| o.borrow().scale)
+                                                .unwrap_or(1);
+                                            context.outputs.get(&output_id).and_then(|o| {
+                                                o.borrow()
+                                                    .desktop_surface
+                                                    .as_ref()
+                                                    .and_then(|d| d.icon_at(px, py, scale))
+                                            })
+                                        };
+                                        if let Some(icon_window_id) = icon_hit {
+                                            // Right-click on an icon: just select it, no menu.
+                                            let seat_id = *seat_id;
+                                            seat.borrow_mut().last_icon_click = None;
+                                            state.context.borrow_mut().enter_icon_focus(
+                                                output_id,
+                                                icon_window_id,
+                                                seat_id,
+                                            );
+                                            render_desktop_surface(state, output_id, _qh);
+                                            request_manage_dirty(state);
+                                        } else {
+                                            let mut context = state.context.borrow_mut();
+                                            if context.window_menu.is_some() {
+                                                context.close_window_menu();
+                                            }
+                                            drop(context);
+                                            open_window_menu(
+                                                state,
+                                                output_id,
+                                                px,
+                                                py,
+                                                false,
+                                                canoe::WindowMenuMode::Pointer,
+                                                Some("Windows".to_string()),
+                                                _qh,
+                                            );
+                                            update_menu_hover_from_global(state, *seat_id, _qh);
+                                            seat.borrow_mut().menu_click_button = Some(button);
+                                            seat.borrow_mut().queue_action(binding::Action::ClearFocus);
+                                            request_manage_dirty(state);
                                         }
-                                        drop(context);
-                                        open_window_menu(
-                                            state,
-                                            output_id,
-                                            px,
-                                            py,
-                                            false,
-                                            canoe::WindowMenuMode::Pointer,
-                                            Some("Windows".to_string()),
-                                            _qh,
-                                        );
-                                        update_menu_hover_from_global(state, *seat_id, _qh);
-                                        seat.borrow_mut().menu_click_button = Some(button);
-                                        seat.borrow_mut().queue_action(binding::Action::ClearFocus);
-                                        request_manage_dirty(state);
                                     } else {
                                         seat.borrow_mut().queue_action(binding::Action::ClearFocus);
                                         request_manage_dirty(state);
