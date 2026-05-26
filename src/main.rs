@@ -823,27 +823,46 @@ fn render_desktop_surface(
         return;
     };
 
-    let (bg_color, icons, icon_theme, font_name, font_size, scale) = {
+    let (bg_color, icons, icon_theme, font_name, font_size, label_font_name, label_font_size, scale) = {
         let mut context = state.context.borrow_mut();
-        let bg_color = context.config.ui.desktop_background;
+        let ui = &context.config.ui;
+        let bg_color = ui.desktop_background;
         let icon_theme = canoe::IconTheme {
-            bg: context.config.ui.menu_bg,
-            text: context.config.ui.menu_text,
-            highlight_bg: context.config.ui.menu_highlight_bg,
-            highlight_text: context.config.ui.menu_highlight_text,
-            titlebar_bg: context.config.ui.titlebar_bg_inactive,
-            titlebar_text: context.config.ui.titlebar_text_inactive,
+            text: ui.icons_text.unwrap_or(ui.menu_text),
+            highlight_bg: ui.icons_highlight_bg.unwrap_or(ui.menu_highlight_bg),
+            highlight_text: ui.icons_highlight_text.unwrap_or(ui.menu_highlight_text),
+            titlebar_bg: ui.titlebar_bg_inactive,
+            titlebar_text: ui.titlebar_text_inactive,
             border: 0x404040FF,
         };
-        let font_name = context.config.ui.font_name.clone();
-        let font_size = context.config.ui.font_size;
+        let font_name = ui.font_name.clone();
+        let font_size = ui.font_size;
+        let label_font_name = match ui.icons_font_name.as_deref() {
+            Some(name) => name.to_string(),
+            None => canoe::regular_weight_font_query(font_name.as_deref()),
+        };
+        let label_font_size = ui.icons_font_size.unwrap_or(font_size * 0.80);
+        let icons_enabled = ui.icons_enabled;
         let scale = context
             .outputs
             .get(&output_id)
             .map(|o| o.borrow().scale)
             .unwrap_or(1);
-        let icons = context.collect_minimized_icons(output_id);
-        (bg_color, icons, icon_theme, font_name, font_size, scale)
+        let icons = if icons_enabled {
+            context.collect_minimized_icons(output_id)
+        } else {
+            Vec::new()
+        };
+        (
+            bg_color,
+            icons,
+            icon_theme,
+            font_name,
+            font_size,
+            label_font_name,
+            label_font_size,
+            scale,
+        )
     };
 
     let output = {
@@ -870,6 +889,8 @@ fn render_desktop_surface(
         scale,
         font_name.as_deref(),
         font_size,
+        Some(label_font_name.as_str()),
+        label_font_size,
     );
     desktop.update_input_region(compositor, qh);
     desktop.commit();

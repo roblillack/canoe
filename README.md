@@ -107,6 +107,12 @@ button_shadow = "#000000"
 font_name = "Sans"
 font_size = 12.0
 desktop_background = "#101010"
+icons_enabled = true            # set to false to hide minimized-window icons on the desktop
+icons_font_name = "Sans"        # optional; defaults to a regular-weight variant of font_name
+icons_font_size = 10.0          # optional; defaults to font_size * 0.80
+icons_text = "#FFFFFF"          # optional; defaults to menu_text
+icons_highlight_bg = "#FFD000"  # optional; defaults to menu_highlight_bg
+icons_highlight_text = "#000000"# optional; defaults to menu_highlight_text
 ```
 
 ### Rule Matching

@@ -161,6 +161,12 @@ impl DesktopSurface {
     }
 
     /// Render the desktop background with minimized window icons.
+    ///
+    /// `font_name` / `font_size` are the UI font used for the first-letter
+    /// fallback drawn inside the icon square when no image is available.
+    /// `label_font_name` / `label_font_size` control the label rendered
+    /// beneath each icon and are typically resolved from
+    /// [`crate::config::DesktopIconsConfig`].
     #[allow(clippy::too_many_arguments)]
     pub fn render_with_icons(
         &mut self,
@@ -170,6 +176,8 @@ impl DesktopSurface {
         scale: i32,
         font_name: Option<&str>,
         font_size: f32,
+        label_font_name: Option<&str>,
+        label_font_size: f32,
     ) {
         // Fill background
         self.render(bg_rgba);
@@ -217,30 +225,6 @@ impl DesktopSurface {
         };
 
         let selected = self.selected_icon;
-        let label_font_size = font_size * 0.80;
-        // Use a non-bold variant for icon labels by stripping bold-related
-        // fontconfig properties and forcing regular weight.
-        let label_font_query = {
-            let base = font_name.unwrap_or("sans");
-            let parts: Vec<&str> = base
-                .split(':')
-                .filter(|part| {
-                    let lower = part.to_ascii_lowercase();
-                    !lower.starts_with("style=")
-                        && !lower.starts_with("weight=")
-                        && lower != "bold"
-                })
-                .collect();
-            let family = if parts.is_empty() { "sans" } else { parts[0] };
-            let mut query = String::from(family);
-            for &part in &parts[1..] {
-                query.push(':');
-                query.push_str(part);
-            }
-            query.push_str(":weight=regular");
-            query
-        };
-        let label_font_name: Option<&str> = Some(label_font_query.as_str());
 
         // Render order: non-selected first, selected last so its (possibly
         // wider) label overlays neighbouring labels.
@@ -440,9 +424,32 @@ impl DesktopSurface {
     }
 }
 
+/// Build a regular-weight fontconfig query from a base UI font name.
+///
+/// Strips bold-related properties so that icon labels render in the regular
+/// weight even when the main UI font is configured as bold. Returns `"sans"`
+/// when `base` is `None` or empty.
+pub fn regular_weight_font_query(base: Option<&str>) -> String {
+    let base = base.unwrap_or("sans");
+    let parts: Vec<&str> = base
+        .split(':')
+        .filter(|part| {
+            let lower = part.to_ascii_lowercase();
+            !lower.starts_with("style=") && !lower.starts_with("weight=") && lower != "bold"
+        })
+        .collect();
+    let family = if parts.is_empty() { "sans" } else { parts[0] };
+    let mut query = String::from(family);
+    for &part in &parts[1..] {
+        query.push(':');
+        query.push_str(part);
+    }
+    query.push_str(":weight=regular");
+    query
+}
+
 /// Theme colors for desktop icons (extracted from UiConfig).
 pub struct IconTheme {
-    pub bg: u32,
     pub text: u32,
     pub highlight_bg: u32,
     pub highlight_text: u32,
