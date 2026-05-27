@@ -59,6 +59,10 @@ pub enum Action {
     SpawnShell { cmd: String },
     /// Spawn the application launcher on the focused output
     SpawnLauncher,
+    /// Spawn the configured terminal emulator
+    SpawnTerminal,
+    /// Spawn the configured screen locker
+    SpawnLock,
 
     /// Cycle focus through windows
     FocusIter { direction: Direction },
@@ -260,9 +264,7 @@ pub fn default_xkb_bindings(
             Mode::Default,
             Keysym::Return.raw(),
             main | shift,
-            Action::Spawn {
-                argv: vec!["foot".to_string()],
-            },
+            Action::SpawnTerminal,
             super::BindingEvent::Pressed,
         ),
         // Spawn launcher
@@ -271,6 +273,14 @@ pub fn default_xkb_bindings(
             Keysym::space.raw(),
             main,
             Action::SpawnLauncher,
+            super::BindingEvent::Pressed,
+        ),
+        // Spawn screen locker
+        (
+            Mode::Default,
+            Keysym::l.raw(),
+            main,
+            Action::SpawnLock,
             super::BindingEvent::Pressed,
         ),
         (

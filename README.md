@@ -41,6 +41,7 @@ cargo build --release
 |----------|--------|
 | `Super+Shift+Return` | Open terminal (foot) |
 | `Super+Space` | Open application launcher (fuzzel) |
+| `Super+l` | Lock the screen (swaylock) |
 | `Super+w` | Close focused window |
 | `Super+Tab` | Focus next window |
 | `Super+Shift+Tab` | Focus previous window |
@@ -82,6 +83,22 @@ The launcher defaults to `fuzzel`. You can override it with a command or argv:
 launcher_cmd = "fuzzel"
 # Or with arguments:
 launcher_cmd = ["fuzzel", "--dmenu"]
+```
+
+The terminal defaults to `foot`. Override it the same way:
+
+```toml
+terminal_cmd = "alacritty"
+# Or with arguments:
+terminal_cmd = ["wezterm", "start"]
+```
+
+The screen locker defaults to `swaylock`. Override it the same way:
+
+```toml
+lock_cmd = "swaylock"
+# Or with arguments:
+lock_cmd = ["swaylock", "-f", "-c", "000000"]
 ```
 
 ### UI Settings
@@ -147,6 +164,7 @@ swallow_top = 48
 - [River](https://codeberg.org/river/river) Wayland compositor
 - foot terminal (for Super+Shift+Return)
 - fuzzel (for Super+Space launcher)
+- swaylock (for Super+L screen lock)
 
 ## License
 

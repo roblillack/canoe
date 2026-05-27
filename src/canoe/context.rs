@@ -403,6 +403,12 @@ impl Context {
             Action::SpawnLauncher => {
                 self.spawn(&self.config.launcher_cmd);
             }
+            Action::SpawnTerminal => {
+                self.spawn(&self.config.terminal_cmd);
+            }
+            Action::SpawnLock => {
+                self.spawn(&self.config.lock_cmd);
+            }
             Action::FocusIter { direction } => {
                 self.focus_iter(direction);
             }

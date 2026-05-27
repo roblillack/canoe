@@ -183,6 +183,8 @@ pub struct Config {
     pub working_directory: Option<String>,
     pub startup_cmds: Vec<Vec<String>>,
     pub launcher_cmd: Vec<String>,
+    pub terminal_cmd: Vec<String>,
+    pub lock_cmd: Vec<String>,
     pub xcursor_theme: Option<XCursorTheme>,
     pub main_modifier: MainModifier,
 
@@ -204,6 +206,8 @@ impl Default for Config {
             working_directory: dirs::home_dir().map(|p| p.to_string_lossy().to_string()),
             startup_cmds: Vec::new(),
             launcher_cmd: vec!["fuzzel".to_string()],
+            terminal_cmd: vec!["foot".to_string()],
+            lock_cmd: vec!["swaylock".to_string()],
             xcursor_theme: None,
             main_modifier: MainModifier::default(),
 
@@ -224,6 +228,8 @@ impl Default for Config {
 struct FileConfig {
     main_modifier: Option<MainModifier>,
     launcher_cmd: Option<StringOrVec>,
+    terminal_cmd: Option<StringOrVec>,
+    lock_cmd: Option<StringOrVec>,
     ui: Option<UiConfigFile>,
     rules: Option<Vec<RuleFile>>,
 }
@@ -551,6 +557,18 @@ pub fn load_config() -> Config {
                     let launcher_cmd = clean_cmd_args(launcher_cmd);
                     if !launcher_cmd.is_empty() {
                         config.launcher_cmd = launcher_cmd;
+                    }
+                }
+                if let Some(terminal_cmd) = string_or_vec(file_config.terminal_cmd) {
+                    let terminal_cmd = clean_cmd_args(terminal_cmd);
+                    if !terminal_cmd.is_empty() {
+                        config.terminal_cmd = terminal_cmd;
+                    }
+                }
+                if let Some(lock_cmd) = string_or_vec(file_config.lock_cmd) {
+                    let lock_cmd = clean_cmd_args(lock_cmd);
+                    if !lock_cmd.is_empty() {
+                        config.lock_cmd = lock_cmd;
                     }
                 }
                 if let Some(ui) = file_config.ui {
