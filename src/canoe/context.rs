@@ -1700,9 +1700,26 @@ impl Context {
                 }
             }
             WindowEvent::Fullscreen(output) => {
+                // The xdg-shell `set_fullscreen` request allows the client to
+                // pass a NULL output, meaning "let the compositor pick". River
+                // forwards that as `Option<Weak<Output>> = None`, so we must
+                // resolve a fallback target here instead of silently dropping
+                // the request.
+                let target = output
+                    .and_then(|o| o.upgrade())
+                    .or_else(|| {
+                        self.windows.get(&window_id).and_then(|w| {
+                            w.borrow().output.as_ref().and_then(|o| o.upgrade())
+                        })
+                    })
+                    .or_else(|| {
+                        self.current_output
+                            .and_then(|id| self.outputs.get(&id).cloned())
+                    })
+                    .or_else(|| self.outputs.values().next().cloned());
+
                 if let Some(window) = self.windows.get(&window_id) {
                     let mut w = window.borrow_mut();
-                    // Handle fullscreen request
                     if w.pre_fullscreen.is_none() {
                         w.pre_fullscreen = Some(super::window::SavedGeometry {
                             x: w.x,
@@ -1712,7 +1729,7 @@ impl Context {
                         });
                     }
                     w.pending_unfullscreen_restore = false;
-                    if let Some(output) = output.and_then(|o| o.upgrade()) {
+                    if let Some(output) = target {
                         if let Some(ref rwm_output) = output.borrow().rwm_output {
                             w.fullscreen_on(rwm_output);
                             w.fullscreen =
