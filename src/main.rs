@@ -1497,12 +1497,14 @@ impl Dispatch<RiverWindowV1, canoe::WindowId> for AppState {
             Event::DimensionsHint {
                 min_width,
                 min_height,
-                max_width: _,
-                max_height: _,
+                max_width,
+                max_height,
             } => {
                 let mut w = window.borrow_mut();
                 w.min_width = min_width;
                 w.min_height = min_height;
+                w.max_width = max_width;
+                w.max_height = max_height;
             }
             Event::Dimensions { width, height } => {
                 window.borrow_mut().update_dimensions(width, height);

@@ -1719,7 +1719,21 @@ impl Context {
                             }
                         })
                         .unwrap_or((800, 600));
-                    w.propose_dimensions(default_width, default_height);
+                    // Cap by the client's max-size hint when set. For
+                    // fixed-size windows (typical of dialogs) the hint has
+                    // min == max, so propose_dimensions ends up at exactly
+                    // that size after its min-clamp.
+                    let proposed_width = if w.max_width > 0 {
+                        default_width.min(w.max_width)
+                    } else {
+                        default_width
+                    };
+                    let proposed_height = if w.max_height > 0 {
+                        default_height.min(w.max_height)
+                    } else {
+                        default_height
+                    };
+                    w.propose_dimensions(proposed_width, proposed_height);
                 }
 
                 // Focus the new window

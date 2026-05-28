@@ -128,6 +128,10 @@ pub struct Window {
     pub min_width: i32,
     /// Minimum height
     pub min_height: i32,
+    /// Maximum width hint (0 = no preference)
+    pub max_width: i32,
+    /// Maximum height hint (0 = no preference)
+    pub max_height: i32,
 
     /// Fullscreen state
     pub fullscreen: FullscreenState,
@@ -199,6 +203,8 @@ impl Window {
             height: 0,
             min_width: 0,
             min_height: 0,
+            max_width: 0,
+            max_height: 0,
             fullscreen: FullscreenState::None,
             maximized: false,
             pre_fullscreen: None,
