@@ -1971,6 +1971,49 @@ impl Context {
     }
 
     fn apply_initial_positions(&mut self) {
+        // Dialogs (windows with a parent) get centred over their parent
+        // rather than being cascaded along with regular toplevels.
+        let titlebar_h = super::titlebar::titlebar_height(&self.config.ui);
+        let border_width = self.config.ui.border_width;
+        let dialog_positions: Vec<(WindowId, i32, i32)> = self
+            .windows
+            .iter()
+            .filter_map(|(&id, window)| {
+                let w = window.borrow();
+                if !w.position_undefined || w.width <= 0 || w.height <= 0 {
+                    return None;
+                }
+                let parent = self.windows.get(&w.parent?)?.borrow();
+                if parent.position_undefined || parent.width <= 0 || parent.height <= 0 {
+                    return None;
+                }
+                let mut cx = parent.x + (parent.width - w.width) / 2;
+                let mut cy = parent.y + (parent.height - w.height) / 2;
+                if let Some(output) = w
+                    .output
+                    .as_ref()
+                    .and_then(|o| o.upgrade())
+                    .or_else(|| parent.output.as_ref().and_then(|o| o.upgrade()))
+                {
+                    let (ax, ay, aw, ah) = output.borrow().usable_area();
+                    if aw > 0 && ah > 0 {
+                        let min_x = ax + border_width;
+                        let min_y = ay + border_width + titlebar_h;
+                        let max_x = (ax + aw - border_width - w.width).max(min_x);
+                        let max_y = (ay + ah - border_width - w.height).max(min_y);
+                        cx = cx.clamp(min_x, max_x);
+                        cy = cy.clamp(min_y, max_y);
+                    }
+                }
+                Some((id, cx, cy))
+            })
+            .collect();
+        for (id, x, y) in dialog_positions {
+            if let Some(window) = self.windows.get(&id) {
+                window.borrow_mut().set_position(x, y);
+            }
+        }
+
         let mut output_windows: HashMap<OutputId, Vec<WindowId>> = HashMap::new();
 
         for (&window_id, window) in &self.windows {
