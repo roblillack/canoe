@@ -1282,6 +1282,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                     is_focused,
                                     is_maximized,
                                     !is_dialog,
+                                    is_dialog,
                                     hovered_button,
                                     titlebar_left_down,
                                     ui,

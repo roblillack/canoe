@@ -43,6 +43,7 @@ struct BaseFrameKey {
     titlebar_bg_active: u32,
     titlebar_bg_inactive: u32,
     show_min_max: bool,
+    is_dialog: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -64,6 +65,7 @@ struct BaseFrameParams<'a> {
     height: i32,
     scale: i32,
     show_min_max: bool,
+    is_dialog: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -259,6 +261,7 @@ pub struct Titlebar {
     last_is_active: bool,
     last_is_maximized: bool,
     last_show_min_max: bool,
+    last_is_dialog: bool,
     last_hovered: Option<TitlebarButton>,
     last_left_down: bool,
 }
@@ -291,6 +294,7 @@ impl Titlebar {
             last_is_active: false,
             last_is_maximized: false,
             last_show_min_max: true,
+            last_is_dialog: false,
             last_hovered: None,
             last_left_down: false,
         }
@@ -408,7 +412,7 @@ impl Titlebar {
         self.icon_cache.is_some()
     }
 
-    fn base_frame_key(ui: &UiConfig, show_min_max: bool) -> BaseFrameKey {
+    fn base_frame_key(ui: &UiConfig, show_min_max: bool, is_dialog: bool) -> BaseFrameKey {
         BaseFrameKey {
             border_width: ui.border_width,
             border_active_outer: ui.border_active.outer,
@@ -420,6 +424,7 @@ impl Titlebar {
             titlebar_bg_active: ui.titlebar_bg_active,
             titlebar_bg_inactive: ui.titlebar_bg_inactive,
             show_min_max,
+            is_dialog,
         }
     }
 
@@ -427,7 +432,7 @@ impl Titlebar {
         target: &mut Option<BaseFrameCacheEntry>,
         params: BaseFrameParams<'_>,
     ) -> bool {
-        let key = Self::base_frame_key(params.ui, params.show_min_max);
+        let key = Self::base_frame_key(params.ui, params.show_min_max, params.is_dialog);
 
         let needs_rebuild = match target {
             Some(entry) => {
@@ -444,6 +449,7 @@ impl Titlebar {
                     || entry.key.titlebar_bg_active != key.titlebar_bg_active
                     || entry.key.titlebar_bg_inactive != key.titlebar_bg_inactive
                     || entry.key.show_min_max != key.show_min_max
+                    || entry.key.is_dialog != key.is_dialog
             }
             None => true,
         };
@@ -462,11 +468,21 @@ impl Titlebar {
                 };
 
             let border_offset = 0;
-            let border_colors = if params.is_active {
+            let mut border_colors = if params.is_active {
                 params.ui.border_active
             } else {
                 params.ui.border_inactive
             };
+            if params.is_dialog {
+                // Dialogs read as continuations of the titlebar: the bulk
+                // border picks up the titlebar background. Outer/inner thin
+                // frames stay on the normal border palette.
+                border_colors.mid = if params.is_active {
+                    params.ui.titlebar_bg_active
+                } else {
+                    params.ui.titlebar_bg_inactive
+                };
+            }
             let mid_width = (params.ui.border_width - BORDER_INNER - BORDER_OUTER).max(0);
             draw_border_layer(
                 &mut renderer,
@@ -658,6 +674,7 @@ impl Titlebar {
         is_active: bool,
         is_maximized: bool,
         show_min_max: bool,
+        is_dialog: bool,
         hovered_button: Option<TitlebarButton>,
         left_down: bool,
         ui: &UiConfig,
@@ -667,6 +684,7 @@ impl Titlebar {
             || self.last_is_active != is_active
             || self.last_is_maximized != is_maximized
             || self.last_show_min_max != show_min_max
+            || self.last_is_dialog != is_dialog
             || self.last_hovered != hovered_button
             || self.last_left_down != left_down;
         if state_changed {
@@ -676,6 +694,7 @@ impl Titlebar {
             self.last_is_active = is_active;
             self.last_is_maximized = is_maximized;
             self.last_show_min_max = show_min_max;
+            self.last_is_dialog = is_dialog;
             self.last_hovered = hovered_button;
             self.last_left_down = left_down;
             self.dirty = true;
@@ -723,6 +742,7 @@ impl Titlebar {
             height,
             scale,
             show_min_max,
+            is_dialog,
         };
         if !Self::ensure_base_frame_cache(base_cache, base_params) {
             return false;
