@@ -473,8 +473,15 @@ fn update_titlebar_hover_from_surface(
         return false;
     };
     let mut w = window.borrow_mut();
-    let new_hover =
-        canoe::titlebar::button_at(w.width, border_width, local_x, local_y, titlebar_height);
+    let show_min_max = !w.is_dialog();
+    let new_hover = canoe::titlebar::button_at(
+        w.width,
+        border_width,
+        local_x,
+        local_y,
+        titlebar_height,
+        show_min_max,
+    );
     if w.titlebar_hovered == new_hover {
         return false;
     }
@@ -511,8 +518,15 @@ fn update_titlebar_hover_from_global(
         return false;
     };
     let mut w = window.borrow_mut();
-    let new_hover =
-        canoe::titlebar::button_at(win_w, border_width, local_x, local_y, titlebar_height);
+    let show_min_max = !w.is_dialog();
+    let new_hover = canoe::titlebar::button_at(
+        win_w,
+        border_width,
+        local_x,
+        local_y,
+        titlebar_height,
+        show_min_max,
+    );
     if w.titlebar_hovered == new_hover {
         return false;
     }
@@ -1224,6 +1238,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         let title = w.title.clone();
                         let is_focused = focused_window == Some(window_id);
                         let is_maximized = w.maximized;
+                        let is_dialog = w.is_dialog();
                         let height = w.height;
                         let hovered_button = w.titlebar_hovered;
                         let titlebar_left_down = w.titlebar_left_down;
@@ -1266,6 +1281,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                     title.as_deref(),
                                     is_focused,
                                     is_maximized,
+                                    !is_dialog,
                                     hovered_button,
                                     titlebar_left_down,
                                     ui,

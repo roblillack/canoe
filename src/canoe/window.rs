@@ -5,7 +5,7 @@
 use super::titlebar::TitlebarButton;
 use super::WindowShadow;
 use crate::config::WindowDecoration;
-use crate::protocol::river_window_management_v1::client::river_window_v1::Edges;
+use crate::protocol::river_window_management_v1::client::river_window_v1::{Capabilities, Edges};
 use crate::protocol::{RiverNodeV1, RiverOutputV1, RiverWindowV1};
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -225,6 +225,13 @@ impl Window {
         }
     }
 
+    /// True when the window is a dialog-like child of another window. We use
+    /// the parent relationship as the only available signal, since the River
+    /// window-management protocol does not surface xdg-dialog-v1's modal flag.
+    pub fn is_dialog(&self) -> bool {
+        self.parent.is_some()
+    }
+
     /// Check if window is visible on the given output
     pub fn is_visible_on(&self, output: &super::Output) -> bool {
         if self.hidden {
@@ -402,6 +409,14 @@ impl Window {
                 WindowDecoration::Csd => rwm_window.use_csd(),
                 WindowDecoration::Ssd => rwm_window.use_ssd(),
             }
+        }
+    }
+
+    /// Inform the client which window-management capabilities are supported.
+    /// Only callable inside a manage sequence.
+    pub fn set_capabilities(&self, caps: Capabilities) {
+        if let Some(ref rwm_window) = self.rwm_window {
+            rwm_window.set_capabilities(caps);
         }
     }
 

@@ -2,7 +2,7 @@
 
 use crate::binding::{Action, Direction, PointerBinding, XkbBinding};
 use crate::config::{load_config, Config, WindowDecoration};
-use crate::protocol::river_window_management_v1::client::river_window_v1::Edges;
+use crate::protocol::river_window_management_v1::client::river_window_v1::{Capabilities, Edges};
 use crate::protocol::*;
 use crate::rule;
 use resvg::tiny_skia;
@@ -270,6 +270,19 @@ impl Context {
         };
         window.decoration = Some(decoration);
         window.set_swallow_top(applied.swallow_top.unwrap_or(0));
+
+        // Inform the client which window-management capabilities apply.
+        // Dialogs (parented windows) only get close; everything else gets the
+        // full set so CSD clients can render the appropriate buttons.
+        let caps = if window.is_dialog() {
+            Capabilities::empty()
+        } else {
+            Capabilities::WindowMenu
+                | Capabilities::Maximize
+                | Capabilities::Fullscreen
+                | Capabilities::Minimize
+        };
+        window.set_capabilities(caps);
     }
 
     /// Focus a window
@@ -1139,7 +1152,7 @@ impl Context {
             (seat_ref.pointer_x, seat_ref.pointer_y)
         };
 
-        let (x, y, width, height, has_titlebar, swallow_top) = {
+        let (x, y, width, height, has_titlebar, swallow_top, is_dialog) = {
             let w = window.borrow();
             (
                 w.x,
@@ -1148,6 +1161,7 @@ impl Context {
                 w.height,
                 w.decoration == Some(WindowDecoration::Ssd),
                 w.swallow_top,
+                w.is_dialog(),
             )
         };
 
@@ -1158,15 +1172,19 @@ impl Context {
         let frame_y = y - border_width - titlebar_height + swallow_top;
         let frame_width = width + border_width * 2;
         let frame_height = height + border_width * 2 + titlebar_height - swallow_top;
-        let edges = calculate_resize_edges_near_border(
-            frame_x,
-            frame_y,
-            frame_width,
-            frame_height,
-            border_width,
-            px,
-            py,
-        );
+        let edges = if is_dialog {
+            0
+        } else {
+            calculate_resize_edges_near_border(
+                frame_x,
+                frame_y,
+                frame_width,
+                frame_height,
+                border_width,
+                px,
+                py,
+            )
+        };
 
         if edges != 0 {
             {
@@ -1188,12 +1206,19 @@ impl Context {
 
             if local_x >= 0 && local_x < width && local_y >= 0 && local_y < titlebar_height {
                 let titlebar_height = super::titlebar::titlebar_height(&self.config.ui);
-                let buttons = super::titlebar::button_rects(width, titlebar_height);
+                let buttons =
+                    super::titlebar::button_rects(width, titlebar_height, !is_dialog);
 
-                if buttons.close.contains(local_x, local_y)
-                    || buttons.hide.contains(local_x, local_y)
-                    || buttons.maximize.contains(local_x, local_y)
-                {
+                let on_button = buttons.close.contains(local_x, local_y)
+                    || buttons
+                        .hide
+                        .map(|r| r.contains(local_x, local_y))
+                        .unwrap_or(false)
+                    || buttons
+                        .maximize
+                        .map(|r| r.contains(local_x, local_y))
+                        .unwrap_or(false);
+                if on_button {
                     return;
                 }
 
@@ -1798,6 +1823,9 @@ impl Context {
                 if let Some(window) = self.windows.get(&window_id) {
                     if let Some(seat) = seat.upgrade() {
                         let mut w = window.borrow_mut();
+                        if w.is_dialog() {
+                            return;
+                        }
                         w.clear_maximized_without_restore();
                         w.start_resize(Rc::downgrade(&seat), edges);
                         seat.borrow().start_pointer_op();
@@ -1819,7 +1847,7 @@ impl Context {
         }
 
         // Process each window
-        for (window_id, window) in &self.windows {
+        for window in self.windows.values() {
             let mut w = window.borrow_mut();
 
             // Check if window should be visible
@@ -1844,18 +1872,88 @@ impl Context {
                 w.show();
 
                 // Disable compositor borders; custom decoration handles borders.
-                let is_focused = self.focused_window == Some(*window_id);
                 let edges = Edges::all();
                 w.set_borders(edges, 0, 0, 0, 0, 0);
-
-                // Raise focused window
-                if is_focused {
-                    w.place_top();
-                }
             } else {
                 w.hide();
             }
         }
+
+        // Raise the focused window's root ancestor to the top. For a focused
+        // dialog this lifts the whole parent chain so the chains-above-parents
+        // pass below ends up stacking the focused child at the very top.
+        if let Some(focused_id) = self.focused_window {
+            let root_id = self.root_ancestor(focused_id);
+            if let Some(root) = self.windows.get(&root_id) {
+                let root = root.borrow();
+                if !root.hidden {
+                    root.place_top();
+                }
+            }
+        }
+
+        // Dialogs render directly above their parent (river-window-management-v1
+        // recommends this for parented windows). Process by parent-chain depth
+        // so nested dialogs end up stacked above their immediate parent without
+        // disturbing the order established by deeper iterations.
+        let mut chains: Vec<(WindowId, WindowId, usize)> = self
+            .windows
+            .iter()
+            .filter_map(|(&id, w)| w.borrow().parent.map(|p| (id, p, self.parent_chain_depth(id))))
+            .collect();
+        chains.sort_by_key(|&(_, _, depth)| depth);
+        for (child_id, parent_id, _) in chains {
+            let (Some(child), Some(parent)) = (
+                self.windows.get(&child_id),
+                self.windows.get(&parent_id),
+            ) else {
+                continue;
+            };
+            let c = child.borrow();
+            if c.hidden {
+                continue;
+            }
+            c.place_above(&parent.borrow());
+        }
+    }
+
+    /// Number of ancestors a window has via its parent chain (0 if no parent).
+    /// Cycles are not possible per the river protocol but we cap iteration
+    /// defensively at the total window count.
+    fn parent_chain_depth(&self, window_id: WindowId) -> usize {
+        let mut depth = 0usize;
+        let mut current = window_id;
+        let limit = self.windows.len();
+        while depth <= limit {
+            let Some(window) = self.windows.get(&current) else {
+                break;
+            };
+            let Some(parent) = window.borrow().parent else {
+                break;
+            };
+            depth += 1;
+            current = parent;
+        }
+        depth
+    }
+
+    /// The topmost ancestor reachable via the parent chain, or the window
+    /// itself if it has no (known) parent.
+    fn root_ancestor(&self, window_id: WindowId) -> WindowId {
+        let mut current = window_id;
+        let limit = self.windows.len();
+        for _ in 0..=limit {
+            let parent = self
+                .windows
+                .get(&current)
+                .and_then(|w| w.borrow().parent)
+                .filter(|p| self.windows.contains_key(p));
+            match parent {
+                Some(p) => current = p,
+                None => break,
+            }
+        }
+        current
     }
 
     fn apply_initial_positions(&mut self) {
@@ -2400,25 +2498,27 @@ impl Context {
             if let Some(weak) = window_below {
                 if let Some(window) = weak.upgrade() {
                     let w = window.borrow();
-                    let (px, py) = {
-                        let seat_ref = seat.borrow();
-                        (seat_ref.pointer_x, seat_ref.pointer_y)
-                    };
-                    let border_width = self.config.ui.border_width;
-                    let titlebar_height = super::titlebar::titlebar_height(&self.config.ui);
-                    let frame_x = w.x - border_width;
-                    let frame_y = w.y - border_width - titlebar_height;
-                    let frame_width = w.width + border_width * 2;
-                    let frame_height = w.height + border_width * 2 + titlebar_height;
-                    edges = calculate_resize_edges_near_border(
-                        frame_x,
-                        frame_y,
-                        frame_width,
-                        frame_height,
-                        border_width,
-                        px,
-                        py,
-                    );
+                    if !w.is_dialog() {
+                        let (px, py) = {
+                            let seat_ref = seat.borrow();
+                            (seat_ref.pointer_x, seat_ref.pointer_y)
+                        };
+                        let border_width = self.config.ui.border_width;
+                        let titlebar_height = super::titlebar::titlebar_height(&self.config.ui);
+                        let frame_x = w.x - border_width;
+                        let frame_y = w.y - border_width - titlebar_height;
+                        let frame_width = w.width + border_width * 2;
+                        let frame_height = w.height + border_width * 2 + titlebar_height;
+                        edges = calculate_resize_edges_near_border(
+                            frame_x,
+                            frame_y,
+                            frame_width,
+                            frame_height,
+                            border_width,
+                            px,
+                            py,
+                        );
+                    }
                 }
             }
         }
