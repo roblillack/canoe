@@ -49,6 +49,14 @@ pub struct Context {
 
     // Configuration
     pub config: Config,
+    /// Whether the config file is ignored (`--no-config`). Remembered so that
+    /// reloads (SIGHUP) keep honoring it instead of suddenly reading the file.
+    skip_config: bool,
+    /// Set by [`Context::reload_config`] to re-apply window rules on the next
+    /// `manage_start`. Window-management requests (e.g. `set_capabilities`) are
+    /// only valid inside a manage sequence, so the actual work is deferred there
+    /// rather than run directly in the SIGHUP handler.
+    pending_reapply_rules: bool,
 
     // Runtime state
     pub running: bool,
@@ -99,6 +107,8 @@ impl Context {
             next_minimize_seq: 0,
 
             config: load_config(skip_config),
+            skip_config,
+            pending_reapply_rules: false,
 
             running: true,
             session_locked: false,
@@ -115,6 +125,42 @@ impl Context {
             window_menu_alt_tab_focused: None,
             window_menu_alt_tab_preview: None,
             window_menu_alt_tab_preview_was_hidden: false,
+        }
+    }
+
+    /// Re-read the configuration and apply it to the running session.
+    ///
+    /// Triggered by SIGHUP. The file is re-read honoring `--no-config`, then
+    /// the parts that affect already-managed objects are refreshed: every
+    /// titlebar is forced to repaint (the shadow and desktop caches already key
+    /// on their inputs, so they repaint on their own) and the desktop is marked
+    /// dirty. Window rules are re-applied via `set_capabilities` and friends,
+    /// which are only valid inside a manage sequence, so that work is deferred
+    /// to the next `manage_start` (see [`Context::pending_reapply_rules`]). The
+    /// `manage_dirty` request kicks off that sequence; it is explicitly allowed
+    /// outside a sequence for exactly this kind of out-of-band state change.
+    ///
+    /// Note: per-input-device settings (`repeat_rate`, `scroll_factor`) and
+    /// keyboard/pointer bindings are bound when a seat/device first appears,
+    /// so changes to those only take effect for devices connected afterwards.
+    pub fn reload_config(&mut self) {
+        self.config = load_config(self.skip_config);
+
+        // Repainting only touches local buffers, so it is safe outside a manage
+        // sequence. Force titlebars dirty since color changes are not otherwise
+        // tracked as a repaint trigger.
+        for window in self.windows.values() {
+            if let Some(titlebar) = window.borrow_mut().titlebar.as_mut() {
+                titlebar.dirty = true;
+            }
+        }
+        self.mark_all_desktops_dirty();
+
+        // Re-applying rules sends window-management requests, which may only be
+        // made during a manage sequence; defer to the next manage_start.
+        self.pending_reapply_rules = true;
+        if let Some(ref rwm) = self.rwm {
+            rwm.manage_dirty();
         }
     }
 
@@ -1599,6 +1645,18 @@ impl Context {
 
     /// Handle manage_start event - process pending window events and arrange windows
     pub fn handle_manage_start(&mut self) {
+        // Re-apply window rules deferred from a config reload (SIGHUP). This is
+        // the earliest point in a manage sequence, so the window-management
+        // requests these issue (set_capabilities, swallow_top, ...) are valid.
+        if self.pending_reapply_rules {
+            self.pending_reapply_rules = false;
+            let windows: Vec<_> = self.windows.values().cloned().collect();
+            for window in &windows {
+                let mut w = window.borrow_mut();
+                self.apply_rules_to_window(&mut w);
+            }
+        }
+
         // Apply deferred fullscreen restores from the previous manage sequence.
         let restore_ids: Vec<WindowId> = self
             .windows

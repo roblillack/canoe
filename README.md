@@ -70,7 +70,11 @@ cargo build --release
 
 ## Configuration
 
-Canoe reads `~/.config/canoe/canoe.toml`.
+Canoe reads `~/.config/canoe/canoe.toml`. After editing it, send `SIGHUP` to
+re-read it without restarting (e.g. `pkill -HUP canoe`); this refreshes the
+theme, desktop, and window rules. Pass `--no-config` to ignore the file and use
+the built-in defaults (reloads keep honoring this).
+
 The main modifier defaults to `super`, but you can change it:
 
 ```toml

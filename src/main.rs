@@ -3228,7 +3228,9 @@ Usage: canoe [OPTIONS]
 Options:
   -n, --no-config   Ignore ~/.config/canoe/canoe.toml and use built-in defaults
   -h, --help        Print this help and exit
-  -V, --version     Print version and exit";
+  -V, --version     Print version and exit
+
+Send SIGHUP (e.g. `pkill -HUP canoe`) to re-read the configuration file.";
 
 /// Options parsed from the command line.
 struct CliArgs {
@@ -3304,6 +3306,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Signal::SIGTERM,
         Signal::SIGQUIT,
         Signal::SIGCHLD,
+        // SIGHUP: re-read the configuration file (the conventional reload signal).
+        Signal::SIGHUP,
     ] {
         unsafe { sigaction(sig, &action)? };
     }
@@ -3368,6 +3372,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             match Signal::try_from(byte as i32) {
                                 Ok(Signal::SIGINT) | Ok(Signal::SIGTERM) | Ok(Signal::SIGQUIT) => {
                                     state.context.borrow_mut().running = false;
+                                }
+                                Ok(Signal::SIGHUP) => {
+                                    state.context.borrow_mut().reload_config();
                                 }
                                 Ok(Signal::SIGCHLD) => loop {
                                     match nix::sys::wait::waitpid(
