@@ -277,6 +277,10 @@ pub struct Titlebar {
     pub content_width: i32,
     /// Current content height
     pub content_height: i32,
+    /// Border width (logical px) of the current frame
+    pub border_width: i32,
+    /// Titlebar height (logical px) of the current frame
+    pub titlebar_height: i32,
     /// Output scale factor
     pub scale: i32,
     /// Cached icon bitmaps (rasterized from embedded SVGs)
@@ -290,6 +294,9 @@ pub struct Titlebar {
     pub dirty: bool,
     /// Whether the surface currently has a buffer attached (i.e. is visible)
     pub mapped: bool,
+    /// Force a full-surface damage on the next commit (set after a (re)alloc
+    /// so the compositor picks up the whole new buffer).
+    needs_full_damage: bool,
     last_title: Option<String>,
     last_is_active: bool,
     last_is_maximized: bool,
@@ -316,6 +323,8 @@ impl Titlebar {
             buffer_height: 0,
             content_width: 0,
             content_height: 0,
+            border_width: 0,
+            titlebar_height: 0,
             scale: 1,
             icon_cache: None,
             base_frame_active: None,
@@ -324,6 +333,7 @@ impl Titlebar {
             output_names: Vec::new(),
             dirty: true,
             mapped: false,
+            needs_full_damage: true,
             last_title: None,
             last_is_active: false,
             last_is_maximized: false,
@@ -358,6 +368,10 @@ impl Titlebar {
         let scale = scale.max(1);
         let titlebar_height = titlebar_height(ui);
         let border_width = border_width(ui, frame_style);
+        // Remember the frame geometry so commit() can damage just the painted
+        // border ring + titlebar instead of the whole (mostly transparent) buffer.
+        self.border_width = border_width;
+        self.titlebar_height = titlebar_height;
         let width = content_width + border_width * 2;
         let height = content_height + titlebar_height + border_width * 2;
         let buffer_width = width * scale;
@@ -386,6 +400,7 @@ impl Titlebar {
             self.base_frame_inactive = None;
             self.button_cache = None;
             self.dirty = true;
+            self.needs_full_damage = true;
 
             // Clean up old buffer
             if let Some(buffer) = self.buffer.take() {
@@ -1059,10 +1074,84 @@ impl Titlebar {
     pub fn commit(&mut self) {
         if let Some(ref buffer) = self.buffer {
             self.surface.attach(Some(buffer), 0, 0);
-            self.surface
-                .damage_buffer(0, 0, self.buffer_width, self.buffer_height);
+            // The decoration surface spans the whole window, but only the
+            // border ring and titlebar strip are ever painted -- the content
+            // area in the middle stays transparent and never changes. After a
+            // (re)alloc we damage everything so the compositor picks up the
+            // whole new buffer; afterwards we damage just the frame, which keeps
+            // focus changes cheap under fractional scaling where the compositor
+            // has to resample every damaged pixel.
+            if self.needs_full_damage {
+                self.surface
+                    .damage_buffer(0, 0, self.buffer_width, self.buffer_height);
+                self.needs_full_damage = false;
+                if crate::canoe::debug_enabled() {
+                    eprintln!(
+                        "[canoe damage] FULL  buf={}x{} scale={} damaged={}px (100.0%)",
+                        self.buffer_width,
+                        self.buffer_height,
+                        self.scale,
+                        self.buffer_width as i64 * self.buffer_height as i64,
+                    );
+                }
+            } else {
+                self.damage_frame();
+            }
             self.surface.commit();
             self.mapped = true;
+        }
+    }
+
+    /// Damage only the painted frame (border ring + titlebar), leaving the
+    /// transparent content cut-out in the middle untouched.
+    fn damage_frame(&self) {
+        let bw = self.border_width.max(0);
+        let tbh = self.titlebar_height.max(0);
+        let scale = self.scale.max(1);
+
+        // Transparent content cut-out in buffer pixels. The +1 keeps the row
+        // separating the titlebar from the content inside the damaged top strip.
+        let cut_x0 = bw * scale;
+        let cut_y0 = (bw + tbh + 1) * scale;
+        let cut_x1 = self.buffer_width - bw * scale;
+        let cut_y1 = self.buffer_height - bw * scale;
+
+        // Degenerate geometry (tiny window, missing borders): just damage it all.
+        if cut_x1 <= cut_x0 || cut_y1 <= cut_y0 {
+            self.surface
+                .damage_buffer(0, 0, self.buffer_width, self.buffer_height);
+            if crate::canoe::debug_enabled() {
+                eprintln!(
+                    "[canoe damage] FRAME->FULL (degenerate) buf={}x{} scale={}",
+                    self.buffer_width, self.buffer_height, self.scale,
+                );
+            }
+            return;
+        }
+
+        let mut damaged_px: i64 = 0;
+        let mut damage = |x: i32, y: i32, w: i32, h: i32| {
+            if w > 0 && h > 0 {
+                self.surface.damage_buffer(x, y, w, h);
+                damaged_px += w as i64 * h as i64;
+            }
+        };
+        damage(0, 0, self.buffer_width, cut_y0); // top border + titlebar
+        damage(0, cut_y1, self.buffer_width, self.buffer_height - cut_y1); // bottom border
+        damage(0, cut_y0, cut_x0, cut_y1 - cut_y0); // left border
+        damage(cut_x1, cut_y0, self.buffer_width - cut_x1, cut_y1 - cut_y0); // right border
+
+        if crate::canoe::debug_enabled() {
+            let full_px = self.buffer_width as i64 * self.buffer_height as i64;
+            eprintln!(
+                "[canoe damage] FRAME buf={}x{} scale={} damaged={}px / full={}px ({:.1}%)",
+                self.buffer_width,
+                self.buffer_height,
+                self.scale,
+                damaged_px,
+                full_px,
+                100.0 * damaged_px as f64 / full_px.max(1) as f64,
+            );
         }
     }
 
@@ -1073,6 +1162,7 @@ impl Titlebar {
         self.surface.commit();
         self.mapped = false;
         self.dirty = true;
+        self.needs_full_damage = true;
         self.last_title = None;
         self.last_is_active = false;
         self.last_is_maximized = false;

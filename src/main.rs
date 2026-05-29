@@ -1114,6 +1114,11 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
             Event::RenderStart => {
                 state.context.borrow_mut().handle_render_start();
 
+                let debug = canoe::debug_enabled();
+                let render_t0 = if debug { Some(Instant::now()) } else { None };
+                let mut titlebars_rendered = 0u32;
+                let mut shadows_rendered = 0u32;
+
                 // Update shadows and titlebars
                 if let Some(ref shm) = state.globals.shm {
                     let context = state.context.borrow();
@@ -1224,6 +1229,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                             if did_render && shadow.buffer.is_some() {
                                 shadow.sync_next_commit();
                                 shadow.commit();
+                                shadows_rendered += 1;
                             }
                         }
                     }
@@ -1321,9 +1327,21 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                 if did_render && titlebar.buffer.is_some() {
                                     titlebar.sync_next_commit();
                                     titlebar.commit();
+                                    titlebars_rendered += 1;
                                 }
                             }
                         }
+                    }
+                }
+
+                if let Some(t0) = render_t0 {
+                    if titlebars_rendered > 0 || shadows_rendered > 0 {
+                        eprintln!(
+                            "[canoe render] RenderStart: {} titlebar(s) + {} shadow(s) re-rendered in {:?}",
+                            titlebars_rendered,
+                            shadows_rendered,
+                            t0.elapsed(),
+                        );
                     }
                 }
 

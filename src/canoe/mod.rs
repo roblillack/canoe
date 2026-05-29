@@ -1,5 +1,7 @@
 //! Canoe - River Window Manager core modules
 
+use std::sync::OnceLock;
+
 mod context;
 mod desktop;
 mod font;
@@ -22,6 +24,13 @@ pub use shadow::WindowShadow;
 pub use shield::ShieldSurface;
 pub use titlebar::Titlebar;
 pub use window::{Window, WindowEvent, WindowId};
+
+/// Whether verbose debug logging is enabled. Set `CANOE_DEBUG=1` to turn it on.
+/// The env var is read once and cached so it adds no per-frame overhead.
+pub fn debug_enabled() -> bool {
+    static ENABLED: OnceLock<bool> = OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var_os("CANOE_DEBUG").is_some())
+}
 
 /// Window menu interaction modes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
