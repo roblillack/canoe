@@ -3,8 +3,10 @@
 use super::render::Renderer;
 use crate::protocol::RiverDecorationV1;
 use memmap2::MmapMut;
+use std::cell::RefCell;
 use std::fs::File;
 use std::os::fd::AsFd;
+use std::rc::Rc;
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_surface,
 };
@@ -272,6 +274,87 @@ fn rgba_to_argb(rgba: u32) -> u32 {
     (a << 24) | (r << 16) | (g << 8) | b
 }
 
+/// Window-independent shadow pieces, derived only from (shadow_size, radius,
+/// colour) in device pixels: a 1-D edge falloff and one rounded-corner tile.
+struct ShadowParts {
+    /// Corner-tile side length, in pixels.
+    cs: i32,
+    /// Edge falloff: `edge[i]` is the colour at distance `s_px - i - 0.5`.
+    edge: Vec<[u8; 4]>,
+    /// Bottom-right rounded-corner tile, `cs * cs`, row-major.
+    corner: Vec<[u8; 4]>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct ShadowPartsKey {
+    s_px: i32,
+    r_px: i32,
+    color: u32,
+}
+
+thread_local! {
+    /// Cache of computed parts, shared by every window's shadow. In practice it
+    /// only ever holds the active/inactive sizes, so it survives focus toggles
+    /// and is rebuilt only when the shadow config (size/radius/colour) changes.
+    static SHADOW_PARTS: RefCell<Vec<(ShadowPartsKey, Rc<ShadowParts>)>> =
+        const { RefCell::new(Vec::new()) };
+}
+
+/// Fetch the shared parts for this key, building (and caching) them on a miss.
+fn shadow_parts(s_px: i32, r_px: i32, color: u32) -> Rc<ShadowParts> {
+    let key = ShadowPartsKey { s_px, r_px, color };
+    SHADOW_PARTS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if let Some((_, parts)) = cache.iter().find(|(k, _)| *k == key) {
+            return Rc::clone(parts);
+        }
+        let parts = Rc::new(build_shadow_parts(s_px, r_px, color));
+        cache.push((key, Rc::clone(&parts)));
+        // Bound growth across config changes (and tiny windows whose radius gets
+        // clamped to an unusual value); evict the oldest beyond this.
+        const MAX_ENTRIES: usize = 8;
+        if cache.len() > MAX_ENTRIES {
+            cache.remove(0);
+        }
+        parts
+    })
+}
+
+fn build_shadow_parts(s_px: i32, r_px: i32, color: u32) -> ShadowParts {
+    let base_alpha = (color & 0xff) as u8;
+    let base_rgb = color & 0xffffff00;
+    let cs = s_px + r_px;
+    let s = s_px as f32;
+
+    // Premultiplied ARGB for a signed distance into the band; transparent
+    // outside (0, s]. Single source of truth for both edge and corner.
+    let argb_for = |dist: f32| -> [u8; 4] {
+        if dist <= 0.0 || dist > s {
+            return [0, 0, 0, 0];
+        }
+        let falloff = 1.0 - dist / s;
+        let alpha = (base_alpha as f32 * falloff * falloff)
+            .round()
+            .clamp(0.0, 255.0) as u8;
+        if alpha == 0 {
+            return [0, 0, 0, 0];
+        }
+        rgba_to_argb(base_rgb | alpha as u32).to_ne_bytes()
+    };
+
+    let edge: Vec<[u8; 4]> = (0..s_px).map(|i| argb_for(s - i as f32 - 0.5)).collect();
+    let corner: Vec<[u8; 4]> = (0..cs * cs)
+        .map(|idx| {
+            // Corner-local distances qx = tx + 0.5, qy = ty + 0.5.
+            let tx = (idx % cs) as f32 + 0.5;
+            let ty = (idx / cs) as f32 + 0.5;
+            argb_for((tx * tx + ty * ty).sqrt() - r_px as f32)
+        })
+        .collect();
+
+    ShadowParts { cs, edge, corner }
+}
+
 /// Fill a byte buffer with a repeating 4-byte pattern using memcpy doubling,
 /// which is far faster than a per-pixel loop in unoptimized builds.
 fn fill_run(buf: &mut [u8], argb: [u8; 4]) {
@@ -314,7 +397,6 @@ pub(super) fn draw_shadow_soft(
         return;
     }
 
-    let base_rgb = shadow_color & 0xffffff00;
     let w = renderer.width();
     let s_px = shadow_size_px;
     let fw_px = frame_width_px;
@@ -325,43 +407,14 @@ pub(super) fn draw_shadow_soft(
     // rect+band because it is sized from the full frame height while the shadow
     // is drawn for a slightly shorter rect, leaving slack at the bottom.
     let inner_y1 = s_px + fh_px; // bottom edge of the rect, in buffer pixels
-    // Corner-tile side: band width plus corner radius. Its contents depend only
-    // on (shadow_size, radius, colour) -- not on the window size -- so one tile
-    // serves all four corners (mirrored).
-    let cs = s_px + r_px;
-    let s = s_px as f32;
 
-    // Premultiplied ARGB for a signed distance into the band; transparent
-    // outside (0, s]. This is the single source of truth for the falloff, used
-    // for both the edge gradient and the corner tile.
-    let argb_for = |dist: f32| -> [u8; 4] {
-        if dist <= 0.0 || dist > s {
-            return [0, 0, 0, 0];
-        }
-        let falloff = 1.0 - dist / s;
-        let alpha = (base_alpha as f32 * falloff * falloff)
-            .round()
-            .clamp(0.0, 255.0) as u8;
-        if alpha == 0 {
-            return [0, 0, 0, 0];
-        }
-        rgba_to_argb(base_rgb | alpha as u32).to_ne_bytes()
-    };
-
-    // 1-D edge falloff shared by all four straight edges. `edge[i]` is the
-    // colour at perpendicular distance `s - i - 0.5` from the frame, where `i`
-    // is the buffer offset from the band's faint outer edge.
-    let edge: Vec<[u8; 4]> = (0..s_px).map(|i| argb_for(s - i as f32 - 0.5)).collect();
-
-    // Window-independent rounded-corner tile (bottom-right orientation):
-    // tile[ty*cs + tx] sits at corner-local distances qx = tx + 0.5, qy = ty + 0.5.
-    let corner: Vec<[u8; 4]> = (0..cs * cs)
-        .map(|idx| {
-            let tx = (idx % cs) as f32 + 0.5;
-            let ty = (idx / cs) as f32 + 0.5;
-            argb_for((tx * tx + ty * ty).sqrt() - r_px as f32)
-        })
-        .collect();
+    // The edge gradient and corner tile depend only on (size, radius, colour),
+    // not on the window, so they are computed once and shared across all windows
+    // and focus toggles. Only the assembly below is per-window.
+    let parts = shadow_parts(s_px, r_px, shadow_color);
+    let cs = parts.cs;
+    let edge = &parts.edge;
+    let corner = &parts.corner;
 
     let stride = (w * 4) as usize;
     let pixels = renderer.data_mut();
