@@ -1143,12 +1143,23 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         let is_fullscreen =
                             !matches!(w.fullscreen, canoe::window::FullscreenState::None);
                         let is_focused = focused_window == Some(w.id);
-                        let shadow_size = if !ui.shadows_enabled || is_fullscreen || w.maximized {
+                        let shadows_on = ui.shadows_enabled && !is_fullscreen && !w.maximized;
+                        let shadow_size = if !shadows_on {
                             0
                         } else if is_focused {
                             ui.shadows_active_size.max(0)
                         } else {
                             ui.shadows_inactive_size.max(0)
+                        };
+                        // Size the buffer for the larger of the active/inactive
+                        // sizes so it stays constant across focus changes (no
+                        // realloc); a smaller band is drawn into it when inactive.
+                        let buffer_shadow_size = if !shadows_on {
+                            0
+                        } else {
+                            ui.shadows_active_size
+                                .max(0)
+                                .max(ui.shadows_inactive_size.max(0))
                         };
                         let shadow_color = ui.shadows_color;
                         let use_ssd = w.decoration != Some(crate::config::WindowDecoration::Csd);
@@ -1200,7 +1211,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                             shadow.ensure_buffer(
                                 frame_width,
                                 frame_height,
-                                shadow_size,
+                                buffer_shadow_size,
                                 shm,
                                 qh,
                                 scale,
@@ -1219,17 +1230,21 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                             if let Some(t) = sh_t0 {
                                 shadow_render_us += t.elapsed().as_micros();
                             }
+                            // The rect sits `buffer_shadow_size` in from the
+                            // buffer edges, so position the surface by that inset
+                            // (constant across focus). The drop-shadow shift still
+                            // tracks the actual band size.
                             let offset_x = if use_ssd {
-                                -border_width - shadow_size
+                                -border_width - buffer_shadow_size
                             } else {
-                                -shadow_size
+                                -buffer_shadow_size
                             };
                             let shadow_shift = shadow_size / 2;
                             let offset_y = if use_ssd {
-                                -border_width - titlebar_height + swallow_top - shadow_size
+                                -border_width - titlebar_height + swallow_top - buffer_shadow_size
                                     + shadow_shift
                             } else {
-                                -shadow_size + shadow_shift
+                                -buffer_shadow_size + shadow_shift
                             };
                             shadow.set_offset(offset_x, offset_y);
                             if did_render && shadow.buffer.is_some() {
