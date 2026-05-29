@@ -1112,7 +1112,13 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                 render_all_desktop_surfaces(state, qh);
             }
             Event::RenderStart => {
+                #[cfg(feature = "debug-logging")]
+                let total_t0 = Instant::now();
+                #[cfg(feature = "debug-logging")]
+                let handle_start_t0 = Instant::now();
                 state.context.borrow_mut().handle_render_start();
+                #[cfg(feature = "debug-logging")]
+                let handle_start_us = handle_start_t0.elapsed().as_micros();
 
                 #[cfg(feature = "debug-logging")]
                 let render_t0 = Instant::now();
@@ -1124,6 +1130,10 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                 let mut shadow_render_us = 0u128;
                 #[cfg(feature = "debug-logging")]
                 let mut titlebar_render_us = 0u128;
+                #[cfg(feature = "debug-logging")]
+                let mut windows_iterated = 0u32;
+                #[cfg(feature = "debug-logging")]
+                let mut input_region_us = 0u128;
 
                 // Update shadows and titlebars
                 if let Some(ref shm) = state.globals.shm {
@@ -1142,6 +1152,11 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         let height = w.height;
                         if width <= 0 || height <= 0 {
                             continue;
+                        }
+
+                        #[cfg(feature = "debug-logging")]
+                        {
+                            windows_iterated += 1;
                         }
 
                         let is_fullscreen =
@@ -1221,7 +1236,13 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                 scale,
                             );
                             if let Some(ref compositor) = state.globals.compositor {
+                                #[cfg(feature = "debug-logging")]
+                                let ir_t0 = Instant::now();
                                 shadow.update_input_region(compositor, qh);
+                                #[cfg(feature = "debug-logging")]
+                                {
+                                    input_region_us += ir_t0.elapsed().as_micros();
+                                }
                             }
                             #[cfg(feature = "debug-logging")]
                             let sh_t0 = Instant::now();
@@ -1231,6 +1252,8 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                 shadow_size,
                                 shadow_color,
                                 scale,
+                                shm,
+                                qh,
                             );
                             #[cfg(feature = "debug-logging")]
                             {
@@ -1253,7 +1276,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                 -buffer_shadow_size + shadow_shift
                             };
                             shadow.set_offset(offset_x, offset_y);
-                            if did_render && shadow.buffer.is_some() {
+                            if did_render && shadow.is_ready() {
                                 shadow.sync_next_commit();
                                 shadow.commit();
                                 #[cfg(feature = "debug-logging")]
@@ -1329,7 +1352,13 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                     frame_style,
                                 );
                                 if let Some(ref compositor) = state.globals.compositor {
+                                    #[cfg(feature = "debug-logging")]
+                                    let ir_t0 = Instant::now();
                                     titlebar.update_input_region(compositor, qh, ui, frame_style);
+                                    #[cfg(feature = "debug-logging")]
+                                    {
+                                        input_region_us += ir_t0.elapsed().as_micros();
+                                    }
                                 }
 
                                 // Render titlebar content
@@ -1345,6 +1374,8 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                     hovered_button,
                                     titlebar_left_down,
                                     ui,
+                                    shm,
+                                    qh,
                                 );
                                 #[cfg(feature = "debug-logging")]
                                 {
@@ -1360,7 +1391,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                 );
 
                                 // Sync and commit (only if we have a buffer)
-                                if did_render && titlebar.buffer.is_some() {
+                                if did_render && titlebar.is_ready() {
                                     titlebar.sync_next_commit();
                                     titlebar.commit();
                                     #[cfg(feature = "debug-logging")]
@@ -1374,18 +1405,41 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                 }
 
                 #[cfg(feature = "debug-logging")]
-                if titlebars_rendered > 0 || shadows_rendered > 0 {
+                let loop_us = render_t0.elapsed().as_micros();
+
+                #[cfg(feature = "debug-logging")]
+                let finish_t0 = Instant::now();
+                state.context.borrow().finish_render();
+                #[cfg(feature = "debug-logging")]
+                let finish_us = finish_t0.elapsed().as_micros();
+
+                #[cfg(feature = "debug-logging")]
+                {
+                    let total_us = total_t0.elapsed().as_micros();
+                    // Anything not explicitly attributed lives here -- if it
+                    // grows, the next thing to instrument is whatever Wayland
+                    // calls the loop wraps (attach/commit/sync).
+                    let attributed_us = handle_start_us
+                        + titlebar_render_us
+                        + shadow_render_us
+                        + input_region_us
+                        + finish_us;
+                    let other_us = total_us.saturating_sub(attributed_us);
                     eprintln!(
-                        "[canoe render] RenderStart: {} titlebar(s) [{:.1}ms] + {} shadow(s) [{:.1}ms] in {:?}",
+                        "[canoe render] RenderStart total={:.2}ms windows={} handle_start={:.2}ms loop={:.2}ms ({}tb={:.2}ms + {}sh={:.2}ms + input_region={:.2}ms + other={:.2}ms) finish={:.2}ms",
+                        total_us as f64 / 1000.0,
+                        windows_iterated,
+                        handle_start_us as f64 / 1000.0,
+                        loop_us as f64 / 1000.0,
                         titlebars_rendered,
                         titlebar_render_us as f64 / 1000.0,
                         shadows_rendered,
                         shadow_render_us as f64 / 1000.0,
-                        render_t0.elapsed(),
+                        input_region_us as f64 / 1000.0,
+                        other_us as f64 / 1000.0,
+                        finish_us as f64 / 1000.0,
                     );
                 }
-
-                state.context.borrow().finish_render();
             }
             Event::Window { id } => {
                 let window = state.context.borrow_mut().create_window(id.clone());
@@ -2425,6 +2479,25 @@ impl Dispatch<wl_buffer::WlBuffer, ()> for AppState {
     ) {
         if let wl_buffer::Event::Release = event {
             // Buffer is no longer in use by compositor
+        }
+    }
+}
+
+// Buffers owned by canoe::shmfile::ShmPool carry a ReleaseFlag as user-data so
+// the slot can be reused as soon as the compositor returns it. This unblocks
+// the next prepare() and prevents the tearing that comes from writing pixels
+// the compositor is still sampling.
+impl Dispatch<wl_buffer::WlBuffer, canoe::shmfile::ReleaseFlag> for AppState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wl_buffer::WlBuffer,
+        event: wl_buffer::Event,
+        data: &canoe::shmfile::ReleaseFlag,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let wl_buffer::Event::Release = event {
+            data.set_released();
         }
     }
 }

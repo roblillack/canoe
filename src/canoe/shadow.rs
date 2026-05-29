@@ -1,16 +1,11 @@
 //! Window shadow rendering.
 
 use super::render::Renderer;
-use super::shmfile;
+use super::shmfile::ShmPool;
 use crate::protocol::RiverDecorationV1;
-use memmap2::MmapMut;
 use std::cell::RefCell;
-use std::fs::File;
-use std::os::fd::AsFd;
 use std::rc::Rc;
-use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_surface,
-};
+use wayland_client::protocol::{wl_buffer, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_surface};
 use wayland_client::QueueHandle;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -22,26 +17,14 @@ struct ShadowKey {
     scale: i32,
 }
 
-#[derive(Clone, Debug)]
-struct ShadowCache {
-    key: ShadowKey,
-    pixels: Vec<u8>,
-}
-
 /// Shadow surface for a window.
 pub struct WindowShadow {
     /// The wl_surface for the shadow.
     pub surface: wl_surface::WlSurface,
     /// The river decoration object.
     pub decoration: RiverDecorationV1,
-    /// Current buffer (if any).
-    pub buffer: Option<wl_buffer::WlBuffer>,
-    /// Shared memory pool.
-    pub pool: Option<wl_shm_pool::WlShmPool>,
-    /// Memory-mapped file for the buffer.
-    pub memfile: Option<File>,
-    /// Memory map pointer.
-    pub mmap: Option<MmapMut>,
+    /// Double-buffered shm pool backing the wl_buffer.
+    shm_pool: ShmPool,
     /// Current buffer width.
     pub width: i32,
     /// Current buffer height.
@@ -54,7 +37,7 @@ pub struct WindowShadow {
     pub scale: i32,
     /// wl_output names the shadow surface is currently on.
     pub output_names: Vec<u32>,
-    cache: Option<ShadowCache>,
+    last_key: Option<ShadowKey>,
 }
 
 impl WindowShadow {
@@ -63,33 +46,37 @@ impl WindowShadow {
         Self {
             surface,
             decoration,
-            buffer: None,
-            pool: None,
-            memfile: None,
-            mmap: None,
+            shm_pool: ShmPool::new("canoe-shadow"),
             width: 0,
             height: 0,
             buffer_width: 0,
             buffer_height: 0,
             scale: 1,
             output_names: Vec::new(),
-            cache: None,
+            last_key: None,
         }
     }
 
-    /// Ensure buffer is allocated for the given frame size.
+    /// True once a wl_buffer is available for commit.
+    pub fn is_ready(&self) -> bool {
+        self.shm_pool.is_ready()
+    }
+
+    /// Record the geometry the next `render()` will draw into. The actual
+    /// shm slot is rotated/allocated lazily inside `render()` so we don't
+    /// burn a wl_buffer on a frame that turns out to be a no-op.
     pub fn ensure_buffer<D>(
         &mut self,
         frame_width: i32,
         frame_height: i32,
         shadow_size: i32,
-        shm: &wl_shm::WlShm,
-        qh: &QueueHandle<D>,
+        _shm: &wl_shm::WlShm,
+        _qh: &QueueHandle<D>,
         scale: i32,
     ) where
         D: 'static
             + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
-            + wayland_client::Dispatch<wl_buffer::WlBuffer, ()>,
+            + wayland_client::Dispatch<wl_buffer::WlBuffer, super::shmfile::ReleaseFlag>,
     {
         if frame_width <= 0 || frame_height <= 0 {
             return;
@@ -105,56 +92,11 @@ impl WindowShadow {
             return;
         }
 
-        if self.width != width
-            || self.height != height
-            || self.buffer_width != buffer_width
-            || self.buffer_height != buffer_height
-            || self.scale != scale
-            || self.buffer.is_none()
-        {
-            self.width = width;
-            self.height = height;
-            self.buffer_width = buffer_width;
-            self.buffer_height = buffer_height;
-            self.scale = scale;
-            self.cache = None;
-
-            if let Some(buffer) = self.buffer.take() {
-                buffer.destroy();
-            }
-            if let Some(pool) = self.pool.take() {
-                pool.destroy();
-            }
-
-            let stride = buffer_width * 4;
-            let size = stride * buffer_height;
-
-            let memfile = match shmfile::create("canoe-shadow", size as i64) {
-                Ok(f) => f,
-                Err(_) => return,
-            };
-
-            let mmap = match unsafe { memmap2::MmapMut::map_mut(&memfile) } {
-                Ok(m) => m,
-                Err(_) => return,
-            };
-
-            let pool = shm.create_pool(memfile.as_fd(), size, qh, ());
-            let buffer = pool.create_buffer(
-                0,
-                buffer_width,
-                buffer_height,
-                stride,
-                wl_shm::Format::Argb8888,
-                qh,
-                (),
-            );
-
-            self.memfile = Some(memfile);
-            self.mmap = Some(mmap);
-            self.pool = Some(pool);
-            self.buffer = Some(buffer);
-        }
+        self.width = width;
+        self.height = height;
+        self.buffer_width = buffer_width;
+        self.buffer_height = buffer_height;
+        self.scale = scale;
 
         self.surface.set_buffer_scale(scale);
     }
@@ -172,15 +114,25 @@ impl WindowShadow {
         region.destroy();
     }
 
-    /// Render the shadow into the current buffer.
-    pub fn render(
+    /// Render the shadow directly into the next shm slot. The shm pool grows
+    /// (with headroom) only when the requested slot size exceeds capacity;
+    /// otherwise rendering reuses the existing fd/mmap/pool.
+    #[allow(clippy::too_many_arguments)]
+    pub fn render<D>(
         &mut self,
         frame_width: i32,
         frame_height: i32,
         shadow_size: i32,
         shadow_color: u32,
         scale: i32,
-    ) -> bool {
+        shm: &wl_shm::WlShm,
+        qh: &QueueHandle<D>,
+    ) -> bool
+    where
+        D: 'static
+            + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
+            + wayland_client::Dispatch<wl_buffer::WlBuffer, super::shmfile::ReleaseFlag>,
+    {
         if self.width <= 0
             || self.height <= 0
             || self.buffer_width <= 0
@@ -198,20 +150,49 @@ impl WindowShadow {
             shadow_color,
             scale: scale.max(1),
         };
-        let needs_rebuild = match self.cache {
-            Some(ref cache) => cache.key != key,
-            None => true,
-        };
-
-        if !needs_rebuild {
+        // Same band geometry as the last render -> the surface still has the
+        // right buffer attached. Skip the slot rotation entirely so we don't
+        // burn a fresh wl_buffer just to commit the same pixels.
+        if self.last_key == Some(key) {
             return false;
         }
 
-        // vec! already zero-fills (== fully transparent), so no explicit clear.
-        let mut pixels = vec![0u8; (self.buffer_width * self.buffer_height * 4) as usize];
-        if let Some(mut renderer) =
-            Renderer::new(&mut pixels, self.buffer_width, self.buffer_height)
-        {
+        let buffer_width = self.buffer_width;
+        let buffer_height = self.buffer_height;
+        let stride = match buffer_width.checked_mul(4) {
+            Some(s) => s,
+            None => return false,
+        };
+
+        #[cfg(feature = "debug-logging")]
+        let prep_t0 = std::time::Instant::now();
+        let allocated_before = self.shm_pool.allocate_fresh_count();
+        let slot_idx = match self.shm_pool.prepare(buffer_width, buffer_height, stride, shm, qh) {
+            Some(s) => s,
+            None => return false,
+        };
+        let allocated_fresh = self.shm_pool.allocate_fresh_count() != allocated_before;
+        #[cfg(feature = "debug-logging")]
+        let prep_us = prep_t0.elapsed().as_micros();
+
+        let pixels = match self.shm_pool.slot_bytes_mut(slot_idx) {
+            Some(p) => p,
+            None => return false,
+        };
+
+        #[cfg(feature = "debug-logging")]
+        let fill_t0 = std::time::Instant::now();
+        // The shadow only paints the perimeter band; the interior must stay
+        // transparent. Either the slot's bytes are stale from a previous frame
+        // (pool reused) or zero from a fresh allocation -- in both cases we
+        // need a clean slate before drawing.
+        pixels.fill(0);
+        #[cfg(feature = "debug-logging")]
+        let fill_us = fill_t0.elapsed().as_micros();
+
+        #[cfg(feature = "debug-logging")]
+        let draw_t0 = std::time::Instant::now();
+        if let Some(mut renderer) = Renderer::new(pixels, buffer_width, buffer_height) {
             draw_shadow_soft(
                 &mut renderer,
                 frame_width,
@@ -222,21 +203,25 @@ impl WindowShadow {
                 scale.max(1),
             );
         }
+        #[cfg(feature = "debug-logging")]
+        let draw_us = draw_t0.elapsed().as_micros();
 
-        self.cache = Some(ShadowCache { key, pixels });
-        let pixels = match self.cache.as_ref() {
-            Some(cache) => cache.pixels.as_slice(),
-            None => return false,
-        };
-        if let Some(ref mut mmap) = self.mmap {
-            let dst = mmap.as_mut();
-            if dst.len() != pixels.len() {
-                return false;
-            }
-            dst.copy_from_slice(pixels);
-            return true;
-        }
-        false
+        #[cfg(feature = "debug-logging")]
+        eprintln!(
+            "[canoe shadow] {}x{} bytes={} alloc_fresh={} prepare={:.2}ms fill={:.2}ms draw={:.2}ms",
+            buffer_width,
+            buffer_height,
+            buffer_width as i64 * buffer_height as i64 * 4,
+            allocated_fresh,
+            prep_us as f64 / 1000.0,
+            fill_us as f64 / 1000.0,
+            draw_us as f64 / 1000.0,
+        );
+        #[cfg(not(feature = "debug-logging"))]
+        let _ = allocated_fresh;
+
+        self.last_key = Some(key);
+        true
     }
 
     /// Set the offset position relative to the window.
@@ -251,11 +236,14 @@ impl WindowShadow {
 
     /// Commit the shadow surface.
     pub fn commit(&self) {
-        if let Some(ref buffer) = self.buffer {
+        if let Some(buffer) = self.shm_pool.current_buffer() {
             self.surface.attach(Some(buffer), 0, 0);
             self.surface
                 .damage_buffer(0, 0, self.buffer_width, self.buffer_height);
             self.surface.commit();
+            // The compositor now owns this buffer until it sends a release
+            // event; mark the slot off-limits for the next render.
+            self.shm_pool.mark_attached();
         }
     }
 }

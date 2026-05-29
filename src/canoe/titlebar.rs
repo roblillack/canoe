@@ -1,11 +1,10 @@
 //! Titlebar rendering for windows
 
 use super::render::Renderer;
-use super::shmfile;
+use super::shmfile::ShmPool;
 use crate::config::UiConfig;
 use crate::protocol::RiverDecorationV1;
 use resvg::{tiny_skia, usvg};
-use std::os::fd::AsFd;
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_surface,
 };
@@ -30,31 +29,6 @@ const ICON_CLOSE_SVG: &str = include_str!("../../assets/icons/close.svg");
 const ICON_MINIMIZE_SVG: &str = include_str!("../../assets/icons/minimize.svg");
 const ICON_MAXIMIZE_SVG: &str = include_str!("../../assets/icons/maximize.svg");
 const ICON_UNMAXIMIZE_SVG: &str = include_str!("../../assets/icons/unmaximize.svg");
-
-#[derive(Clone, Copy, Debug)]
-struct BaseFrameKey {
-    border_width: i32,
-    border_active_outer: u32,
-    border_active_mid: u32,
-    border_active_inner: u32,
-    border_inactive_outer: u32,
-    border_inactive_mid: u32,
-    border_inactive_inner: u32,
-    titlebar_bg_active: u32,
-    titlebar_bg_inactive: u32,
-    show_minimize: bool,
-    show_maximize: bool,
-    frame_style: FrameStyle,
-}
-
-#[derive(Clone, Debug)]
-struct BaseFrameCacheEntry {
-    width: i32,
-    height: i32,
-    scale: i32,
-    key: BaseFrameKey,
-    pixels: Vec<u8>,
-}
 
 struct BaseFrameParams<'a> {
     ui: &'a UiConfig,
@@ -257,14 +231,8 @@ pub struct Titlebar {
     pub surface: wl_surface::WlSurface,
     /// The river decoration object
     pub decoration: RiverDecorationV1,
-    /// Current buffer (if any)
-    pub buffer: Option<wl_buffer::WlBuffer>,
-    /// Shared memory pool
-    pub pool: Option<wl_shm_pool::WlShmPool>,
-    /// Memory-mapped file for the buffer
-    pub memfile: Option<std::fs::File>,
-    /// Memory map pointer
-    pub mmap: Option<memmap2::MmapMut>,
+    /// Double-buffered shm pool backing the wl_buffer.
+    shm_pool: ShmPool,
     /// Current buffer width
     pub width: i32,
     /// Current buffer height
@@ -285,8 +253,6 @@ pub struct Titlebar {
     pub scale: i32,
     /// Cached icon bitmaps (rasterized from embedded SVGs)
     icon_cache: Option<IconCache>,
-    base_frame_active: Option<BaseFrameCacheEntry>,
-    base_frame_inactive: Option<BaseFrameCacheEntry>,
     button_cache: Option<ButtonCache>,
     /// wl_output names the titlebar surface is currently on
     pub output_names: Vec<u32>,
@@ -313,10 +279,7 @@ impl Titlebar {
         Self {
             surface,
             decoration,
-            buffer: None,
-            pool: None,
-            memfile: None,
-            mmap: None,
+            shm_pool: ShmPool::new("canoe-titlebar"),
             width: 0,
             height: 0,
             buffer_width: 0,
@@ -327,8 +290,6 @@ impl Titlebar {
             titlebar_height: 0,
             scale: 1,
             icon_cache: None,
-            base_frame_active: None,
-            base_frame_inactive: None,
             button_cache: None,
             output_names: Vec::new(),
             dirty: true,
@@ -345,21 +306,28 @@ impl Titlebar {
         }
     }
 
-    /// Ensure buffer is allocated for the given width
+    /// True once the next commit() will find an attached wl_buffer.
+    pub fn is_ready(&self) -> bool {
+        self.shm_pool.is_ready()
+    }
+
+    /// Record the geometry the next `render()` will draw into. The actual
+    /// shm slot is rotated/allocated lazily inside `render()` so a frame that
+    /// turns out to be a no-op doesn't burn a new wl_buffer.
     #[allow(clippy::too_many_arguments)]
     pub fn ensure_buffer<D>(
         &mut self,
         content_width: i32,
         content_height: i32,
-        shm: &wl_shm::WlShm,
-        qh: &QueueHandle<D>,
+        _shm: &wl_shm::WlShm,
+        _qh: &QueueHandle<D>,
         scale: i32,
         ui: &UiConfig,
         frame_style: FrameStyle,
     ) where
         D: 'static
             + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
-            + wayland_client::Dispatch<wl_buffer::WlBuffer, ()>,
+            + wayland_client::Dispatch<wl_buffer::WlBuffer, super::shmfile::ReleaseFlag>,
     {
         if content_width <= 0 || content_height <= 0 {
             return;
@@ -380,13 +348,11 @@ impl Titlebar {
             return;
         }
 
-        // Check if we need a new buffer
         if self.width != width
             || self.height != height
             || self.buffer_width != buffer_width
             || self.buffer_height != buffer_height
             || self.scale != scale
-            || self.buffer.is_none()
         {
             self.width = width;
             self.height = height;
@@ -396,54 +362,12 @@ impl Titlebar {
             self.content_height = content_height;
             self.scale = scale;
             self.icon_cache = None;
-            self.base_frame_active = None;
-            self.base_frame_inactive = None;
             self.button_cache = None;
             self.dirty = true;
             self.needs_full_damage = true;
-
-            // Clean up old buffer
-            if let Some(buffer) = self.buffer.take() {
-                buffer.destroy();
-            }
-            if let Some(pool) = self.pool.take() {
-                pool.destroy();
-            }
-
-            // Calculate buffer size (ARGB8888 = 4 bytes per pixel)
-            let stride = buffer_width * 4;
-            let size = stride * buffer_height;
-
-            let memfile = match shmfile::create("canoe-titlebar", size as i64) {
-                Ok(f) => f,
-                Err(_) => {
-                    return;
-                }
-            };
-
-            let mmap = match unsafe { memmap2::MmapMut::map_mut(&memfile) } {
-                Ok(m) => m,
-                Err(_) => {
-                    return;
-                }
-            };
-
-            let pool = shm.create_pool(memfile.as_fd(), size, qh, ());
-
-            let buffer = pool.create_buffer(
-                0,
-                buffer_width,
-                buffer_height,
-                stride,
-                wl_shm::Format::Argb8888,
-                qh,
-                (),
-            );
-
-            self.memfile = Some(memfile);
-            self.mmap = Some(mmap);
-            self.pool = Some(pool);
-            self.buffer = Some(buffer);
+        } else {
+            self.content_width = content_width;
+            self.content_height = content_height;
         }
 
         self.surface.set_buffer_scale(scale);
@@ -465,196 +389,133 @@ impl Titlebar {
         self.icon_cache.is_some()
     }
 
-    fn base_frame_key(
-        ui: &UiConfig,
-        show_minimize: bool,
-        show_maximize: bool,
-        frame_style: FrameStyle,
-    ) -> BaseFrameKey {
-        BaseFrameKey {
-            border_width: ui.border_width,
-            border_active_outer: ui.border_active.outer,
-            border_active_mid: ui.border_active.mid,
-            border_active_inner: ui.border_active.inner,
-            border_inactive_outer: ui.border_inactive.outer,
-            border_inactive_mid: ui.border_inactive.mid,
-            border_inactive_inner: ui.border_inactive.inner,
-            titlebar_bg_active: ui.titlebar_bg_active,
-            titlebar_bg_inactive: ui.titlebar_bg_inactive,
-            show_minimize,
-            show_maximize,
-            frame_style,
+    /// Paint the static base frame (borders + titlebar background) directly
+    /// into `pixels`. Caller must have cleared `pixels` to fully transparent
+    /// (the base frame leaves the content cut-out untouched).
+    fn draw_base_frame(pixels: &mut [u8], params: &BaseFrameParams<'_>) -> bool {
+        if params.buffer_width <= 0 || params.buffer_height <= 0 {
+            return false;
         }
-    }
+        let mut renderer =
+            match Renderer::new(pixels, params.buffer_width, params.buffer_height) {
+                Some(renderer) => renderer,
+                None => return false,
+            };
 
-    fn ensure_base_frame_cache(
-        target: &mut Option<BaseFrameCacheEntry>,
-        params: BaseFrameParams<'_>,
-    ) -> bool {
-        let key = Self::base_frame_key(
-            params.ui,
-            params.show_minimize,
-            params.show_maximize,
-            params.frame_style,
-        );
-
-        let needs_rebuild = match target {
-            Some(entry) => {
-                entry.width != params.buffer_width
-                    || entry.height != params.buffer_height
-                    || entry.scale != params.scale
-                    || entry.key.border_width != key.border_width
-                    || entry.key.border_active_outer != key.border_active_outer
-                    || entry.key.border_active_mid != key.border_active_mid
-                    || entry.key.border_active_inner != key.border_active_inner
-                    || entry.key.border_inactive_outer != key.border_inactive_outer
-                    || entry.key.border_inactive_mid != key.border_inactive_mid
-                    || entry.key.border_inactive_inner != key.border_inactive_inner
-                    || entry.key.titlebar_bg_active != key.titlebar_bg_active
-                    || entry.key.titlebar_bg_inactive != key.titlebar_bg_inactive
-                    || entry.key.show_minimize != key.show_minimize
-                    || entry.key.show_maximize != key.show_maximize
-                    || entry.key.frame_style != key.frame_style
-            }
-            None => true,
+        let border_offset = 0;
+        let mut border_colors = if params.is_active {
+            params.ui.border_active
+        } else {
+            params.ui.border_inactive
         };
-
-        if needs_rebuild {
-            if params.buffer_width <= 0 || params.buffer_height <= 0 {
-                return false;
+        let titlebar_bg = if params.is_active {
+            params.ui.titlebar_bg_active
+        } else {
+            params.ui.titlebar_bg_inactive
+        };
+        match params.frame_style {
+            FrameStyle::Normal | FrameStyle::FixedSize => {}
+            FrameStyle::Dialog => {
+                // The bulk border picks up the titlebar background so the
+                // dialog reads as a continuation of the title; outer/inner
+                // thin frames stay on the normal palette.
+                border_colors.mid = titlebar_bg;
             }
-
-            // vec! already zero-fills (== fully transparent), so no explicit clear.
-            let mut pixels = vec![0u8; (params.buffer_width * params.buffer_height * 4) as usize];
-            let mut renderer =
-                match Renderer::new(&mut pixels, params.buffer_width, params.buffer_height) {
-                    Some(renderer) => renderer,
-                    None => return false,
-                };
-
-            let border_offset = 0;
-            let mut border_colors = if params.is_active {
-                params.ui.border_active
-            } else {
-                params.ui.border_inactive
-            };
-            let titlebar_bg = if params.is_active {
-                params.ui.titlebar_bg_active
-            } else {
-                params.ui.titlebar_bg_inactive
-            };
-            match params.frame_style {
-                FrameStyle::Normal | FrameStyle::FixedSize => {}
-                FrameStyle::Dialog => {
-                    // The bulk border picks up the titlebar background so the
-                    // dialog reads as a continuation of the title; outer/inner
-                    // thin frames stay on the normal palette.
-                    border_colors.mid = titlebar_bg;
-                }
-            }
-            let border_width = border_width(params.ui, params.frame_style);
-            // Always paint the 1px outer outline. Non-resizable toplevels stop
-            // here: the border is exactly that outline, hugging the content.
+        }
+        let border_width = border_width(params.ui, params.frame_style);
+        // Always paint the 1px outer outline. Non-resizable toplevels stop
+        // here: the border is exactly that outline, hugging the content.
+        draw_border_layer(
+            &mut renderer,
+            border_offset,
+            BORDER_OUTER * params.scale,
+            border_colors.outer,
+        );
+        if !matches!(params.frame_style, FrameStyle::FixedSize) {
+            let mid_width = (border_width - BORDER_INNER - BORDER_OUTER).max(0);
             draw_border_layer(
                 &mut renderer,
-                border_offset,
-                BORDER_OUTER * params.scale,
-                border_colors.outer,
+                border_offset + BORDER_OUTER * params.scale,
+                mid_width * params.scale,
+                border_colors.mid,
             );
-            if !matches!(params.frame_style, FrameStyle::FixedSize) {
-                let mid_width = (border_width - BORDER_INNER - BORDER_OUTER).max(0);
-                draw_border_layer(
-                    &mut renderer,
-                    border_offset + BORDER_OUTER * params.scale,
-                    mid_width * params.scale,
-                    border_colors.mid,
-                );
-                draw_border_layer(
-                    &mut renderer,
-                    border_offset + (BORDER_OUTER + mid_width) * params.scale,
-                    BORDER_INNER * params.scale,
-                    border_colors.inner,
-                );
-            }
+            draw_border_layer(
+                &mut renderer,
+                border_offset + (BORDER_OUTER + mid_width) * params.scale,
+                BORDER_INNER * params.scale,
+                border_colors.inner,
+            );
+        }
 
-            let bg_color = if params.is_active {
-                params.ui.titlebar_bg_active
-            } else {
-                params.ui.titlebar_bg_inactive
-            };
-            let bg_argb = rgba_to_argb(bg_color);
-            let title_height = params
-                .titlebar_height
-                .min(params.height - border_width * 2);
-            if title_height > 0 {
-                let title_x = border_width;
-                let title_y = border_width;
-                renderer.fill_rect(
-                    title_x * params.scale,
-                    title_y * params.scale,
-                    params.content_width * params.scale,
-                    title_height * params.scale,
-                    bg_argb,
-                );
+        let bg_color = if params.is_active {
+            params.ui.titlebar_bg_active
+        } else {
+            params.ui.titlebar_bg_inactive
+        };
+        let bg_argb = rgba_to_argb(bg_color);
+        let title_height = params
+            .titlebar_height
+            .min(params.height - border_width * 2);
+        if title_height > 0 {
+            let title_x = border_width;
+            let title_y = border_width;
+            renderer.fill_rect(
+                title_x * params.scale,
+                title_y * params.scale,
+                params.content_width * params.scale,
+                title_height * params.scale,
+                bg_argb,
+            );
 
-                let buttons = button_rects(
-                    params.content_width,
-                    params.titlebar_height,
-                    params.show_minimize,
-                    params.show_maximize,
-                );
-                let button_border = rgba_to_argb(border_colors.outer);
+            let buttons = button_rects(
+                params.content_width,
+                params.titlebar_height,
+                params.show_minimize,
+                params.show_maximize,
+            );
+            let button_border = rgba_to_argb(border_colors.outer);
+            draw_left_border(
+                &mut renderer,
+                (title_x + buttons.close.x + buttons.close.width) * params.scale,
+                title_y * params.scale,
+                title_height * params.scale,
+                button_border,
+                params.titlebar_height,
+            );
+            if let Some(hide) = buttons.hide {
                 draw_left_border(
                     &mut renderer,
-                    (title_x + buttons.close.x + buttons.close.width) * params.scale,
+                    (title_x + hide.x - 1) * params.scale,
                     title_y * params.scale,
                     title_height * params.scale,
                     button_border,
                     params.titlebar_height,
                 );
-                if let Some(hide) = buttons.hide {
-                    draw_left_border(
-                        &mut renderer,
-                        (title_x + hide.x - 1) * params.scale,
-                        title_y * params.scale,
-                        title_height * params.scale,
-                        button_border,
-                        params.titlebar_height,
-                    );
-                }
-                if let Some(maximize) = buttons.maximize {
-                    draw_left_border(
-                        &mut renderer,
-                        (title_x + maximize.x - 1) * params.scale,
-                        title_y * params.scale,
-                        title_height * params.scale,
-                        button_border,
-                        params.titlebar_height,
-                    );
-                }
-
-                let separator_y = title_y + title_height;
-                if separator_y >= 0 && separator_y < params.height - border_width {
-                    renderer.fill_rect(
-                        title_x * params.scale,
-                        separator_y * params.scale,
-                        params.content_width * params.scale,
-                        params.scale,
-                        rgba_to_argb(border_colors.outer),
-                    );
-                }
+            }
+            if let Some(maximize) = buttons.maximize {
+                draw_left_border(
+                    &mut renderer,
+                    (title_x + maximize.x - 1) * params.scale,
+                    title_y * params.scale,
+                    title_height * params.scale,
+                    button_border,
+                    params.titlebar_height,
+                );
             }
 
-            *target = Some(BaseFrameCacheEntry {
-                width: params.buffer_width,
-                height: params.buffer_height,
-                scale: params.scale,
-                key,
-                pixels,
-            });
+            let separator_y = title_y + title_height;
+            if separator_y >= 0 && separator_y < params.height - border_width {
+                renderer.fill_rect(
+                    title_x * params.scale,
+                    separator_y * params.scale,
+                    params.content_width * params.scale,
+                    params.scale,
+                    rgba_to_argb(border_colors.outer),
+                );
+            }
         }
 
-        target.is_some()
+        true
     }
 
     fn button_cache_key(ui: &UiConfig) -> ButtonCacheKey {
@@ -747,7 +608,7 @@ impl Titlebar {
 
     /// Render the titlebar with the given title and state
     #[allow(clippy::too_many_arguments)]
-    pub fn render(
+    pub fn render<D>(
         &mut self,
         title: Option<&str>,
         is_active: bool,
@@ -758,7 +619,14 @@ impl Titlebar {
         hovered_button: Option<TitlebarButton>,
         left_down: bool,
         ui: &UiConfig,
-    ) -> bool {
+        shm: &wl_shm::WlShm,
+        qh: &QueueHandle<D>,
+    ) -> bool
+    where
+        D: 'static
+            + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
+            + wayland_client::Dispatch<wl_buffer::WlBuffer, super::shmfile::ReleaseFlag>,
+    {
         let title_changed = self.last_title.as_deref() != title;
         let state_changed = title_changed
             || self.last_is_active != is_active
@@ -809,11 +677,22 @@ impl Titlebar {
             return false;
         }
 
-        let base_cache = if is_active {
-            &mut self.base_frame_active
-        } else {
-            &mut self.base_frame_inactive
+        let stride = match buffer_width.checked_mul(4) {
+            Some(s) => s,
+            None => return false,
         };
+
+        #[cfg(feature = "debug-logging")]
+        let prep_t0 = std::time::Instant::now();
+        let allocated_before = self.shm_pool.allocate_fresh_count();
+        let slot_idx = match self.shm_pool.prepare(buffer_width, buffer_height, stride, shm, qh) {
+            Some(s) => s,
+            None => return false,
+        };
+        let allocated_fresh = self.shm_pool.allocate_fresh_count() != allocated_before;
+        #[cfg(feature = "debug-logging")]
+        let prep_us = prep_t0.elapsed().as_micros();
+
         let base_params = BaseFrameParams {
             ui,
             is_active,
@@ -827,21 +706,36 @@ impl Titlebar {
             show_maximize,
             frame_style,
         };
-        if !Self::ensure_base_frame_cache(base_cache, base_params) {
-            return false;
-        }
 
-        let base_pixels = match base_cache.as_ref() {
-            Some(entry) => entry.pixels.as_slice(),
+        let pixels = match self.shm_pool.slot_bytes_mut(slot_idx) {
+            Some(p) => p,
             None => return false,
         };
 
-        if let Some(ref mut mmap) = self.mmap {
-            let pixels = mmap.as_mut();
-            if base_pixels.len() != pixels.len() {
-                return false;
-            }
-            pixels.copy_from_slice(base_pixels);
+        #[cfg(feature = "debug-logging")]
+        let fill_t0 = std::time::Instant::now();
+        // The titlebar surface spans the whole window but only the border ring
+        // and titlebar strip carry pixels; the rest must stay fully transparent.
+        // The pool rotates slots each prepare, so even when geometry is steady
+        // the slot we just took may still hold the *other* focus state's
+        // pixels -- start from zero.
+        pixels.fill(0);
+        #[cfg(feature = "debug-logging")]
+        let fill_us = fill_t0.elapsed().as_micros();
+
+        #[cfg(feature = "debug-logging")]
+        let base_t0 = std::time::Instant::now();
+        if !Self::draw_base_frame(pixels, &base_params) {
+            return false;
+        }
+        #[cfg(feature = "debug-logging")]
+        let base_us = base_t0.elapsed().as_micros();
+
+        #[cfg(feature = "debug-logging")]
+        let dyn_t0 = std::time::Instant::now();
+        #[cfg(not(feature = "debug-logging"))]
+        let _ = allocated_fresh;
+        {
             let mut renderer = match Renderer::new(pixels, buffer_width, buffer_height) {
                 Some(renderer) => renderer,
                 None => return false,
@@ -1065,14 +959,27 @@ impl Titlebar {
             }
 
             self.dirty = false;
-            return true;
         }
-        false
+        #[cfg(feature = "debug-logging")]
+        let dyn_us = dyn_t0.elapsed().as_micros();
+        #[cfg(feature = "debug-logging")]
+        eprintln!(
+            "[canoe titlebar] {}x{} bytes={} alloc_fresh={} prepare={:.2}ms fill={:.2}ms base={:.2}ms dynamic={:.2}ms",
+            buffer_width,
+            buffer_height,
+            buffer_width as i64 * buffer_height as i64 * 4,
+            allocated_fresh,
+            prep_us as f64 / 1000.0,
+            fill_us as f64 / 1000.0,
+            base_us as f64 / 1000.0,
+            dyn_us as f64 / 1000.0,
+        );
+        true
     }
 
     /// Commit the titlebar surface
     pub fn commit(&mut self) {
-        if let Some(ref buffer) = self.buffer {
+        if let Some(buffer) = self.shm_pool.current_buffer() {
             self.surface.attach(Some(buffer), 0, 0);
             // The decoration surface spans the whole window, but only the
             // border ring and titlebar strip are ever painted -- the content
@@ -1097,6 +1004,9 @@ impl Titlebar {
                 self.damage_frame();
             }
             self.surface.commit();
+            // The compositor now owns this buffer until it sends a release
+            // event; mark the slot off-limits for the next render.
+            self.shm_pool.mark_attached();
             self.mapped = true;
         }
     }
@@ -1474,12 +1384,7 @@ fn draw_glyph_caret_pair(
 
 impl Drop for Titlebar {
     fn drop(&mut self) {
-        if let Some(buffer) = self.buffer.take() {
-            buffer.destroy();
-        }
-        if let Some(pool) = self.pool.take() {
-            pool.destroy();
-        }
+        self.shm_pool.destroy();
         // Decoration (role object) must be destroyed before the surface
         self.decoration.destroy();
         self.surface.destroy();

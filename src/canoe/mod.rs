@@ -9,7 +9,7 @@ mod render;
 mod seat;
 mod shadow;
 mod shield;
-mod shmfile;
+pub mod shmfile;
 pub mod titlebar;
 pub mod window;
 
