@@ -272,6 +272,23 @@ fn rgba_to_argb(rgba: u32) -> u32 {
     (a << 24) | (r << 16) | (g << 8) | b
 }
 
+/// Fill a byte buffer with a repeating 4-byte pattern using memcpy doubling,
+/// which is far faster than a per-pixel loop in unoptimized builds.
+fn fill_run(buf: &mut [u8], argb: [u8; 4]) {
+    let total = buf.len();
+    if total < 4 {
+        return;
+    }
+    buf[..4].copy_from_slice(&argb);
+    let mut filled = 4;
+    while filled < total {
+        let chunk = filled.min(total - filled);
+        let (head, tail) = buf.split_at_mut(filled);
+        tail[..chunk].copy_from_slice(&head[..chunk]);
+        filled += chunk;
+    }
+}
+
 pub(super) fn draw_shadow_soft(
     renderer: &mut Renderer,
     frame_width: i32,
@@ -298,96 +315,114 @@ pub(super) fn draw_shadow_soft(
     }
 
     let base_rgb = shadow_color & 0xffffff00;
-    let width = renderer.width();
-    let height = renderer.height();
-    let inner_x0 = shadow_size_px;
-    let inner_y0 = shadow_size_px;
-    let inner_x1 = inner_x0 + frame_width_px;
-    let inner_y1 = inner_y0 + frame_height_px;
+    let w = renderer.width();
+    let s_px = shadow_size_px;
+    let fw_px = frame_width_px;
+    let fh_px = frame_height_px;
+    let r_px = (corner_radius * scale).clamp(0, (fw_px.min(fh_px) / 2).max(0));
+    // The window rect is anchored at the top-left of the buffer, inset by the
+    // band width (NOT centred in the buffer): the buffer can be taller than the
+    // rect+band because it is sized from the full frame height while the shadow
+    // is drawn for a slightly shorter rect, leaving slack at the bottom.
+    let inner_y1 = s_px + fh_px; // bottom edge of the rect, in buffer pixels
+    // Corner-tile side: band width plus corner radius. Its contents depend only
+    // on (shadow_size, radius, colour) -- not on the window size -- so one tile
+    // serves all four corners (mirrored).
+    let cs = s_px + r_px;
+    let s = s_px as f32;
 
-    let r_px = (corner_radius * scale).clamp(0, (frame_width_px.min(frame_height_px) / 2).max(0));
-    let cx = inner_x0 + frame_width_px / 2;
-    let cy = inner_y0 + frame_height_px / 2;
-    let bx = frame_width_px as f32 / 2.0;
-    let by = frame_height_px as f32 / 2.0;
-    let r = r_px as f32;
-    let s = shadow_size_px as f32;
-
-    // The alpha is a pure function of the distance into the shadow band, so
-    // precompute the ARGB bytes for every distance once instead of doing the
-    // (1 - t)^2 / round / clamp math per pixel. The table is sampled at
-    // sub-pixel resolution so it tracks the falloff closely even for dark
-    // shadows. Index 0 == hugging the frame (full alpha); the last index ==
-    // band edge (zero alpha).
-    const LUT_RES: i32 = 4;
-    let lut_span = (shadow_size_px * LUT_RES) as f32;
-    let lut_len = (shadow_size_px * LUT_RES) as usize + 1;
-    let mut argb_lut: Vec<[u8; 4]> = vec![[0, 0, 0, 0]; lut_len];
-    for (k, slot) in argb_lut.iter_mut().enumerate() {
-        let t = (k as f32 / lut_span).min(1.0);
-        let falloff = 1.0 - t;
+    // Premultiplied ARGB for a signed distance into the band; transparent
+    // outside (0, s]. This is the single source of truth for the falloff, used
+    // for both the edge gradient and the corner tile.
+    let argb_for = |dist: f32| -> [u8; 4] {
+        if dist <= 0.0 || dist > s {
+            return [0, 0, 0, 0];
+        }
+        let falloff = 1.0 - dist / s;
         let alpha = (base_alpha as f32 * falloff * falloff)
             .round()
             .clamp(0.0, 255.0) as u8;
-        if alpha != 0 {
-            *slot = rgba_to_argb(base_rgb | alpha as u32).to_ne_bytes();
+        if alpha == 0 {
+            return [0, 0, 0, 0];
+        }
+        rgba_to_argb(base_rgb | alpha as u32).to_ne_bytes()
+    };
+
+    // 1-D edge falloff shared by all four straight edges. `edge[i]` is the
+    // colour at perpendicular distance `s - i - 0.5` from the frame, where `i`
+    // is the buffer offset from the band's faint outer edge.
+    let edge: Vec<[u8; 4]> = (0..s_px).map(|i| argb_for(s - i as f32 - 0.5)).collect();
+
+    // Window-independent rounded-corner tile (bottom-right orientation):
+    // tile[ty*cs + tx] sits at corner-local distances qx = tx + 0.5, qy = ty + 0.5.
+    let corner: Vec<[u8; 4]> = (0..cs * cs)
+        .map(|idx| {
+            let tx = (idx % cs) as f32 + 0.5;
+            let ty = (idx / cs) as f32 + 0.5;
+            argb_for((tx * tx + ty * ty).sqrt() - r_px as f32)
+        })
+        .collect();
+
+    let stride = (w * 4) as usize;
+    let pixels = renderer.data_mut();
+
+    // Buffer rows of the bottom corners' / bottom edge's top. Anchored to the
+    // rect (inner_y1), not the buffer height, so the band hugs the window even
+    // when the buffer has slack below. Both stay within the buffer because
+    // inner_y1 + s_px <= h by construction.
+    let bottom_corner_y0 = inner_y1 - r_px;
+    let right_x0 = w - cs; // == inner_x1 - r_px (rect is horizontally centred)
+
+    // Four corners: flip the single tile into each rect corner.
+    for ty in 0..cs {
+        for tx in 0..cs {
+            let argb = corner[(ty * cs + tx) as usize];
+            if argb[3] == 0 {
+                continue;
+            }
+            for &(bx, by) in &[
+                (right_x0 + tx, bottom_corner_y0 + ty), // bottom-right
+                (right_x0 + tx, cs - 1 - ty),           // top-right
+                (cs - 1 - tx, bottom_corner_y0 + ty),   // bottom-left
+                (cs - 1 - tx, cs - 1 - ty),             // top-left
+            ] {
+                let idx = by as usize * stride + bx as usize * 4;
+                pixels[idx..idx + 4].copy_from_slice(&argb);
+            }
         }
     }
 
-    // Everything strictly inside the rounded rect (dist <= 0) is occluded by the
-    // window and produces no shadow, so skip that whole interior span per row
-    // instead of evaluating the SDF for it. Bounds are the inner box shrunk by
-    // the corner radius (+1px guard for integer rounding), which is provably
-    // within |px| <= bx-r and |py| <= by, i.e. dist <= 0.
-    let skip_x0 = inner_x0 + r_px + 1;
-    let skip_x1 = inner_x1 - r_px - 1;
-    let skip_y0 = inner_y0 + 1;
-    let skip_y1 = inner_y1 - 1;
-    let has_skip = skip_x0 < skip_x1;
-
-    let pixels = renderer.data_mut();
-    let stride = width * 4;
-    for y in 0..height {
-        let row = (y * stride) as usize;
-        let py = (y as f32 + 0.5) - cy as f32;
-        let qy = py.abs() - (by - r);
-        let my = qy.max(0.0);
-        let my_sq = my * my;
-        let skip_row = has_skip && y >= skip_y0 && y < skip_y1;
-
-        let mut x = 0;
-        while x < width {
-            if skip_row && x >= skip_x0 && x < skip_x1 {
-                x = skip_x1;
-                continue;
-            }
-
-            let px = (x as f32 + 0.5) - cx as f32;
-            let qx = px.abs() - (bx - r);
-            let mx = qx.max(0.0);
-            // sqrt is only needed in the rounded corners (mx>0 && my>0); on the
-            // straight edges one term is zero, so the distance is just the other.
-            let outside = if mx > 0.0 && my > 0.0 {
-                (mx * mx + my_sq).sqrt()
-            } else {
-                mx + my
-            };
-            let inside = qx.max(qy).min(0.0);
-            let dist = outside + inside - r;
-            if dist > 0.0 && dist <= s {
-                // Round to the nearest sub-pixel band step so the LUT tracks
-                // the continuous falloff closely near the steep inner edge.
-                let k = (dist * LUT_RES as f32 + 0.5) as usize;
-                let argb = argb_lut[k.min(lut_len - 1)];
-                if argb[3] != 0 {
-                    let idx = row + (x * 4) as usize;
-                    if idx + 4 <= pixels.len() {
-                        pixels[idx..idx + 4].copy_from_slice(&argb);
-                    }
-                }
-            }
-            x += 1;
+    // Top / bottom straight edges: one colour per row across the middle span.
+    // Top row i and bottom row (inner_y1 + s_px - 1 - i) are equidistant from
+    // the rect, so both use edge[i].
+    let span_lo = cs as usize * 4;
+    let span_hi = (w - cs) as usize * 4;
+    for i in 0..s_px {
+        let argb = edge[i as usize];
+        if argb[3] == 0 {
+            continue;
         }
+        for &row_y in &[i, inner_y1 + s_px - 1 - i] {
+            let row = row_y as usize * stride;
+            fill_run(&mut pixels[row + span_lo..row + span_hi], argb);
+        }
+    }
+
+    // Left / right straight edges: a fixed gradient run copied down each row of
+    // the rect's straight vertical span [cs, inner_y1 - r_px).
+    let run_bytes = (s_px * 4) as usize;
+    let mut left_run = vec![0u8; run_bytes];
+    let mut right_run = vec![0u8; run_bytes];
+    for i in 0..s_px as usize {
+        left_run[i * 4..i * 4 + 4].copy_from_slice(&edge[i]);
+        let mirrored = s_px as usize - 1 - i;
+        right_run[mirrored * 4..mirrored * 4 + 4].copy_from_slice(&edge[i]);
+    }
+    let right_off = (w - s_px) as usize * 4;
+    for y in cs..(inner_y1 - r_px) {
+        let row = y as usize * stride;
+        pixels[row..row + run_bytes].copy_from_slice(&left_run);
+        pixels[row + right_off..row + right_off + run_bytes].copy_from_slice(&right_run);
     }
 }
 
@@ -395,8 +430,10 @@ pub(super) fn draw_shadow_soft(
 mod tests {
     use super::*;
 
-    /// The original, straightforward implementation, kept here as an oracle to
-    /// prove the optimized `draw_shadow_soft` produces the same shadow.
+    /// Straightforward per-pixel rounded-rect SDF with the rect anchored at the
+    /// top-left of the buffer (inset by the band), matching how the real shadow
+    /// is positioned. The buffer may be taller than rect+band (slack at the
+    /// bottom). Used as an oracle for the 9-slice `draw_shadow_soft`.
     #[allow(clippy::too_many_arguments)]
     fn reference(
         buf: &mut [u8],
@@ -410,37 +447,35 @@ mod tests {
         scale: i32,
     ) {
         let base_alpha = (shadow_color & 0xff) as u8;
-        let shadow_size_px = shadow_size * scale;
-        let frame_width_px = frame_width * scale;
-        let frame_height_px = frame_height * scale;
+        let s_px = shadow_size * scale;
+        let fw_px = frame_width * scale;
+        let fh_px = frame_height * scale;
         let base_rgb = shadow_color & 0xffffff00;
-        let inner_x0 = shadow_size_px;
-        let inner_y0 = shadow_size_px;
-        let r_px =
-            (corner_radius * scale).clamp(0, (frame_width_px.min(frame_height_px) / 2).max(0));
-        let cx = inner_x0 + frame_width_px / 2;
-        let cy = inner_y0 + frame_height_px / 2;
-        let bx = frame_width_px as f32 / 2.0;
-        let by = frame_height_px as f32 / 2.0;
+        let r_px = (corner_radius * scale).clamp(0, (fw_px.min(fh_px) / 2).max(0));
+        // Rect anchored top-left at (s_px, s_px); centre derived from that.
+        let cx = s_px as f32 + fw_px as f32 / 2.0;
+        let cy = s_px as f32 + fh_px as f32 / 2.0;
+        let hx = fw_px as f32 / 2.0;
+        let hy = fh_px as f32 / 2.0;
         let r = r_px as f32;
+        let s = s_px as f32;
         let stride = w * 4;
         for y in 0..h {
             let row = (y * stride) as usize;
             for x in 0..w {
-                let px = (x as f32 + 0.5) - cx as f32;
-                let py = (y as f32 + 0.5) - cy as f32;
-                let qx = px.abs() - (bx - r);
-                let qy = py.abs() - (by - r);
+                let dx = (x as f32 + 0.5) - cx;
+                let dy = (y as f32 + 0.5) - cy;
+                let qx = dx.abs() - (hx - r);
+                let qy = dy.abs() - (hy - r);
                 let mx = qx.max(0.0);
                 let my = qy.max(0.0);
                 let outside = (mx * mx + my * my).sqrt();
                 let inside = qx.max(qy).min(0.0);
                 let dist = outside + inside - r;
-                if dist <= 0.0 || dist > shadow_size_px as f32 {
+                if dist <= 0.0 || dist > s {
                     continue;
                 }
-                let t = (dist / shadow_size_px as f32).min(1.0);
-                let falloff = 1.0 - t;
+                let falloff = 1.0 - dist / s;
                 let alpha = (base_alpha as f32 * falloff * falloff)
                     .round()
                     .clamp(0.0, 255.0) as u8;
@@ -455,41 +490,52 @@ mod tests {
     }
 
     #[test]
-    fn lut_matches_reference() {
-        let color = 0x00000033;
-        for &(fw, fh, ss, scale) in &[
-            (80, 40, 20, 1),
-            (120, 90, 20, 2),
-            (50, 50, 10, 2),
-            (200, 30, 15, 2),
-            (40, 40, 20, 1),
-            (3, 3, 20, 2),
-        ] {
-            let cr = ss / 2;
-            let w = (fw + ss * 2) * scale;
-            let h = (fh + ss * 2) * scale;
-            let mut got = vec![0u8; (w * h * 4) as usize];
-            let mut want = vec![0u8; (w * h * 4) as usize];
-            {
-                let mut r = Renderer::new(&mut got, w, h).unwrap();
-                draw_shadow_soft(&mut r, fw, fh, ss, cr, color, scale);
-            }
-            reference(&mut want, w, h, fw, fh, ss, cr, color, scale);
+    fn nine_slice_matches_reference() {
+        for &color in &[0x00000033u32, 0x000000ccu32] {
+            for &(fw, fh, ss, scale) in &[
+                (80, 40, 20, 1),
+                (120, 90, 20, 2),
+                (50, 50, 10, 2),
+                (200, 30, 15, 2),
+                (41, 37, 20, 1), // odd frame dimensions
+                (40, 40, 20, 1), // radius == half-extent (zero-width edges)
+            ] {
+                let cr = ss / 2;
+                let w = (fw + ss * 2) * scale;
+                // Mirror production: the buffer is sized from the full frame
+                // height while the shadow is drawn for a shorter rect, leaving
+                // `extra` rows of slack below. Test both the slack case and the
+                // exact-fit case (extra == 0).
+                for extra in [(ss / 2) * scale, 0] {
+                    let h = (fh + ss * 2) * scale + extra;
+                    let mut got = vec![0u8; (w * h * 4) as usize];
+                    let mut want = vec![0u8; (w * h * 4) as usize];
+                    {
+                        let mut r = Renderer::new(&mut got, w, h).unwrap();
+                        draw_shadow_soft(&mut r, fw, fh, ss, cr, color, scale);
+                    }
+                    reference(&mut want, w, h, fw, fh, ss, cr, color, scale);
 
-            let mut max_alpha_diff = 0i32;
-            for i in (0..got.len()).step_by(4) {
-                let ga = (u32::from_ne_bytes([got[i], got[i + 1], got[i + 2], got[i + 3]]) >> 24)
-                    as i32;
-                let wa = (u32::from_ne_bytes([want[i], want[i + 1], want[i + 2], want[i + 3]])
-                    >> 24) as i32;
-                max_alpha_diff = max_alpha_diff.max((ga - wa).abs());
+                    let mut max_alpha_diff = 0i32;
+                    for i in (0..got.len()).step_by(4) {
+                        let ga = (u32::from_ne_bytes([got[i], got[i + 1], got[i + 2], got[i + 3]])
+                            >> 24) as i32;
+                        let wa = (u32::from_ne_bytes([
+                            want[i],
+                            want[i + 1],
+                            want[i + 2],
+                            want[i + 3],
+                        ]) >> 24) as i32;
+                        max_alpha_diff = max_alpha_diff.max((ga - wa).abs());
+                    }
+                    // <=1 absorbs only float-rounding between the two ways of
+                    // computing the same distance; geometry must match exactly.
+                    assert!(
+                        max_alpha_diff <= 1,
+                        "color={color:#x} fw={fw} fh={fh} ss={ss} scale={scale} extra={extra}: max alpha diff {max_alpha_diff}",
+                    );
+                }
             }
-            // Only difference allowed is sub-level quantization from the integer
-            // distance LUT; geometry (which pixels get a shadow) must match.
-            assert!(
-                max_alpha_diff <= 2,
-                "fw={fw} fh={fh} ss={ss} scale={scale}: max alpha diff {max_alpha_diff} too large",
-            );
         }
     }
 }
