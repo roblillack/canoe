@@ -1114,11 +1114,15 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
             Event::RenderStart => {
                 state.context.borrow_mut().handle_render_start();
 
-                let debug = canoe::debug_enabled();
-                let render_t0 = if debug { Some(Instant::now()) } else { None };
+                #[cfg(feature = "debug-logging")]
+                let render_t0 = Instant::now();
+                #[cfg(feature = "debug-logging")]
                 let mut titlebars_rendered = 0u32;
+                #[cfg(feature = "debug-logging")]
                 let mut shadows_rendered = 0u32;
+                #[cfg(feature = "debug-logging")]
                 let mut shadow_render_us = 0u128;
+                #[cfg(feature = "debug-logging")]
                 let mut titlebar_render_us = 0u128;
 
                 // Update shadows and titlebars
@@ -1219,7 +1223,8 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                             if let Some(ref compositor) = state.globals.compositor {
                                 shadow.update_input_region(compositor, qh);
                             }
-                            let sh_t0 = render_t0.map(|_| Instant::now());
+                            #[cfg(feature = "debug-logging")]
+                            let sh_t0 = Instant::now();
                             let did_render = shadow.render(
                                 frame_width,
                                 shadow_frame_height,
@@ -1227,8 +1232,9 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                 shadow_color,
                                 scale,
                             );
-                            if let Some(t) = sh_t0 {
-                                shadow_render_us += t.elapsed().as_micros();
+                            #[cfg(feature = "debug-logging")]
+                            {
+                                shadow_render_us += sh_t0.elapsed().as_micros();
                             }
                             // The rect sits `buffer_shadow_size` in from the
                             // buffer edges, so position the surface by that inset
@@ -1250,7 +1256,10 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                             if did_render && shadow.buffer.is_some() {
                                 shadow.sync_next_commit();
                                 shadow.commit();
-                                shadows_rendered += 1;
+                                #[cfg(feature = "debug-logging")]
+                                {
+                                    shadows_rendered += 1;
+                                }
                             }
                         }
                     }
@@ -1324,7 +1333,8 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                 }
 
                                 // Render titlebar content
-                                let tb_t0 = render_t0.map(|_| Instant::now());
+                                #[cfg(feature = "debug-logging")]
+                                let tb_t0 = Instant::now();
                                 let did_render = titlebar.render(
                                     title.as_deref(),
                                     is_focused,
@@ -1336,8 +1346,9 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                     titlebar_left_down,
                                     ui,
                                 );
-                                if let Some(t) = tb_t0 {
-                                    titlebar_render_us += t.elapsed().as_micros();
+                                #[cfg(feature = "debug-logging")]
+                                {
+                                    titlebar_render_us += tb_t0.elapsed().as_micros();
                                 }
 
                                 // Position decoration so it sits above content with borders
@@ -1352,24 +1363,26 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                 if did_render && titlebar.buffer.is_some() {
                                     titlebar.sync_next_commit();
                                     titlebar.commit();
-                                    titlebars_rendered += 1;
+                                    #[cfg(feature = "debug-logging")]
+                                    {
+                                        titlebars_rendered += 1;
+                                    }
                                 }
                             }
                         }
                     }
                 }
 
-                if let Some(t0) = render_t0 {
-                    if titlebars_rendered > 0 || shadows_rendered > 0 {
-                        eprintln!(
-                            "[canoe render] RenderStart: {} titlebar(s) [{:.1}ms] + {} shadow(s) [{:.1}ms] in {:?}",
-                            titlebars_rendered,
-                            titlebar_render_us as f64 / 1000.0,
-                            shadows_rendered,
-                            shadow_render_us as f64 / 1000.0,
-                            t0.elapsed(),
-                        );
-                    }
+                #[cfg(feature = "debug-logging")]
+                if titlebars_rendered > 0 || shadows_rendered > 0 {
+                    eprintln!(
+                        "[canoe render] RenderStart: {} titlebar(s) [{:.1}ms] + {} shadow(s) [{:.1}ms] in {:?}",
+                        titlebars_rendered,
+                        titlebar_render_us as f64 / 1000.0,
+                        shadows_rendered,
+                        shadow_render_us as f64 / 1000.0,
+                        render_t0.elapsed(),
+                    );
                 }
 
                 state.context.borrow().finish_render();

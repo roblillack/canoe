@@ -46,6 +46,10 @@ memfd = "0.6"
 [target.'cfg(not(any(target_os = "linux", target_os = "openbsd")))'.dependencies]
 tempfile = "3"
 
+[features]
+# Compile in verbose debug logging / render timing (to stderr). Off by default.
+debug-logging = []
+
 [build-dependencies]
 wayland-scanner = "0.31"
 

@@ -1085,15 +1085,14 @@ impl Titlebar {
                 self.surface
                     .damage_buffer(0, 0, self.buffer_width, self.buffer_height);
                 self.needs_full_damage = false;
-                if crate::canoe::debug_enabled() {
-                    eprintln!(
-                        "[canoe damage] FULL  buf={}x{} scale={} damaged={}px (100.0%)",
-                        self.buffer_width,
-                        self.buffer_height,
-                        self.scale,
-                        self.buffer_width as i64 * self.buffer_height as i64,
-                    );
-                }
+                #[cfg(feature = "debug-logging")]
+                eprintln!(
+                    "[canoe damage] FULL  buf={}x{} scale={} damaged={}px (100.0%)",
+                    self.buffer_width,
+                    self.buffer_height,
+                    self.scale,
+                    self.buffer_width as i64 * self.buffer_height as i64,
+                );
             } else {
                 self.damage_frame();
             }
@@ -1120,20 +1119,17 @@ impl Titlebar {
         if cut_x1 <= cut_x0 || cut_y1 <= cut_y0 {
             self.surface
                 .damage_buffer(0, 0, self.buffer_width, self.buffer_height);
-            if crate::canoe::debug_enabled() {
-                eprintln!(
-                    "[canoe damage] FRAME->FULL (degenerate) buf={}x{} scale={}",
-                    self.buffer_width, self.buffer_height, self.scale,
-                );
-            }
+            #[cfg(feature = "debug-logging")]
+            eprintln!(
+                "[canoe damage] FRAME->FULL (degenerate) buf={}x{} scale={}",
+                self.buffer_width, self.buffer_height, self.scale,
+            );
             return;
         }
 
-        let mut damaged_px: i64 = 0;
-        let mut damage = |x: i32, y: i32, w: i32, h: i32| {
+        let damage = |x: i32, y: i32, w: i32, h: i32| {
             if w > 0 && h > 0 {
                 self.surface.damage_buffer(x, y, w, h);
-                damaged_px += w as i64 * h as i64;
             }
         };
         damage(0, 0, self.buffer_width, cut_y0); // top border + titlebar
@@ -1141,8 +1137,13 @@ impl Titlebar {
         damage(0, cut_y0, cut_x0, cut_y1 - cut_y0); // left border
         damage(cut_x1, cut_y0, self.buffer_width - cut_x1, cut_y1 - cut_y0); // right border
 
-        if crate::canoe::debug_enabled() {
+        #[cfg(feature = "debug-logging")]
+        {
             let full_px = self.buffer_width as i64 * self.buffer_height as i64;
+            let damaged_px = self.buffer_width as i64 * cut_y0 as i64
+                + self.buffer_width as i64 * (self.buffer_height - cut_y1) as i64
+                + (cut_x0 as i64 + (self.buffer_width - cut_x1) as i64)
+                    * (cut_y1 - cut_y0) as i64;
             eprintln!(
                 "[canoe damage] FRAME buf={}x{} scale={} damaged={}px / full={}px ({:.1}%)",
                 self.buffer_width,
