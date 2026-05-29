@@ -524,8 +524,8 @@ impl Titlebar {
                 return false;
             }
 
+            // vec! already zero-fills (== fully transparent), so no explicit clear.
             let mut pixels = vec![0u8; (params.buffer_width * params.buffer_height * 4) as usize];
-            clear_buffer(&mut pixels);
             let mut renderer =
                 match Renderer::new(&mut pixels, params.buffer_width, params.buffer_height) {
                     Some(renderer) => renderer,
@@ -1242,18 +1242,12 @@ fn rgba_to_argb(rgba: u32) -> u32 {
     (a << 24) | (r << 16) | (g << 8) | b
 }
 
-fn clear_buffer(pixels: &mut [u8]) {
-    for chunk in pixels.chunks_exact_mut(4) {
-        chunk.copy_from_slice(&[0, 0, 0, 0]);
-    }
-}
 
 fn build_button_fill(size_px: i32, color_argb: u32) -> Vec<u8> {
     if size_px <= 0 {
         return Vec::new();
     }
     let mut pixels = vec![0u8; (size_px * size_px * 4) as usize];
-    clear_buffer(&mut pixels);
     if let Some(mut renderer) = Renderer::new(&mut pixels, size_px, size_px) {
         renderer.fill_rect(0, 0, size_px, size_px, color_argb);
     }
@@ -1272,7 +1266,6 @@ fn build_button_bevel_cache(
         return Vec::new();
     }
     let mut pixels = vec![0u8; (size_px * size_px * 4) as usize];
-    clear_buffer(&mut pixels);
     if let Some(mut renderer) = Renderer::new(&mut pixels, size_px, size_px) {
         draw_button_bevel(
             &mut renderer,

@@ -211,8 +211,8 @@ impl WindowShadow {
             return false;
         }
 
+        // vec! already zero-fills (== fully transparent), so no explicit clear.
         let mut pixels = vec![0u8; (self.buffer_width * self.buffer_height * 4) as usize];
-        clear_buffer(&mut pixels);
         if let Some(mut renderer) =
             Renderer::new(&mut pixels, self.buffer_width, self.buffer_height)
         {
@@ -270,12 +270,6 @@ fn rgba_to_argb(rgba: u32) -> u32 {
     let b = (rgba >> 8) & 0xff;
     let a = rgba & 0xff;
     (a << 24) | (r << 16) | (g << 8) | b
-}
-
-fn clear_buffer(pixels: &mut [u8]) {
-    for chunk in pixels.chunks_exact_mut(4) {
-        chunk.copy_from_slice(&[0, 0, 0, 0]);
-    }
 }
 
 pub(super) fn draw_shadow_soft(
