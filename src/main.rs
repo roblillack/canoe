@@ -1118,6 +1118,8 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                 let render_t0 = if debug { Some(Instant::now()) } else { None };
                 let mut titlebars_rendered = 0u32;
                 let mut shadows_rendered = 0u32;
+                let mut shadow_render_us = 0u128;
+                let mut titlebar_render_us = 0u128;
 
                 // Update shadows and titlebars
                 if let Some(ref shm) = state.globals.shm {
@@ -1206,6 +1208,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                             if let Some(ref compositor) = state.globals.compositor {
                                 shadow.update_input_region(compositor, qh);
                             }
+                            let sh_t0 = render_t0.map(|_| Instant::now());
                             let did_render = shadow.render(
                                 frame_width,
                                 shadow_frame_height,
@@ -1213,6 +1216,9 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                 shadow_color,
                                 scale,
                             );
+                            if let Some(t) = sh_t0 {
+                                shadow_render_us += t.elapsed().as_micros();
+                            }
                             let offset_x = if use_ssd {
                                 -border_width - shadow_size
                             } else {
@@ -1303,6 +1309,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                 }
 
                                 // Render titlebar content
+                                let tb_t0 = render_t0.map(|_| Instant::now());
                                 let did_render = titlebar.render(
                                     title.as_deref(),
                                     is_focused,
@@ -1314,6 +1321,9 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                     titlebar_left_down,
                                     ui,
                                 );
+                                if let Some(t) = tb_t0 {
+                                    titlebar_render_us += t.elapsed().as_micros();
+                                }
 
                                 // Position decoration so it sits above content with borders
                                 let border_width = canoe::titlebar::border_width(ui, frame_style);
@@ -1337,9 +1347,11 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                 if let Some(t0) = render_t0 {
                     if titlebars_rendered > 0 || shadows_rendered > 0 {
                         eprintln!(
-                            "[canoe render] RenderStart: {} titlebar(s) + {} shadow(s) re-rendered in {:?}",
+                            "[canoe render] RenderStart: {} titlebar(s) [{:.1}ms] + {} shadow(s) [{:.1}ms] in {:?}",
                             titlebars_rendered,
+                            titlebar_render_us as f64 / 1000.0,
                             shadows_rendered,
+                            shadow_render_us as f64 / 1000.0,
                             t0.elapsed(),
                         );
                     }
