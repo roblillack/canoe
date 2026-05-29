@@ -238,6 +238,42 @@ impl Window {
         self.parent.is_some()
     }
 
+    /// True when the client pinned the window to a fixed size: min == max on
+    /// both axes, both nonzero. This is the canonical Wayland signal for a
+    /// non-resizable toplevel.
+    pub fn is_fixed_size(&self) -> bool {
+        self.min_width > 0
+            && self.max_width == self.min_width
+            && self.min_height > 0
+            && self.max_height == self.min_height
+    }
+
+    /// Whether the user may resize this window by dragging its borders.
+    pub fn is_resizable(&self) -> bool {
+        !self.is_dialog() && !self.is_fixed_size()
+    }
+
+    /// Whether the SSD titlebar should expose a minimize button.
+    pub fn has_minimize_button(&self) -> bool {
+        !self.is_dialog()
+    }
+
+    /// Whether the SSD titlebar should expose a maximize button.
+    pub fn has_maximize_button(&self) -> bool {
+        !self.is_dialog() && !self.is_fixed_size()
+    }
+
+    /// The frame style to render for this window's SSD decoration.
+    pub fn frame_style(&self) -> super::titlebar::FrameStyle {
+        if self.is_dialog() {
+            super::titlebar::FrameStyle::Dialog
+        } else if self.is_fixed_size() {
+            super::titlebar::FrameStyle::FixedSize
+        } else {
+            super::titlebar::FrameStyle::Normal
+        }
+    }
+
     /// Check if window is visible on the given output
     pub fn is_visible_on(&self, output: &super::Output) -> bool {
         if self.hidden {

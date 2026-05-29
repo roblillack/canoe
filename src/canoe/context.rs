@@ -272,10 +272,13 @@ impl Context {
         window.set_swallow_top(applied.swallow_top.unwrap_or(0));
 
         // Inform the client which window-management capabilities apply.
-        // Dialogs (parented windows) only get close; everything else gets the
-        // full set so CSD clients can render the appropriate buttons.
+        // Parented dialogs: close only.
+        // Fixed-size toplevels: no maximize/fullscreen, but minimize stays.
+        // Regular windows: full set.
         let caps = if window.is_dialog() {
             Capabilities::empty()
+        } else if window.is_fixed_size() {
+            Capabilities::WindowMenu | Capabilities::Minimize
         } else {
             Capabilities::WindowMenu
                 | Capabilities::Maximize
@@ -1110,6 +1113,12 @@ impl Context {
         // Now resize the focused window
         if let Some(window_id) = self.focused_window {
             if let Some(window) = self.windows.get(&window_id) {
+                // Fixed-size toplevels and dialogs are not resizable; the
+                // modifier+drag gesture must not start a resize on them (the
+                // window stays focused from the step above).
+                if !window.borrow().is_resizable() {
+                    return;
+                }
                 if let Some(seat) = self.seats.get(&seat_id) {
                     let edges = {
                         let mut w = window.borrow_mut();
@@ -1152,7 +1161,7 @@ impl Context {
             (seat_ref.pointer_x, seat_ref.pointer_y)
         };
 
-        let (x, y, width, height, has_titlebar, swallow_top, is_dialog) = {
+        let (x, y, width, height, has_titlebar, swallow_top, is_resizable, show_min, show_max) = {
             let w = window.borrow();
             (
                 w.x,
@@ -1161,7 +1170,9 @@ impl Context {
                 w.height,
                 w.decoration == Some(WindowDecoration::Ssd),
                 w.swallow_top,
-                w.is_dialog(),
+                w.is_resizable(),
+                w.has_minimize_button(),
+                w.has_maximize_button(),
             )
         };
 
@@ -1172,7 +1183,7 @@ impl Context {
         let frame_y = y - border_width - titlebar_height + swallow_top;
         let frame_width = width + border_width * 2;
         let frame_height = height + border_width * 2 + titlebar_height - swallow_top;
-        let edges = if is_dialog {
+        let edges = if !is_resizable {
             0
         } else {
             calculate_resize_edges_near_border(
@@ -1207,7 +1218,7 @@ impl Context {
             if local_x >= 0 && local_x < width && local_y >= 0 && local_y < titlebar_height {
                 let titlebar_height = super::titlebar::titlebar_height(&self.config.ui);
                 let buttons =
-                    super::titlebar::button_rects(width, titlebar_height, !is_dialog);
+                    super::titlebar::button_rects(width, titlebar_height, show_min, show_max);
 
                 let on_button = buttons.close.contains(local_x, local_y)
                     || buttons
@@ -1837,7 +1848,7 @@ impl Context {
                 if let Some(window) = self.windows.get(&window_id) {
                     if let Some(seat) = seat.upgrade() {
                         let mut w = window.borrow_mut();
-                        if w.is_dialog() {
+                        if !w.is_resizable() {
                             return;
                         }
                         w.clear_maximized_without_restore();
@@ -2555,7 +2566,7 @@ impl Context {
             if let Some(weak) = window_below {
                 if let Some(window) = weak.upgrade() {
                     let w = window.borrow();
-                    if !w.is_dialog() {
+                    if w.is_resizable() {
                         let (px, py) = {
                             let seat_ref = seat.borrow();
                             (seat_ref.pointer_x, seat_ref.pointer_y)

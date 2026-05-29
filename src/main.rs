@@ -464,23 +464,24 @@ fn update_titlebar_hover_from_surface(
 ) -> bool {
     let local_x = surface_x.round() as i32;
     let local_y = surface_y.round() as i32;
-    let (border_width, titlebar_height) = {
-        let ui = &state.context.borrow().config.ui;
-        (ui.border_width, canoe::titlebar::titlebar_height(ui))
-    };
     let context = state.context.borrow();
     let Some(window) = context.windows.get(&window_id) else {
         return false;
     };
     let mut w = window.borrow_mut();
-    let show_min_max = !w.is_dialog();
+    let ui = &context.config.ui;
+    let titlebar_height = canoe::titlebar::titlebar_height(ui);
+    let border_width = canoe::titlebar::border_width(ui, w.frame_style());
+    let show_min = w.has_minimize_button();
+    let show_max = w.has_maximize_button();
     let new_hover = canoe::titlebar::button_at(
         w.width,
         border_width,
         local_x,
         local_y,
         titlebar_height,
-        show_min_max,
+        show_min,
+        show_max,
     );
     if w.titlebar_hovered == new_hover {
         return false;
@@ -495,18 +496,21 @@ fn update_titlebar_hover_from_global(
     pointer_x: i32,
     pointer_y: i32,
 ) -> bool {
-    let (win_x, win_y, win_w, swallow_top) = {
+    let (win_x, win_y, win_w, swallow_top, frame_style) = {
         let context = state.context.borrow();
         let Some(window) = context.windows.get(&window_id) else {
             return false;
         };
         let w = window.borrow();
-        (w.x, w.y, w.width, w.swallow_top)
+        (w.x, w.y, w.width, w.swallow_top, w.frame_style())
     };
 
     let (border_width, titlebar_height) = {
         let ui = &state.context.borrow().config.ui;
-        (ui.border_width, canoe::titlebar::titlebar_height(ui))
+        (
+            canoe::titlebar::border_width(ui, frame_style),
+            canoe::titlebar::titlebar_height(ui),
+        )
     };
     let origin_x = win_x - border_width;
     let origin_y = win_y - border_width - titlebar_height + swallow_top;
@@ -518,14 +522,16 @@ fn update_titlebar_hover_from_global(
         return false;
     };
     let mut w = window.borrow_mut();
-    let show_min_max = !w.is_dialog();
+    let show_min = w.has_minimize_button();
+    let show_max = w.has_maximize_button();
     let new_hover = canoe::titlebar::button_at(
         win_w,
         border_width,
         local_x,
         local_y,
         titlebar_height,
-        show_min_max,
+        show_min,
+        show_max,
     );
     if w.titlebar_hovered == new_hover {
         return false;
@@ -1139,7 +1145,11 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         };
                         let shadow_color = ui.shadows_color;
                         let use_ssd = w.decoration != Some(crate::config::WindowDecoration::Csd);
-                        let border_width = if use_ssd { ui.border_width } else { 0 };
+                        let border_width = if use_ssd {
+                            canoe::titlebar::border_width(ui, w.frame_style())
+                        } else {
+                            0
+                        };
                         let titlebar_height = if use_ssd {
                             canoe::titlebar::titlebar_height(ui)
                         } else {
@@ -1238,7 +1248,9 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         let title = w.title.clone();
                         let is_focused = focused_window == Some(window_id);
                         let is_maximized = w.maximized;
-                        let is_dialog = w.is_dialog();
+                        let show_minimize = w.has_minimize_button();
+                        let show_maximize = w.has_maximize_button();
+                        let frame_style = w.frame_style();
                         let height = w.height;
                         let hovered_button = w.titlebar_hovered;
                         let titlebar_left_down = w.titlebar_left_down;
@@ -1271,9 +1283,17 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                             if width > 0 && height > 0 {
                                 let content_height = (height - swallow_top).max(1);
                                 // Ensure buffer is allocated
-                                titlebar.ensure_buffer(width, content_height, shm, qh, scale, ui);
+                                titlebar.ensure_buffer(
+                                    width,
+                                    content_height,
+                                    shm,
+                                    qh,
+                                    scale,
+                                    ui,
+                                    frame_style,
+                                );
                                 if let Some(ref compositor) = state.globals.compositor {
-                                    titlebar.update_input_region(compositor, qh, ui);
+                                    titlebar.update_input_region(compositor, qh, ui, frame_style);
                                 }
 
                                 // Render titlebar content
@@ -1281,15 +1301,16 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                     title.as_deref(),
                                     is_focused,
                                     is_maximized,
-                                    !is_dialog,
-                                    is_dialog,
+                                    show_minimize,
+                                    show_maximize,
+                                    frame_style,
                                     hovered_button,
                                     titlebar_left_down,
                                     ui,
                                 );
 
                                 // Position decoration so it sits above content with borders
-                                let border_width = ui.border_width;
+                                let border_width = canoe::titlebar::border_width(ui, frame_style);
                                 let titlebar_height = canoe::titlebar::titlebar_height(ui);
                                 titlebar.set_offset(
                                     -border_width,
@@ -1505,6 +1526,7 @@ impl Dispatch<RiverWindowV1, canoe::WindowId> for AppState {
                 w.min_height = min_height;
                 w.max_width = max_width;
                 w.max_height = max_height;
+                state.context.borrow().apply_rules_to_window(&mut w);
             }
             Event::Dimensions { width, height } => {
                 window.borrow_mut().update_dimensions(width, height);
