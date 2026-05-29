@@ -1,6 +1,7 @@
 //! Window shadow rendering.
 
 use super::render::Renderer;
+use super::shmfile;
 use crate::protocol::RiverDecorationV1;
 use memmap2::MmapMut;
 use std::cell::RefCell;
@@ -128,24 +129,17 @@ impl WindowShadow {
             let stride = buffer_width * 4;
             let size = stride * buffer_height;
 
-            let memfd = match memfd::MemfdOptions::default()
-                .close_on_exec(true)
-                .create("canoe-shadow")
-            {
-                Ok(fd) => fd,
+            let memfile = match shmfile::create("canoe-shadow", size as i64) {
+                Ok(f) => f,
                 Err(_) => return,
             };
 
-            if memfd.as_file().set_len(size as u64).is_err() {
-                return;
-            }
-
-            let mmap = match unsafe { memmap2::MmapMut::map_mut(memfd.as_file()) } {
+            let mmap = match unsafe { memmap2::MmapMut::map_mut(&memfile) } {
                 Ok(m) => m,
                 Err(_) => return,
             };
 
-            let pool = shm.create_pool(memfd.as_file().as_fd(), size, qh, ());
+            let pool = shm.create_pool(memfile.as_fd(), size, qh, ());
             let buffer = pool.create_buffer(
                 0,
                 buffer_width,
@@ -156,7 +150,7 @@ impl WindowShadow {
                 (),
             );
 
-            self.memfile = Some(memfd.into_file());
+            self.memfile = Some(memfile);
             self.mmap = Some(mmap);
             self.pool = Some(pool);
             self.buffer = Some(buffer);
