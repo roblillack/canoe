@@ -74,7 +74,7 @@ pub struct Context {
 
 impl Context {
     /// Create a new context with default configuration
-    pub fn new() -> Self {
+    pub fn new(skip_config: bool) -> Self {
         Self {
             rwm: None,
             rwm_xkb_bindings: None,
@@ -98,7 +98,7 @@ impl Context {
             next_seat_id: 0,
             next_minimize_seq: 0,
 
-            config: load_config(),
+            config: load_config(skip_config),
 
             running: true,
             session_locked: false,
@@ -2643,7 +2643,7 @@ impl Context {
 
 impl Default for Context {
     fn default() -> Self {
-        Self::new()
+        Self::new(false)
     }
 }
 

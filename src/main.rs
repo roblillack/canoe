@@ -3220,7 +3220,48 @@ impl Dispatch<RiverDecorationV1, canoe::WindowId> for AppState {
     }
 }
 
+const USAGE: &str = "\
+canoe - River window manager
+
+Usage: canoe [OPTIONS]
+
+Options:
+  -n, --no-config   Ignore ~/.config/canoe/canoe.toml and use built-in defaults
+  -h, --help        Print this help and exit
+  -V, --version     Print version and exit";
+
+/// Options parsed from the command line.
+struct CliArgs {
+    skip_config: bool,
+}
+
+/// Parse command-line arguments, exiting the process for --help/--version or on
+/// an unknown flag. Kept deliberately tiny so we avoid a full arg-parsing dep.
+fn parse_args() -> CliArgs {
+    let mut args = CliArgs { skip_config: false };
+    for arg in std::env::args().skip(1) {
+        match arg.as_str() {
+            "-n" | "--no-config" => args.skip_config = true,
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                std::process::exit(0);
+            }
+            "-V" | "--version" => {
+                println!("canoe {}", env!("CARGO_PKG_VERSION"));
+                std::process::exit(0);
+            }
+            other => {
+                eprintln!("canoe: unrecognized argument '{other}'\n\n{USAGE}");
+                std::process::exit(2);
+            }
+        }
+    }
+    args
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let args = parse_args();
+
     // Connect to Wayland display
     let conn = Connection::connect_to_env()?;
     let display = conn.display();
@@ -3230,7 +3271,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let qh = event_queue.handle();
 
     // Create app state
-    let context = Rc::new(RefCell::new(Context::new()));
+    let context = Rc::new(RefCell::new(Context::new(args.skip_config)));
     let mut state = AppState {
         context: context.clone(),
         globals: Globals::default(),

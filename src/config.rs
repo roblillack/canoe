@@ -576,8 +576,14 @@ fn rules_from_file(rules: Vec<RuleFile>) -> Vec<Rule> {
 }
 
 /// Load config from ~/.config/canoe/canoe.toml and apply overrides to defaults.
-pub fn load_config() -> Config {
+///
+/// When `skip_config` is true the file is never read and the built-in defaults
+/// are returned unchanged (see the `--no-config` command-line flag).
+pub fn load_config(skip_config: bool) -> Config {
     let mut config = Config::default();
+    if skip_config {
+        return config;
+    }
     if let Some(path) = config_path() {
         if let Ok(contents) = std::fs::read_to_string(&path) {
             if let Ok(file_config) = toml::from_str::<FileConfig>(&contents) {
