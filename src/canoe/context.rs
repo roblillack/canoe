@@ -57,6 +57,12 @@ pub struct Context {
     /// only valid inside a manage sequence, so the actual work is deferred there
     /// rather than run directly in the SIGHUP handler.
     pending_reapply_rules: bool,
+    /// Set by [`Context::reload_config`] to rebuild and re-register each seat's
+    /// XKB key bindings on the next `manage_start`. Like rule re-application this
+    /// is deferred because `river_xkb_binding_v1.enable`/`disable` are only valid
+    /// inside a manage sequence, and recreating the binding objects also needs
+    /// the Wayland queue handle that only the dispatch layer has.
+    pending_rebind_xkb: bool,
 
     // Runtime state
     pub running: bool,
@@ -109,6 +115,7 @@ impl Context {
             config: load_config(skip_config),
             skip_config,
             pending_reapply_rules: false,
+            pending_rebind_xkb: false,
 
             running: true,
             session_locked: false,
@@ -156,9 +163,12 @@ impl Context {
         }
         self.mark_all_desktops_dirty();
 
-        // Re-applying rules sends window-management requests, which may only be
-        // made during a manage sequence; defer to the next manage_start.
+        // Re-applying rules and re-registering key bindings both send requests
+        // that may only be made during a manage sequence; defer both to the next
+        // manage_start. Rebinding every reload also lets `main_modifier` changes
+        // take effect, not just `[hotkeys]` edits.
         self.pending_reapply_rules = true;
+        self.pending_rebind_xkb = true;
         if let Some(ref rwm) = self.rwm {
             rwm.manage_dirty();
         }
@@ -263,7 +273,24 @@ impl Context {
 
     /// Set up bindings for a seat
     fn setup_seat_bindings(&self, seat: &mut Seat) {
-        use crate::binding::action::{default_pointer_bindings, default_xkb_bindings};
+        use crate::binding::action::default_pointer_bindings;
+
+        self.populate_xkb_bindings(seat);
+
+        // Add pointer bindings
+        for (mode, button, modifiers, action) in default_pointer_bindings(self.config.main_modifier)
+        {
+            seat.add_pointer_binding(PointerBinding::new(mode, button, modifiers, action));
+        }
+
+        seat.initialize_bindings();
+    }
+
+    /// Append the built-in XKB bindings plus any user-configured `[hotkeys]` to a
+    /// seat. Existing bindings are left in place, so callers rebuilding the list
+    /// (see [`Context::rebuild_xkb_bindings`]) must clear it first.
+    fn populate_xkb_bindings(&self, seat: &mut Seat) {
+        use crate::binding::action::default_xkb_bindings;
         use crate::binding::BindingEvent;
         use crate::config::Mode;
 
@@ -278,7 +305,6 @@ impl Context {
             .map(|hotkey| (hotkey.keysym, hotkey.modifiers))
             .collect();
 
-        // Add XKB bindings
         for (mode, keysym, modifiers, action, event) in
             default_xkb_bindings(self.config.main_modifier)
         {
@@ -307,14 +333,27 @@ impl Context {
                 .with_event(BindingEvent::Pressed),
             );
         }
+    }
 
-        // Add pointer bindings
-        for (mode, button, modifiers, action) in default_pointer_bindings(self.config.main_modifier)
-        {
-            seat.add_pointer_binding(PointerBinding::new(mode, button, modifiers, action));
+    /// Rebuild a seat's in-memory XKB binding list from the current config and
+    /// mark each enabled for the seat's current mode.
+    ///
+    /// This only refreshes the data; the caller must destroy the old protocol
+    /// binding objects beforehand and create new ones afterward (that needs the
+    /// Wayland queue handle, which lives in the dispatch layer). Pointer bindings
+    /// are left untouched.
+    pub fn rebuild_xkb_bindings(&self, seat: &mut Seat) {
+        seat.xkb_bindings.clear();
+        self.populate_xkb_bindings(seat);
+        let mode = seat.mode;
+        for (binding, _) in &mut seat.xkb_bindings {
+            binding.enabled = binding.mode == mode;
         }
+    }
 
-        seat.initialize_bindings();
+    /// Take (and clear) the pending-XKB-rebind flag set by a config reload.
+    pub fn take_pending_rebind_xkb(&mut self) -> bool {
+        std::mem::take(&mut self.pending_rebind_xkb)
     }
 
     /// Remove a seat from context

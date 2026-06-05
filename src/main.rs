@@ -362,6 +362,54 @@ fn request_manage_dirty(state: &AppState) {
     }
 }
 
+/// Rebuild every seat's XKB key bindings from the freshly reloaded config.
+///
+/// Called from the `ManageStart` handler after a SIGHUP reload (see
+/// [`canoe::Context::reload_config`]): the old `river_xkb_binding_v1` objects are
+/// destroyed and recreated from the new binding list so that `[hotkeys]` and
+/// `main_modifier` edits take effect. Must run inside a manage sequence because
+/// `enable` is only valid there.
+fn reregister_xkb_bindings(state: &AppState, qh: &QueueHandle<AppState>) {
+    use river_window_management_v1::client::river_seat_v1::Modifiers;
+
+    let context = state.context.borrow();
+    let Some(xkb_bindings_global) = context.rwm_xkb_bindings.clone() else {
+        return;
+    };
+
+    for (&seat_id, seat_rc) in &context.seats {
+        let mut seat = seat_rc.borrow_mut();
+        let Some(rwm_seat) = seat.rwm_seat.clone() else {
+            continue;
+        };
+
+        // Tear down the existing protocol binding objects.
+        for (_, slot) in seat.xkb_bindings.iter_mut() {
+            if let Some(rwm_binding) = slot.take() {
+                rwm_binding.destroy();
+            }
+        }
+
+        // Rebuild the in-memory list from the new config, then recreate the
+        // protocol objects, enabling those that apply to the seat's current mode.
+        context.rebuild_xkb_bindings(&mut seat);
+        for (idx, (binding, slot)) in seat.xkb_bindings.iter_mut().enumerate() {
+            let mods = Modifiers::from_bits_truncate(binding.modifiers);
+            let rwm_binding = xkb_bindings_global.get_xkb_binding(
+                &rwm_seat,
+                binding.keysym,
+                mods,
+                qh,
+                (seat_id, idx),
+            );
+            if binding.enabled {
+                rwm_binding.enable();
+            }
+            *slot = Some(rwm_binding);
+        }
+    }
+}
+
 fn update_menu_hover_from_global(
     state: &mut AppState,
     seat_id: canoe::SeatId,
@@ -1089,6 +1137,11 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
             }
             Event::ManageStart => {
                 state.context.borrow_mut().handle_manage_start();
+                // After a config reload, rebuild key bindings within this manage
+                // sequence (enable/disable are only valid here).
+                if state.context.borrow_mut().take_pending_rebind_xkb() {
+                    reregister_xkb_bindings(state, qh);
+                }
                 // If in icon focus mode, validate that the selected icon still exists
                 {
                     let mut context = state.context.borrow_mut();
