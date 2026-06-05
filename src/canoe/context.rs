@@ -466,6 +466,20 @@ impl Context {
         }
     }
 
+    /// Mark a window as focused for rendering during an alt-tab preview without
+    /// delivering real keyboard focus to it. Keyboard focus is cleared on the
+    /// seat so that keys typed while the switcher menu is open are dropped by
+    /// the compositor instead of being sent to the previewed window.
+    fn focus_preview_visual(&mut self, window_id: WindowId) {
+        self.focused_window = Some(window_id);
+
+        if let Some(seat_id) = self.current_seat {
+            if let Some(seat) = self.seats.get(&seat_id) {
+                seat.borrow().clear_focus();
+            }
+        }
+    }
+
     /// Focus the next/previous window
     pub fn focus_iter(&mut self, direction: Direction) {
         let current_output = match self.current_output.and_then(|id| self.outputs.get(&id)) {
@@ -642,6 +656,11 @@ impl Context {
                     } else {
                         self.close_window_menu();
                     }
+                }
+            }
+            Action::WindowMenuCancel => {
+                if self.window_menu_mode == Some(WindowMenuMode::AltTab) {
+                    self.close_window_menu();
                 }
             }
             Action::ClearFocus => {
@@ -2504,7 +2523,7 @@ impl Context {
                 }
                 w.place_top();
             }
-            self.focus_preview(window_id);
+            self.focus_preview_visual(window_id);
             self.window_menu_alt_tab_preview = Some(window_id);
             self.window_menu_alt_tab_preview_was_hidden = was_hidden;
         }

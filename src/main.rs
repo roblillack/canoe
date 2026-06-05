@@ -2286,9 +2286,26 @@ impl Dispatch<RiverXkbBindingV1, (canoe::SeatId, usize)> for AppState {
             (action, binding.event, binding.enabled)
         };
 
+        // While the window switcher menu is open (Super+Tab), ignore every key
+        // except the ones that drive the menu. Other bindings must not fire and
+        // non-binding keys must not reach the previewed window (keyboard focus is
+        // cleared during the preview, so the compositor drops them).
+        let alt_tab_active =
+            state.context.borrow().window_menu_mode == Some(canoe::WindowMenuMode::AltTab);
+
         match event {
             Event::Pressed => {
                 if !enabled || binding_event != binding::BindingEvent::Pressed {
+                    return;
+                }
+                if alt_tab_active
+                    && !matches!(
+                        action,
+                        binding::Action::WindowMenuCycle
+                            | binding::Action::WindowMenuCycleApp
+                            | binding::Action::WindowMenuCancel
+                    )
+                {
                     return;
                 }
                 match action {
@@ -2321,6 +2338,9 @@ impl Dispatch<RiverXkbBindingV1, (canoe::SeatId, usize)> for AppState {
             }
             Event::Released => {
                 if !enabled || binding_event != binding::BindingEvent::Released {
+                    return;
+                }
+                if alt_tab_active && !matches!(action, binding::Action::WindowMenuCommit) {
                     return;
                 }
                 match action {

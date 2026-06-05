@@ -99,6 +99,8 @@ pub enum Action {
     WindowMenuCycleApp,
     /// Activate selected window menu item
     WindowMenuCommit,
+    /// Cancel the window switcher menu, restoring the previously focused window
+    WindowMenuCancel,
 
     /// Clear keyboard focus
     ClearFocus,
@@ -250,6 +252,23 @@ pub fn default_xkb_bindings(
             0,
             Action::WindowMenuCommit,
             super::BindingEvent::Released,
+        ),
+        // Cancel the window switcher menu (Esc): restore the previously focused
+        // window without activating the current selection. The main modifier is
+        // still held while the menu is open, so it is part of the binding.
+        (
+            Mode::Default,
+            Keysym::Escape.raw(),
+            main,
+            Action::WindowMenuCancel,
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::Default,
+            Keysym::Escape.raw(),
+            main | shift,
+            Action::WindowMenuCancel,
+            super::BindingEvent::Pressed,
         ),
         // Fullscreen toggle
         (
