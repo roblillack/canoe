@@ -109,13 +109,20 @@ lock_cmd = ["swaylock", "-f", "-c", "000000"]
 
 Bind arbitrary key chords to commands under the `[hotkeys]` table. Each key is a
 `+`-separated chord (modifiers first, the key last); each value is the command to
-spawn — a bare string runs a single program, an array passes explicit arguments:
+spawn, given as a string that is split on whitespace into program + arguments:
 
 ```toml
 [hotkeys]
 "Super+I"       = "control-panel"
-"Super+P"       = ["control-panel", "-m", "display"]
+"Super+P"       = "control-panel -m display"
 "Super+Shift+T" = "foot"
+```
+
+If an argument itself contains spaces, use the array form instead, which is
+taken verbatim as the argv (no splitting):
+
+```toml
+"Super+E" = ["sh", "-c", "notify-send 'hi there' && foot"]
 ```
 
 Recognized modifiers are `super` (aliases `logo`/`win`/`mod4`), `alt` (`mod1`),

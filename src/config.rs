@@ -607,6 +607,10 @@ fn parse_chord(chord: &str) -> Option<(u32, u32)> {
 
 /// Build the hotkey list from the `[hotkeys]` config table, skipping (with a
 /// warning) any entry whose chord can't be parsed or whose command is empty.
+///
+/// A string command is split on whitespace into an argv (so
+/// `"control-panel -m display"` runs three arguments); the array form is the
+/// explicit alternative for arguments that themselves contain spaces.
 fn hotkeys_from_file(hotkeys: HashMap<String, StringOrVec>) -> Vec<Hotkey> {
     let mut parsed = Vec::new();
     for (chord, cmd) in hotkeys {
@@ -614,7 +618,10 @@ fn hotkeys_from_file(hotkeys: HashMap<String, StringOrVec>) -> Vec<Hotkey> {
             eprintln!("canoe: ignoring hotkey with unparsable chord {chord:?}");
             continue;
         };
-        let argv = clean_cmd_args(string_or_vec(Some(cmd)).unwrap_or_default());
+        let argv = match cmd {
+            StringOrVec::String(cmd) => cmd.split_whitespace().map(String::from).collect(),
+            StringOrVec::Vec(args) => clean_cmd_args(args),
+        };
         if argv.is_empty() {
             eprintln!("canoe: ignoring hotkey {chord:?} with empty command");
             continue;
@@ -864,6 +871,7 @@ mod tests {
         let contents = r#"
             [hotkeys]
             "Super+I" = "control-panel"
+            "Super+D" = "control-panel -m display"
             "Super+P" = ["control-panel", "-m", "display"]
             "Super+Shift+T" = "foot"
             "Super+Bogus++" = "nope"
@@ -872,36 +880,34 @@ mod tests {
         let file_config = toml::from_str::<FileConfig>(contents).expect("parse config");
         let hotkeys = hotkeys_from_file(file_config.hotkeys.expect("hotkeys present"));
 
-        // The malformed "Super+Bogus++" entry is dropped; three valid ones remain.
-        assert_eq!(hotkeys.len(), 3);
+        // The malformed "Super+Bogus++" entry is dropped; four valid ones remain.
+        assert_eq!(hotkeys.len(), 4);
 
-        let cp = hotkeys
-            .iter()
-            .find(|h| h.argv == vec!["control-panel".to_string()])
-            .expect("Super+I bound");
+        let argv_of = |keysym: u32| -> Vec<String> {
+            hotkeys
+                .iter()
+                .find(|h| h.keysym == keysym)
+                .unwrap_or_else(|| panic!("hotkey for keysym {keysym:#x} bound"))
+                .argv
+                .clone()
+        };
+        let display_argv = vec![
+            "control-panel".to_string(),
+            "-m".to_string(),
+            "display".to_string(),
+        ];
+
+        // A bare string is a single-element argv; a string with args splits on
+        // whitespace, producing the same argv as the explicit array form.
+        assert_eq!(argv_of(0x69), vec!["control-panel".to_string()]); // Super+I
+        assert_eq!(argv_of(0x64), display_argv); // Super+D, string split
+        assert_eq!(argv_of(0x70), display_argv); // Super+P, array form
+        assert_eq!(argv_of(0x74), vec!["foot".to_string()]); // Super+Shift+T
+
+        let cp = hotkeys.iter().find(|h| h.keysym == 0x69).unwrap();
         assert_eq!(cp.modifiers, SUPER);
-        assert_eq!(cp.keysym, 0x69); // 'i'
-
-        let display = hotkeys
-            .iter()
-            .find(|h| {
-                h.argv
-                    == vec![
-                        "control-panel".to_string(),
-                        "-m".to_string(),
-                        "display".to_string(),
-                    ]
-            })
-            .expect("Super+P bound");
-        assert_eq!(display.modifiers, SUPER);
-        assert_eq!(display.keysym, 0x70); // 'p'
-
-        let term = hotkeys
-            .iter()
-            .find(|h| h.argv == vec!["foot".to_string()])
-            .expect("Super+Shift+T bound");
+        let term = hotkeys.iter().find(|h| h.keysym == 0x74).unwrap();
         assert_eq!(term.modifiers, SUPER | SHIFT);
-        assert_eq!(term.keysym, 0x74); // 't'
     }
 
     #[test]
