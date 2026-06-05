@@ -264,13 +264,47 @@ impl Context {
     /// Set up bindings for a seat
     fn setup_seat_bindings(&self, seat: &mut Seat) {
         use crate::binding::action::{default_pointer_bindings, default_xkb_bindings};
+        use crate::binding::BindingEvent;
+        use crate::config::Mode;
+
+        // User-configured hotkeys fire in the default mode on key press and take
+        // precedence over any built-in binding sharing the same key + modifiers,
+        // so collect their signatures and skip the colliding defaults rather than
+        // registering two bindings for one chord.
+        let user_chords: std::collections::HashSet<(u32, u32)> = self
+            .config
+            .hotkeys
+            .iter()
+            .map(|hotkey| (hotkey.keysym, hotkey.modifiers))
+            .collect();
 
         // Add XKB bindings
         for (mode, keysym, modifiers, action, event) in
             default_xkb_bindings(self.config.main_modifier)
         {
+            if mode == Mode::Default
+                && event == BindingEvent::Pressed
+                && user_chords.contains(&(keysym, modifiers))
+            {
+                continue;
+            }
             seat.add_xkb_binding(
                 XkbBinding::new(mode, keysym, modifiers, action).with_event(event),
+            );
+        }
+
+        // Add user-configured hotkeys (spawn a command on key press)
+        for hotkey in &self.config.hotkeys {
+            seat.add_xkb_binding(
+                XkbBinding::new(
+                    Mode::Default,
+                    hotkey.keysym,
+                    hotkey.modifiers,
+                    Action::Spawn {
+                        argv: hotkey.argv.clone(),
+                    },
+                )
+                .with_event(BindingEvent::Pressed),
             );
         }
 
@@ -1822,9 +1856,9 @@ impl Context {
                 let target = output
                     .and_then(|o| o.upgrade())
                     .or_else(|| {
-                        self.windows.get(&window_id).and_then(|w| {
-                            w.borrow().output.as_ref().and_then(|o| o.upgrade())
-                        })
+                        self.windows
+                            .get(&window_id)
+                            .and_then(|w| w.borrow().output.as_ref().and_then(|o| o.upgrade()))
                     })
                     .or_else(|| {
                         self.current_output
@@ -1982,14 +2016,17 @@ impl Context {
         let mut chains: Vec<(WindowId, WindowId, usize)> = self
             .windows
             .iter()
-            .filter_map(|(&id, w)| w.borrow().parent.map(|p| (id, p, self.parent_chain_depth(id))))
+            .filter_map(|(&id, w)| {
+                w.borrow()
+                    .parent
+                    .map(|p| (id, p, self.parent_chain_depth(id)))
+            })
             .collect();
         chains.sort_by_key(|&(_, _, depth)| depth);
         for (child_id, parent_id, _) in chains {
-            let (Some(child), Some(parent)) = (
-                self.windows.get(&child_id),
-                self.windows.get(&parent_id),
-            ) else {
+            let (Some(child), Some(parent)) =
+                (self.windows.get(&child_id), self.windows.get(&parent_id))
+            else {
                 continue;
             };
             let c = child.borrow();

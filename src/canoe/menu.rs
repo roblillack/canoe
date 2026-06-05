@@ -396,7 +396,12 @@ impl WindowMenu {
         }
 
         let region = compositor.create_region(qh, ());
-        region.add(self.theme.shadow_left(), self.theme.shadow_top(), menu_w, menu_h);
+        region.add(
+            self.theme.shadow_left(),
+            self.theme.shadow_top(),
+            menu_w,
+            menu_h,
+        );
         self.surface.set_input_region(Some(&region));
         region.destroy();
     }

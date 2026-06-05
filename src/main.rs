@@ -847,7 +847,16 @@ fn render_desktop_surface(
         return;
     };
 
-    let (bg_color, icons, icon_theme, font_name, font_size, label_font_name, label_font_size, scale) = {
+    let (
+        bg_color,
+        icons,
+        icon_theme,
+        font_name,
+        font_size,
+        label_font_name,
+        label_font_size,
+        scale,
+    ) = {
         let mut context = state.context.borrow_mut();
         let ui = &context.config.ui;
         let bg_color = ui.desktop_background;
@@ -1290,8 +1299,8 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                     for (&window_id, window) in &context.windows {
                         let mut w = window.borrow_mut();
 
-                        let hide_titlebar = w.hidden
-                            || w.decoration == Some(crate::config::WindowDecoration::Csd);
+                        let hide_titlebar =
+                            w.hidden || w.decoration == Some(crate::config::WindowDecoration::Csd);
                         if hide_titlebar {
                             if let Some(ref mut titlebar) = w.titlebar {
                                 if titlebar.mapped {
@@ -2778,7 +2787,8 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                                                 // selected this icon via enter_icon_focus.
                                                 let mut seat_mut = seat.borrow_mut();
                                                 seat_mut.last_icon_click = None;
-                                                seat_mut.queue_action(binding::Action::IconActivate);
+                                                seat_mut
+                                                    .queue_action(binding::Action::IconActivate);
                                                 drop(seat_mut);
                                                 request_manage_dirty(state);
                                             } else {
@@ -2821,8 +2831,7 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                                             render_desktop_surface(state, output_id, _qh);
                                             {
                                                 let mut seat_mut = seat.borrow_mut();
-                                                seat_mut
-                                                    .queue_action(binding::Action::ClearFocus);
+                                                seat_mut.queue_action(binding::Action::ClearFocus);
                                                 seat_mut.queue_action(
                                                     binding::Action::SwitchMode {
                                                         mode: crate::config::Mode::Default,
@@ -2875,7 +2884,8 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                                             );
                                             update_menu_hover_from_global(state, *seat_id, _qh);
                                             seat.borrow_mut().menu_click_button = Some(button);
-                                            seat.borrow_mut().queue_action(binding::Action::ClearFocus);
+                                            seat.borrow_mut()
+                                                .queue_action(binding::Action::ClearFocus);
                                             request_manage_dirty(state);
                                         }
                                     } else {

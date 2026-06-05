@@ -304,7 +304,6 @@ impl Drop for ShmPool {
 }
 
 impl ShmPool {
-
     fn allocate_fresh<D>(
         &mut self,
         slot_size: i32,

@@ -5,7 +5,9 @@ use super::shmfile::ShmPool;
 use crate::protocol::RiverDecorationV1;
 use std::cell::RefCell;
 use std::rc::Rc;
-use wayland_client::protocol::{wl_buffer, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_surface};
+use wayland_client::protocol::{
+    wl_buffer, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_surface,
+};
 use wayland_client::QueueHandle;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,7 +169,10 @@ impl WindowShadow {
         #[cfg(feature = "debug-logging")]
         let prep_t0 = std::time::Instant::now();
         let allocated_before = self.shm_pool.allocate_fresh_count();
-        let slot_idx = match self.shm_pool.prepare(buffer_width, buffer_height, stride, shm, qh) {
+        let slot_idx = match self
+            .shm_pool
+            .prepare(buffer_width, buffer_height, stride, shm, qh)
+        {
             Some(s) => s,
             None => return false,
         };
@@ -565,12 +570,9 @@ mod tests {
 
                         let mut max_alpha_diff = 0i32;
                         for i in (0..got.len()).step_by(4) {
-                            let ga = (u32::from_ne_bytes([
-                                got[i],
-                                got[i + 1],
-                                got[i + 2],
-                                got[i + 3],
-                            ]) >> 24) as i32;
+                            let ga =
+                                (u32::from_ne_bytes([got[i], got[i + 1], got[i + 2], got[i + 3]])
+                                    >> 24) as i32;
                             let wa = (u32::from_ne_bytes([
                                 want[i],
                                 want[i + 1],

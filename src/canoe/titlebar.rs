@@ -396,11 +396,10 @@ impl Titlebar {
         if params.buffer_width <= 0 || params.buffer_height <= 0 {
             return false;
         }
-        let mut renderer =
-            match Renderer::new(pixels, params.buffer_width, params.buffer_height) {
-                Some(renderer) => renderer,
-                None => return false,
-            };
+        let mut renderer = match Renderer::new(pixels, params.buffer_width, params.buffer_height) {
+            Some(renderer) => renderer,
+            None => return false,
+        };
 
         let border_offset = 0;
         let mut border_colors = if params.is_active {
@@ -453,9 +452,7 @@ impl Titlebar {
             params.ui.titlebar_bg_inactive
         };
         let bg_argb = rgba_to_argb(bg_color);
-        let title_height = params
-            .titlebar_height
-            .min(params.height - border_width * 2);
+        let title_height = params.titlebar_height.min(params.height - border_width * 2);
         if title_height > 0 {
             let title_x = border_width;
             let title_y = border_width;
@@ -685,7 +682,10 @@ impl Titlebar {
         #[cfg(feature = "debug-logging")]
         let prep_t0 = std::time::Instant::now();
         let allocated_before = self.shm_pool.allocate_fresh_count();
-        let slot_idx = match self.shm_pool.prepare(buffer_width, buffer_height, stride, shm, qh) {
+        let slot_idx = match self
+            .shm_pool
+            .prepare(buffer_width, buffer_height, stride, shm, qh)
+        {
             Some(s) => s,
             None => return false,
         };
@@ -834,8 +834,8 @@ impl Titlebar {
                         );
                     }
                     if icons_ready {
-                        let icon_x = (title_x + hide.x + (hide.width - icon_size) / 2) * scale
-                            + hide_offset;
+                        let icon_x =
+                            (title_x + hide.x + (hide.width - icon_size) / 2) * scale + hide_offset;
                         let icon_y = (title_y + hide.y + (hide.height - icon_size) / 2) * scale
                             + hide_offset;
                         if let Some(ref icons) = self.icon_cache {
@@ -931,8 +931,7 @@ impl Titlebar {
                             .map(|r| r.x)
                             .or_else(|| buttons.maximize.map(|r| r.x))
                             .unwrap_or(content_width - BUTTON_PADDING_X);
-                        let text_end =
-                            (right_x - BUTTON_GAP - text_padding).min(content_width);
+                        let text_end = (right_x - BUTTON_GAP - text_padding).min(content_width);
                         let text_width = (text_end - text_start).max(0);
                         if text_width > 0 {
                             let text_color = if is_active {
@@ -1052,8 +1051,7 @@ impl Titlebar {
             let full_px = self.buffer_width as i64 * self.buffer_height as i64;
             let damaged_px = self.buffer_width as i64 * cut_y0 as i64
                 + self.buffer_width as i64 * (self.buffer_height - cut_y1) as i64
-                + (cut_x0 as i64 + (self.buffer_width - cut_x1) as i64)
-                    * (cut_y1 - cut_y0) as i64;
+                + (cut_x0 as i64 + (self.buffer_width - cut_x1) as i64) * (cut_y1 - cut_y0) as i64;
             eprintln!(
                 "[canoe damage] FRAME buf={}x{} scale={} damaged={}px / full={}px ({:.1}%)",
                 self.buffer_width,
@@ -1152,7 +1150,6 @@ fn rgba_to_argb(rgba: u32) -> u32 {
     let a = rgba & 0xff;
     (a << 24) | (r << 16) | (g << 8) | b
 }
-
 
 fn build_button_fill(size_px: i32, color_argb: u32) -> Vec<u8> {
     if size_px <= 0 {
