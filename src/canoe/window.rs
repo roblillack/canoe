@@ -303,6 +303,29 @@ impl Window {
         }
     }
 
+    /// Let the window pick its own preferred size.
+    ///
+    /// Per the river-window-management protocol, proposing (0, 0) means "let
+    /// the window decide its own dimensions". River then asks the client (via
+    /// an xdg_toplevel configure of 0x0) to choose, and reports the size the
+    /// window picks back to us in a `dimensions` event. This is how a client's
+    /// preferred/default geometry reaches us — there is no other event that
+    /// surfaces it. We must propose *something* for the window to be displayed,
+    /// so this is the request to use for the initial configure when we want to
+    /// honor the app's own size rather than imposing one.
+    ///
+    /// Note we deliberately bypass the `propose_dimensions` min-size clamp: the
+    /// zeros must reach River verbatim, otherwise a client that advertises a
+    /// minimum (e.g. a terminal's 1-cell minimum) would be pinned to that
+    /// minimum instead of its preferred size.
+    pub fn propose_preferred_dimensions(&mut self) {
+        self.proposed_width = 0;
+        self.proposed_height = 0;
+        if let Some(ref rwm_window) = self.rwm_window {
+            rwm_window.propose_dimensions(0, 0);
+        }
+    }
+
     /// Set window position
     pub fn set_position(&mut self, x: i32, y: i32) {
         self.x = x;

@@ -1864,37 +1864,14 @@ impl Context {
                         w.set_decoration(decoration);
                     }
 
-                    // We must call propose_dimensions for windows to be displayed.
-                    // The protocol says (0,0) means "let window decide" but that
-                    // gives us the window's minimum size (often tiny).
-                    let (default_width, default_height) = w
-                        .output
-                        .as_ref()
-                        .and_then(|output| output.upgrade())
-                        .map(|output| {
-                            let (_, _, width, height) = output.borrow().usable_area();
-                            if width > 0 && height > 0 {
-                                (width / 2, height / 2)
-                            } else {
-                                (800, 600)
-                            }
-                        })
-                        .unwrap_or((800, 600));
-                    // Cap by the client's max-size hint when set. For
-                    // fixed-size windows (typical of dialogs) the hint has
-                    // min == max, so propose_dimensions ends up at exactly
-                    // that size after its min-clamp.
-                    let proposed_width = if w.max_width > 0 {
-                        default_width.min(w.max_width)
-                    } else {
-                        default_width
-                    };
-                    let proposed_height = if w.max_height > 0 {
-                        default_height.min(w.max_height)
-                    } else {
-                        default_height
-                    };
-                    w.propose_dimensions(proposed_width, proposed_height);
+                    // We must propose dimensions for the window to be displayed.
+                    // Propose (0, 0), which tells River to let the window pick
+                    // its own preferred size; River reports that size back via a
+                    // dimensions event. This honors the size the application
+                    // asked for instead of imposing one. Fixed-size windows
+                    // (min == max) and dialogs naturally end up at their own
+                    // requested size through the same path.
+                    w.propose_preferred_dimensions();
                 }
 
                 // Focus the new window
