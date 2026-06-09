@@ -376,9 +376,17 @@ impl Context {
             window.parent.is_some(),
         );
 
-        // hint 0 = only_supports_csd, hint 1 = prefers_csd
-        // Respect CSD preference for both cases
-        let prefers_csd = matches!(window.decoration_hint, Some(0) | Some(1));
+        // Decoration hints (river_window_v1.decoration_hint):
+        //   0 only_supports_csd, 1 prefers_csd, 2 prefers_ssd, 3 no_preference
+        //
+        // We default to SSD and only fall back to CSD when the client
+        // *explicitly* asked for client-side decorations (prefers_csd). A value
+        // of "only_supports_csd" is what River reports for a client that never
+        // created an xdg-decoration object at all -- i.e. it does not negotiate
+        // decorations. IMHO the naming of this value is wrong, as quite a few
+        // applications I tested assume SSD and get the 0 decoration_hint:
+        // MATE Terminal, Gimp, Inkscape, ...
+        let prefers_csd = matches!(window.decoration_hint, Some(1));
 
         let decoration = if applied.force_ssd {
             WindowDecoration::Ssd
