@@ -399,18 +399,18 @@ impl Context {
         window.set_swallow_top(applied.swallow_top.unwrap_or(0));
 
         // Inform the client which window-management capabilities apply.
-        // Parented dialogs: close only.
-        // Fixed-size toplevels: no maximize/fullscreen, but minimize stays.
         // Regular windows: full set.
-        let caps = if window.is_dialog() {
-            Capabilities::empty()
-        } else if window.is_fixed_size() {
-            Capabilities::WindowMenu | Capabilities::Minimize
-        } else {
+        // Fixed-size toplevels: no maximize/fullscreen, but minimize stays.
+        // Parented dialogs: close only.
+        let caps = if window.has_minimize_button() && window.has_maximize_button() {
             Capabilities::WindowMenu
                 | Capabilities::Maximize
                 | Capabilities::Fullscreen
                 | Capabilities::Minimize
+        } else if window.has_minimize_button() {
+            Capabilities::WindowMenu | Capabilities::Minimize
+        } else {
+            Capabilities::WindowMenu
         };
         window.set_capabilities(caps);
     }

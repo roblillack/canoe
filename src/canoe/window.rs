@@ -250,7 +250,7 @@ impl Window {
 
     /// Whether the user may resize this window by dragging its borders.
     pub fn is_resizable(&self) -> bool {
-        !self.is_dialog() && !self.is_fixed_size()
+        !self.is_fixed_size()
     }
 
     /// Whether the SSD titlebar should expose a minimize button.
