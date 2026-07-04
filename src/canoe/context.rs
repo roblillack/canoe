@@ -227,18 +227,9 @@ impl Context {
 
     /// Remove a window from context
     pub fn destroy_window(&mut self, window_id: WindowId) {
-        // Remove from focus stack
+        let was_focused = self.focused_window == Some(window_id);
+
         self.focus_stack.retain(|&id| id != window_id);
-
-        // Update focused window if necessary
-        if self.focused_window == Some(window_id) {
-            if let Some(&next_id) = self.focus_stack.first() {
-                self.focus(next_id);
-            } else {
-                self.clear_keyboard_focus();
-            }
-        }
-
         self.windows.remove(&window_id);
 
         if let Some(picker) = self.share_picker.as_mut() {
@@ -246,6 +237,11 @@ impl Context {
         }
         self.share_nudges.retain(|n| n.window != window_id);
         self.forget_share_choice(super::share_picker::ShareTarget::Window(window_id));
+
+        if was_focused {
+            self.focused_window = None;
+            self.restore_focus_from_stack();
+        }
     }
 
     /// Create a new output and add to context
