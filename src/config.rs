@@ -257,6 +257,7 @@ struct FileConfig {
     launcher_cmd: Option<StringOrVec>,
     terminal_cmd: Option<StringOrVec>,
     lock_cmd: Option<StringOrVec>,
+    startup_cmds: Option<Vec<StringOrVec>>,
     ui: Option<UiConfigFile>,
     rules: Option<Vec<RuleFile>>,
     /// Map of key chord (e.g. `"Super+I"`) to the command it spawns.
@@ -534,6 +535,24 @@ fn string_or_vec(value: Option<StringOrVec>) -> Option<Vec<String>> {
     }
 }
 
+fn string_or_vec_nested(vector: Option<Vec<StringOrVec>>) -> Option<Vec<Vec<String>>> {
+    match vector {
+        Some(vec) => {
+            let mut new_vec = Vec::with_capacity(vec.len());
+            let mut i = 0;
+            for vs in vec {
+                let v = string_or_vec(Some(vs));
+                if v.is_some() {
+                    new_vec.insert(i, v?);
+                }
+                i += 1;
+            }
+            Some(new_vec)
+        },
+        None => None
+    }
+}
+
 fn parse_match_props(value: Option<StringOrVec>) -> (Option<bool>, Option<bool>) {
     let props = string_or_vec(value).unwrap_or_default();
     let mut require_csd_only = None;
@@ -698,6 +717,18 @@ pub fn load_config(skip_config: bool) -> Config {
                     let lock_cmd = clean_cmd_args(lock_cmd);
                     if !lock_cmd.is_empty() {
                         config.lock_cmd = lock_cmd;
+                    }
+                }
+                if let Some(startup_cmds) = string_or_vec_nested(file_config.startup_cmds) {
+                    let startup_cmds: Vec<Vec<String>> = 
+                        startup_cmds
+                            .iter()
+                            .map(|vec| 
+                                clean_cmd_args(vec.to_vec())
+                            )
+                            .collect();
+                    if !startup_cmds.is_empty() {
+                        config.startup_cmds = startup_cmds;
                     }
                 }
                 if let Some(ui) = file_config.ui {
