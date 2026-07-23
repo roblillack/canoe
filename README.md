@@ -72,8 +72,10 @@ cargo build --release
 
 Canoe reads `~/.config/canoe/canoe.toml`. After editing it, send `SIGHUP` to
 re-read it without restarting (e.g. `pkill -HUP canoe`); this refreshes the
-theme, desktop, window rules, and key bindings. Pass `--no-config` to ignore the
-file and use the built-in defaults (reloads keep honoring this).
+theme, desktop, window rules, and key bindings. **Startup commands and environment
+variables require a full restart of the compositor to take effect**. Pass 
+`--no-config` to ignore the file and use the built-in defaults (reloads keep 
+honoring this).
 
 The main modifier defaults to `super`, but you can change it:
 
@@ -103,6 +105,34 @@ The screen locker defaults to `swaylock`. Override it the same way:
 lock_cmd = "swaylock"
 # Or with arguments:
 lock_cmd = ["swaylock", "-f", "-c", "000000"]
+```
+
+### Startup commands
+
+Have system commands that run upon initialization of Canoe. This is useful for
+performing routine procedures such as performing display configurations, setting
+desktop wallpapers, or starting up other shell utilities. Startup commands are 
+ran sequentially.
+
+```toml
+startup_cmds = [
+    # Supports simple programs
+    "kanshi",
+    # AND programs with arguments
+    ["systemctl", "--user", "start", "xdg-desktop-portal-wlr.service"]
+]
+```
+
+### Environment variables
+
+Bind your environment variables under the `[env]` table. All values must be a
+string.
+
+```toml
+[env]
+# XDG session type
+XDG_SESSION_TYPE = "wayland"
+XDG_CURRENT_DESKTOP = "river:wlroots"
 ```
 
 ### Hotkeys
