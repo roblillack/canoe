@@ -253,6 +253,7 @@ impl Default for Config {
 
 #[derive(Debug, Deserialize)]
 struct FileConfig {
+    env: Option<HashMap<String, String>>,
     main_modifier: Option<MainModifier>,
     launcher_cmd: Option<StringOrVec>,
     terminal_cmd: Option<StringOrVec>,
@@ -698,6 +699,11 @@ pub fn load_config(skip_config: bool) -> Config {
     if let Some(path) = config_path() {
         if let Ok(contents) = std::fs::read_to_string(&path) {
             if let Ok(file_config) = toml::from_str::<FileConfig>(&contents) {
+                if let Some(env) = file_config.env {
+                    if !env.is_empty() {
+                        config.env = env
+                    }
+                }
                 if let Some(main_modifier) = file_config.main_modifier {
                     config.main_modifier = main_modifier;
                 }
