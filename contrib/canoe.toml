@@ -1,0 +1,50 @@
+main_modifier = "super"
+
+[env]
+# Wayland-native app support
+MOZ_ENABLE_WAYLAND = "1"
+QT_QPA_PLATFORM = "wayland"
+SDL_VIDEODRIVER = "wayland"
+_JAVA_AWT_WM_NONREPARENTING = "1"
+ELECTRON_OZONE_PLATFORM_HINT = "auto"
+
+# XDG session type
+XDG_SESSION_TYPE = "wayland"
+XDG_CURRENT_DESKTOP = "river:wlroots"
+
+# Sample rule specifically to remove GTK's client-side decorations
+[[rules]]
+match_app_id = ["thunar", "librewolf"]
+match_props = "toplevel"
+force_ssd = true
+swallow_top = 36
+
+[ui]
+border_width = 2
+border_active = { outer = "#FFD000", mid = "#000000", inner = "#FFD000" }
+border_inactive = { outer = "#000000", mid = "#000000", inner = "#000000" }
+titlebar_text_active = "#000000"
+titlebar_text_inactive = "#808080"
+titlebar_bg_active = "#FFD000"
+titlebar_bg_inactive = "#202020"
+menu_bg = "#000000"
+menu_text = "#FFFFFF"
+menu_highlight_bg = "#FFD000"
+menu_highlight_text = "#000000"
+button_bg = "#ececec"
+button_highlight = "#ffffff"
+button_shadow = "#000000"
+shadows_enabled = true          # master toggle; when false menus fall back to a flat L-shape
+shadows_active_size = 20        # soft shadow size for the focused window (and menus)
+shadows_inactive_size = 10      # soft shadow size for non-focused windows
+shadows_color = "#00000033"     # shadow color used for the soft drop shadow
+font_name = "Sans"
+font_size = 12.0
+desktop_background = "#101010"
+icons_enabled = true            # set to false to hide minimized-window icons on the desktop
+icons_font_name = "Sans"        # optional; defaults to a regular-weight variant of font_name
+icons_font_size = 10.0          # optional; defaults to font_size * 0.80
+icons_text = "#FFFFFF"          # optional; defaults to menu_text
+icons_highlight_bg = "#FFD000"  # optional; defaults to menu_highlight_bg
+icons_highlight_text = "#000000"# optional; defaults to menu_highlight_text
+
