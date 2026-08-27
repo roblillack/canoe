@@ -22,9 +22,10 @@ struct LoadedFont {
     size_px: u32,
 }
 
-struct FontCache {
+pub(super) struct FontCache {
     library: ft::FT_Library,
     loaded: Option<LoadedFont>,
+    fallbacks: Vec<LoadedFont>,
 }
 
 impl FontCache {
@@ -37,72 +38,88 @@ impl FontCache {
         Some(Self {
             library,
             loaded: None,
+            fallbacks: Vec::new(),
         })
     }
 
-    fn face_for(&mut self, query: Option<&str>, size_px: u32) -> Option<FaceHandle> {
+    fn load_primary(&mut self, query: Option<&str>, size_px: u32) -> Option<()> {
         let query = query.unwrap_or(DEFAULT_FONT_QUERY);
+        let size_px = size_px.max(1);
         let needs_reload = match &self.loaded {
             Some(loaded) => loaded.query != query,
             None => true,
         };
 
         if needs_reload {
-            let matched = match_font(query)?;
-            let c_path = CString::new(matched.path.to_string_lossy().as_bytes()).ok()?;
-            let mut face: ft::FT_Face = ptr::null_mut();
-            let ok = unsafe {
-                freetype::succeeded(ft::FT_New_Face(
-                    self.library,
-                    c_path.as_ptr(),
-                    matched.index as ft::FT_Long,
-                    &mut face,
-                ))
-            };
-            if !ok || face.is_null() {
-                return None;
-            }
-            if let Some(loaded) = self.loaded.take() {
-                unsafe {
-                    ft::FT_Done_Face(loaded.face);
+            let matched = match_font(query, None)?;
+            let loaded = self.load_font(matched, query, size_px)?;
+            self.clear_fallbacks();
+            self.clear_loaded();
+            self.loaded = Some(loaded);
+        } else {
+            let loaded = self.loaded.as_ref()?;
+            if loaded.size_px != size_px {
+                if unsafe { !freetype::succeeded(ft::FT_Set_Pixel_Sizes(loaded.face, 0, size_px)) }
+                {
+                    return None;
                 }
+                self.clear_fallbacks();
+                self.loaded.as_mut()?.size_px = size_px;
             }
-            let size_px = size_px.max(1);
-            let ok = unsafe { freetype::succeeded(ft::FT_Set_Pixel_Sizes(face, 0, size_px)) };
-            if !ok {
-                unsafe {
-                    ft::FT_Done_Face(face);
-                }
-                return None;
-            }
-            self.loaded = Some(LoadedFont {
-                query: query.to_string(),
-                face,
-                size_px,
-            });
         }
 
-        let loaded = self.loaded.as_mut()?;
-        let size_px = size_px.max(1);
-        if loaded.size_px != size_px {
-            let ok =
-                unsafe { freetype::succeeded(ft::FT_Set_Pixel_Sizes(loaded.face, 0, size_px)) };
-            if !ok {
-                return None;
-            }
-            loaded.size_px = size_px;
-        }
-        Some(FaceHandle { face: loaded.face })
+        Some(())
     }
-}
 
-impl Drop for FontCache {
-    fn drop(&mut self) {
+    fn load_font(&self, matched: FontMatch, query: &str, size_px: u32) -> Option<LoadedFont> {
+        let c_path = CString::new(matched.path.to_string_lossy().as_bytes()).ok()?;
+        let mut face: ft::FT_Face = ptr::null_mut();
+        let ok = unsafe {
+            freetype::succeeded(ft::FT_New_Face(
+                self.library,
+                c_path.as_ptr(),
+                matched.index as ft::FT_Long,
+                &mut face,
+            ))
+        };
+        if !ok || face.is_null() {
+            return None;
+        }
+        let ok = unsafe { freetype::succeeded(ft::FT_Set_Pixel_Sizes(face, 0, size_px)) };
+        if !ok {
+            unsafe {
+                ft::FT_Done_Face(face);
+            }
+            return None;
+        }
+        Some(LoadedFont {
+            query: query.to_string(),
+            face,
+            size_px,
+        })
+    }
+
+    fn clear_loaded(&mut self) {
         if let Some(loaded) = self.loaded.take() {
             unsafe {
                 ft::FT_Done_Face(loaded.face);
             }
         }
+    }
+
+    fn clear_fallbacks(&mut self) {
+        for fallback in self.fallbacks.drain(..) {
+            unsafe {
+                ft::FT_Done_Face(fallback.face);
+            }
+        }
+    }
+}
+
+impl Drop for FontCache {
+    fn drop(&mut self) {
+        self.clear_fallbacks();
+        self.clear_loaded();
         if !self.library.is_null() {
             unsafe {
                 ft::FT_Done_FreeType(self.library);
@@ -118,24 +135,21 @@ thread_local! {
 pub fn with_face<R>(
     query: Option<&str>,
     size_px: u32,
-    f: impl FnOnce(&mut FaceHandle) -> R,
+    f: impl FnOnce(&mut FontCache) -> R,
 ) -> Option<R> {
     FONT_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let cache = cache.as_mut()?;
-        let mut face = cache.face_for(query, size_px)?;
-        Some(f(&mut face))
+        cache.load_primary(query, size_px)?;
+        Some(f(cache))
     })
 }
 
-pub struct FaceHandle {
-    face: ft::FT_Face,
-}
-
-impl FaceHandle {
+impl FontCache {
     pub fn line_metrics(&self) -> Option<LineMetrics> {
+        let face = self.loaded.as_ref()?.face;
         unsafe {
-            let size = (*self.face).size;
+            let size = (*face).size;
             if size.is_null() {
                 return None;
             }
@@ -148,9 +162,10 @@ impl FaceHandle {
     }
 
     pub fn load_char(&mut self, ch: char) -> Option<GlyphBitmap<'_>> {
+        let face = self.face_for_char(ch)?;
         let ok = unsafe {
             freetype::succeeded(ft::FT_Load_Char(
-                self.face,
+                face,
                 ch as ft::FT_ULong,
                 ft::FT_LOAD_RENDER as ft::FT_Int32,
             ))
@@ -160,7 +175,7 @@ impl FaceHandle {
         }
 
         unsafe {
-            let glyph = (*self.face).glyph;
+            let glyph = (*face).glyph;
             if glyph.is_null() {
                 return None;
             }
@@ -200,6 +215,38 @@ impl FaceHandle {
             })
         }
     }
+
+    fn face_for_char(&mut self, ch: char) -> Option<ft::FT_Face> {
+        let has_glyph = |face: ft::FT_Face| {
+            !face.is_null() && unsafe { ft::FT_Get_Char_Index(face, ch as ft::FT_ULong) != 0 }
+        };
+        let (primary, query, size_px) = {
+            let loaded = self.loaded.as_ref()?;
+            (loaded.face, loaded.query.clone(), loaded.size_px)
+        };
+        if has_glyph(primary) {
+            return Some(primary);
+        }
+
+        for fallback in &self.fallbacks {
+            if has_glyph(fallback.face) {
+                return Some(fallback.face);
+            }
+        }
+
+        let matched = match_font(&query, Some(ch))?;
+        let fallback = self.load_font(matched, &query, size_px)?;
+        if !has_glyph(fallback.face) {
+            unsafe {
+                ft::FT_Done_Face(fallback.face);
+            }
+            return None;
+        }
+
+        let face = fallback.face;
+        self.fallbacks.push(fallback);
+        Some(face)
+    }
 }
 
 pub struct LineMetrics {
@@ -230,14 +277,17 @@ pub fn measure_text(query: Option<&str>, font_size: f32, text: &str) -> Option<f
     })
 }
 
-fn match_font(pattern: &str) -> Option<FontMatch> {
+fn match_font(pattern: &str, ch: Option<char>) -> Option<FontMatch> {
     let path = Path::new(pattern);
-    if path.is_file() {
+    let is_file = path.is_file();
+    if ch.is_none() && is_file {
         return Some(FontMatch {
             path: path.to_path_buf(),
             index: 0,
         });
     }
+    // let fontconfig decide
+    let pattern = if is_file { DEFAULT_FONT_QUERY } else { pattern };
 
     let config = fontconfig_config()?;
     let c_pattern = CString::new(pattern).ok()?;
@@ -248,6 +298,20 @@ fn match_font(pattern: &str) -> Option<FontMatch> {
         }
         fc::FcConfigSubstitute(config, pat, fc::FcMatchPattern);
         fc::FcDefaultSubstitute(pat);
+        if let Some(ch) = ch {
+            let charset = fc::FcCharSetCreate();
+            let added = !charset.is_null()
+                && fc::FcCharSetAddChar(charset, ch as fc::FcChar32) != 0
+                && fc::FcPatternAddCharSet(pat, fc::constants::FC_CHARSET.as_ptr(), charset) != 0;
+
+            if !charset.is_null() {
+                fc::FcCharSetDestroy(charset);
+            }
+            if !added {
+                fc::FcPatternDestroy(pat);
+                return None;
+            }
+        }
         let mut result = fc::FcResultMatch;
         let font = fc::FcFontMatch(config, pat, &mut result);
         fc::FcPatternDestroy(pat);
