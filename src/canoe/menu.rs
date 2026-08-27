@@ -245,6 +245,21 @@ impl WindowMenu {
         false
     }
 
+    pub fn select_previous(&mut self) -> bool {
+        if self.items.is_empty() {
+            return false;
+        }
+        let previous = match self.hovered {
+            Some(0) | None => self.items.len() - 1,
+            Some(idx) => idx - 1,
+        };
+        if self.hovered != Some(previous) {
+            self.hovered = Some(previous);
+            return true;
+        }
+        false
+    }
+
     pub fn select_window(&mut self, window_id: Option<WindowId>) -> bool {
         let next = window_id.and_then(|id| self.items.iter().position(|item| item.window_id == id));
         if self.hovered != next {
