@@ -645,7 +645,17 @@ impl Context {
                     self.activate_menu_hovered();
                 }
             }
-            Action::WindowMenuCycle | Action::WindowMenuCycleApp => {
+            Action::WindowMenuCycle { direction } => {
+                if self.window_menu_mode == Some(WindowMenuMode::AltTab) {
+                    if let Some(menu) = self.window_menu.as_mut() {
+                        match direction {
+                            Direction::Forward => menu.select_next(),
+                            Direction::Reverse => menu.select_previous(),
+                        };
+                    }
+                }
+            }
+            Action::WindowMenuCycleApp => {
                 if self.window_menu_mode == Some(WindowMenuMode::AltTab) {
                     if let Some(menu) = self.window_menu.as_mut() {
                         menu.select_next();

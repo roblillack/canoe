@@ -94,7 +94,7 @@ pub enum Action {
     /// Activate selected window menu item
     ActivateMenuHovered,
     /// Cycle window menu entries
-    WindowMenuCycle,
+    WindowMenuCycle { direction: Direction },
     /// Cycle window menu entries for the focused application
     WindowMenuCycleApp,
     /// Activate selected window menu item
@@ -222,7 +222,9 @@ pub fn default_xkb_bindings(
             Mode::Default,
             Keysym::Tab.raw(),
             main,
-            Action::WindowMenuCycle,
+            Action::WindowMenuCycle {
+                direction: Direction::Forward,
+            },
             super::BindingEvent::Pressed,
         ),
         (
@@ -236,7 +238,9 @@ pub fn default_xkb_bindings(
             Mode::Default,
             Keysym::Tab.raw(),
             main | shift,
-            Action::WindowMenuCycle,
+            Action::WindowMenuCycle {
+                direction: Direction::Reverse,
+            },
             super::BindingEvent::Pressed,
         ),
         (
