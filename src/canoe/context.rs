@@ -1849,6 +1849,11 @@ impl Context {
             self.set_window_output(window_id, output_id);
         }
 
+        // Set default output for layer-shell clients
+        if let Some(output_id) = self.current_output {
+            self.set_default_layer_shell_output(output_id);
+        }
+
         // Arrange all outputs
         let output_ids: Vec<OutputId> = self.outputs.keys().copied().collect();
         for output_id in output_ids {
