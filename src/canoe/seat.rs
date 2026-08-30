@@ -11,6 +11,7 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Weak;
 use std::time::Instant;
+use wayland_client::Proxy;
 use wayland_client::protocol::wl_pointer::WlPointer;
 use wayland_client::protocol::wl_seat::WlSeat;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{
@@ -202,10 +203,12 @@ impl Seat {
         }
     }
 
-    /// Set XCursor theme
+    /// Set XCursor theme (river-window-management v2+)
     pub fn set_xcursor_theme(&self, name: &str, size: u32) {
         if let Some(ref rwm_seat) = self.rwm_seat {
-            rwm_seat.set_xcursor_theme(name.to_string(), size);
+            if rwm_seat.version() >= 2 {
+                rwm_seat.set_xcursor_theme(name.to_string(), size);
+            }
         }
     }
 

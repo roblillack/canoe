@@ -182,6 +182,12 @@ impl Context {
         }
         self.mark_all_desktops_dirty();
 
+        // Not manage-sequence-bound; apply immediately.
+        let theme = self.config.xcursor_theme_resolved();
+        for seat in self.seats.values() {
+            seat.borrow().set_xcursor_theme(&theme.name, theme.size);
+        }
+
         // Re-applying rules and re-registering key bindings both send requests
         // that may only be made during a manage sequence; defer both to the next
         // manage_start. Rebinding every reload also lets `main_modifier` changes
@@ -769,6 +775,12 @@ impl Context {
                 for (key, value) in &self.config.env {
                     cmd.env(key, value);
                 }
+
+                // Protocol note: propagate the theme to spawned clients so
+                // client-rendered cursors match compositor-rendered ones.
+                let theme = self.config.xcursor_theme_resolved();
+                cmd.env("XCURSOR_THEME", &theme.name);
+                cmd.env("XCURSOR_SIZE", theme.size.to_string());
 
                 // Make sure child inherits display environment
                 // (WAYLAND_DISPLAY should already be in env)

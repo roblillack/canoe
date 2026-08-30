@@ -256,10 +256,44 @@ impl Default for Config {
     }
 }
 
+impl Config {
+    /// Resolved XCursor theme: config file → XCURSOR_THEME/XCURSOR_SIZE env
+    /// → ("default", 24).
+    pub fn xcursor_theme_resolved(&self) -> XCursorTheme {
+        self.xcursor_theme
+            .clone()
+            .or_else(xcursor_theme_from_env)
+            .unwrap_or(XCursorTheme {
+                name: "default".to_string(),
+                size: 24,
+            })
+    }
+}
+
+/// Read the theme from XCURSOR_THEME/XCURSOR_SIZE, if either is set.
+fn xcursor_theme_from_env() -> Option<XCursorTheme> {
+    let name = std::env::var("XCURSOR_THEME")
+        .ok()
+        .filter(|s| !s.is_empty());
+    let size = std::env::var("XCURSOR_SIZE")
+        .ok()
+        .and_then(|s| s.parse::<u32>().ok())
+        .filter(|&s| s > 0);
+    if name.is_none() && size.is_none() {
+        return None;
+    }
+    Some(XCursorTheme {
+        name: name.unwrap_or_else(|| "default".to_string()),
+        size: size.unwrap_or(24),
+    })
+}
+
 #[derive(Debug, Deserialize)]
 struct FileConfig {
     env: Option<HashMap<String, String>>,
     main_modifier: Option<MainModifier>,
+    xcursor_theme: Option<String>,
+    xcursor_size: Option<u32>,
     launcher_cmd: Option<StringOrVec>,
     terminal_cmd: Option<StringOrVec>,
     lock_cmd: Option<StringOrVec>,
@@ -714,6 +748,22 @@ impl Config {
         }
         if let Some(main_modifier) = file.main_modifier {
             self.main_modifier = main_modifier;
+        }
+        if file.xcursor_theme.is_some() || file.xcursor_size.is_some() {
+            let env = xcursor_theme_from_env();
+            self.xcursor_theme = Some(XCursorTheme {
+                name: file
+                    .xcursor_theme
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .or_else(|| env.as_ref().map(|e| e.name.clone()))
+                    .unwrap_or_else(|| "default".to_string()),
+                size: file
+                    .xcursor_size
+                    .filter(|&s| s > 0)
+                    .or_else(|| env.as_ref().map(|e| e.size))
+                    .unwrap_or(24),
+            });
         }
         if let Some(launcher_cmd) = string_or_vec(file.launcher_cmd) {
             let launcher_cmd = clean_cmd_args(launcher_cmd);
