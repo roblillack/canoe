@@ -2607,8 +2607,12 @@ impl Context {
     /// Mark all desktop surfaces as needing re-render.
     pub fn mark_all_desktops_dirty(&self) {
         for output in self.outputs.values() {
-            if let Some(desktop) = output.borrow_mut().desktop_surface.as_mut() {
+            let mut out = output.borrow_mut();
+            if let Some(desktop) = out.desktop_surface.as_mut() {
                 desktop.dirty = true;
+            }
+            if let Some(background) = out.desktop_background.as_mut() {
+                background.dirty = true;
             }
         }
     }

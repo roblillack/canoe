@@ -1,5 +1,4 @@
-//! Desktop background surface for pointer input and minimized window icons.
-
+//! Desktop icon surface (bottom layer) + shared surface machinery also used by the background fill
 #![allow(dead_code)]
 
 use memmap2::MmapMut;
@@ -415,10 +414,19 @@ impl DesktopSurface {
         self.icons.len()
     }
 
+    /// With `full = true` the whole surface accepts input (legacy behavior:
+    /// right-click anywhere opens the window menu). With `full = false` only
+    /// the minimized-icon cells accept input and everything else falls
+    /// through to clients below (e.g. shaderbg). No icons + `full = false`
+    /// = fully click-through.
+    ///
+    /// Never pass `None` to set_input_region here: `None` means an
+    /// *infinite* region; an empty region means "no input".
     pub fn update_input_region<D>(
         &self,
         compositor: &wl_compositor::WlCompositor,
         qh: &QueueHandle<D>,
+        full: bool,
     ) where
         D: 'static + wayland_client::Dispatch<wl_region::WlRegion, ()>,
     {
@@ -427,7 +435,13 @@ impl DesktopSurface {
         }
 
         let region = compositor.create_region(qh, ());
-        region.add(0, 0, self.width, self.height);
+        if full {
+            region.add(0, 0, self.width, self.height);
+        } else {
+            for layout in &self.icons {
+                region.add(layout.x, layout.y, ICON_CELL_WIDTH, ICON_CELL_HEIGHT);
+            }
+        }
         self.surface.set_input_region(Some(&region));
         region.destroy();
     }

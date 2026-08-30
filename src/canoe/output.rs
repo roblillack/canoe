@@ -52,8 +52,11 @@ pub struct Output {
     pub exclusive_width: i32,
     pub exclusive_height: i32,
 
-    /// Desktop background surface for pointer input
+    /// Desktop surface for pointer input
     pub desktop_surface: Option<DesktopSurface>,
+
+    /// Solid-fill background surface (background layer, below wallpaper).
+    pub desktop_background: Option<DesktopSurface>,
 
     /// Whether this output has been removed
     pub removed: bool,
@@ -81,6 +84,7 @@ impl Output {
             exclusive_width: 0,
             exclusive_height: 0,
             desktop_surface: None,
+            desktop_background: None,
             removed: false,
         }
     }
