@@ -2457,7 +2457,18 @@ impl Dispatch<RiverOutputV1, canoe::OutputId> for AppState {
                 ensure_desktop_surfaces(state, output_id, qh);
             }
             Event::Position { x, y } => {
+                let (dx, dy) = {
+                    let out = output.borrow();
+                    (x - out.x, y - out.y)
+                };
                 output.borrow_mut().update_position(x, y);
+                if dx != 0 || dy != 0 {
+                    state
+                        .context
+                        .borrow_mut()
+                        .pending_output_shifts
+                        .push((output_id, dx, dy));
+                }
             }
             Event::Dimensions { width, height } => {
                 output.borrow_mut().update_dimensions(width, height);
