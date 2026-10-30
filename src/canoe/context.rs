@@ -2353,8 +2353,8 @@ impl Context {
         };
         let output_ref = output.borrow();
 
-        let scale = output_ref.desktop_scale(self.config.ui.density());
-        let icon_size_px = scale.design(super::desktop::ICON_SIZE);
+        let scale = output_ref.desktop_scale();
+        let icon_size_px = scale.px(super::desktop::ICON_SIZE);
 
         // Collect window data into a temp vec to avoid holding borrow of self.windows
         // while calling self.get_icon.

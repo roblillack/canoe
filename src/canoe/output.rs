@@ -88,25 +88,24 @@ impl Output {
     /// The scale a surface on this output draws at before the compositor has
     /// told it its own: the fractional scale another surface here was given,
     /// else the integer output scale.
-    pub fn render_scale(&self, density: f32) -> super::scale::Scale {
+    pub fn render_scale(&self) -> super::scale::Scale {
         let device = match self.preferred_scale {
             Some(preferred) => preferred as f64 / super::scale::FRACTIONAL_DENOMINATOR as f64,
             None => self.scale.max(1) as f64,
         };
-        super::scale::Scale::new(device, density)
+        super::scale::Scale::new(device)
     }
 
     /// The scale the desktop surface draws at: its own preferred scale once
     /// it has one, else [`render_scale`](Self::render_scale)'s.
-    pub fn desktop_scale(&self, density: f32) -> super::scale::Scale {
+    pub fn desktop_scale(&self) -> super::scale::Scale {
         match self.desktop_surface {
             Some(ref desktop) => super::scale::Scale::new(
                 desktop
                     .fractional
                     .device_scale(self.preferred_scale, self.scale),
-                density,
             ),
-            None => self.render_scale(density),
+            None => self.render_scale(),
         }
     }
 

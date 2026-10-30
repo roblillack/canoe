@@ -11,22 +11,17 @@ use wayland_client::protocol::{
 };
 use wayland_client::QueueHandle;
 
-/// Titlebar height in design pixels: `0.75·font_size` rounded, doubled plus
+/// Titlebar height in logical pixels: `0.8·font_size` rounded, doubled plus
 /// one so the bar always has a center row.
-fn titlebar_design_height(ui: &UiConfig) -> i32 {
-    let base = (0.75 * ui.font_size).round() as i32;
-    (base * 2 + 1).max(1)
-}
-
-/// Titlebar height in logical pixels.
 pub fn titlebar_height(ui: &UiConfig) -> i32 {
-    ui.len(titlebar_design_height(ui))
+    let base = (0.8 * ui.font_size).round() as i32;
+    (base * 2 + 1).max(1)
 }
 
 /// Button background color (pressed left edge)
 const BUTTON_BG_PRESSED_LEFT: u32 = 0xA0A0A0FF;
 
-/// The fixed-size frame's outline, in design pixels.
+/// The fixed-size frame's outline, in logical pixels.
 const BORDER_OUTER: i32 = 1;
 
 /// The gap between the minimize and maximize buttons, in logical pixels.
@@ -126,7 +121,7 @@ impl FrameRects {
     ) -> Self {
         let width = content_width + border_width * 2;
         let height = content_height + titlebar_height + border_width * 2;
-        let span = |from: i32, to: i32| (scale.edge(from), scale.edge(to) - scale.edge(from));
+        let span = |from: i32, to: i32| (scale.px(from), scale.px(to) - scale.px(from));
         let (x, w) = span(border_width, border_width + content_width);
         let (y, h) = span(border_width, height - border_width);
         let (_, title_h) = span(border_width, border_width + titlebar_height);
@@ -134,8 +129,8 @@ impl FrameRects {
             outer: Rect {
                 x: 0,
                 y: 0,
-                width: scale.edge(width),
-                height: scale.edge(height),
+                width: scale.px(width),
+                height: scale.px(height),
             },
             inside: Rect {
                 x,
@@ -193,8 +188,8 @@ pub enum FrameStyle {
 /// every other style uses the configured border width.
 pub fn border_width(ui: &UiConfig, frame_style: FrameStyle) -> i32 {
     match frame_style {
-        FrameStyle::FixedSize => ui.len(BORDER_OUTER),
-        _ => ui.len(ui.border_width),
+        FrameStyle::FixedSize => BORDER_OUTER,
+        _ => ui.border_width,
     }
 }
 
@@ -682,10 +677,10 @@ impl Titlebar {
         let rects = self.rects;
         let line = scale.line();
         let bevel = (scale.bevel(1), scale.bevel(2));
-        let design_height = titlebar_design_height(ui);
+        let titlebar_height = titlebar_height(ui);
         let button_size = rects.titlebar.height;
         let icon_size = scale
-            .design(icon_size_for_titlebar(design_height))
+            .px(icon_size_for_titlebar(titlebar_height))
             .clamp(1, button_size.max(1));
         let icons_ready = self.ensure_icon_cache(icon_size);
         self.ensure_button_cache(ui, button_size, bevel);
@@ -814,7 +809,7 @@ impl Titlebar {
                         close.y,
                         close.width,
                         rgba_to_argb(border_colors.outer),
-                        design_height,
+                        titlebar_height,
                     );
                 }
 
@@ -854,7 +849,7 @@ impl Titlebar {
                             hide.width,
                             rgba_to_argb(border_colors.outer),
                             true,
-                            design_height,
+                            titlebar_height,
                         );
                     }
                 }
@@ -905,7 +900,7 @@ impl Titlebar {
                             maximize.y + maximize_offset,
                             maximize.width,
                             rgba_to_argb(border_colors.outer),
-                            design_height,
+                            titlebar_height,
                         );
                     } else {
                         draw_glyph_caret(
@@ -915,7 +910,7 @@ impl Titlebar {
                             maximize.width,
                             rgba_to_argb(border_colors.outer),
                             false,
-                            design_height,
+                            titlebar_height,
                         );
                     }
                 }
@@ -924,8 +919,7 @@ impl Titlebar {
                 if let Some(title_str) = title {
                     if !title_str.is_empty() {
                         let text_start = close.right() + line;
-                        let text_padding =
-                            scale.design((ui.font_size * 0.5).round().max(0.0) as i32);
+                        let text_padding = scale.px((ui.font_size * 0.5).round().max(0.0) as i32);
                         let right_x = buttons
                             .hide
                             .map(|r| r.x)
@@ -946,7 +940,7 @@ impl Titlebar {
                                 strip.y,
                                 text_width,
                                 strip.height,
-                                scale.ui(),
+                                scale.factor(),
                                 text_argb,
                                 ui.font_size,
                                 ui.font_name.as_deref(),
@@ -1120,7 +1114,7 @@ impl Titlebar {
 }
 
 fn icon_size_for_titlebar(titlebar_height: i32) -> i32 {
-    (titlebar_height - 4).clamp(6, titlebar_height.max(1))
+    (titlebar_height * 4 / 5).clamp(6, titlebar_height.max(1))
 }
 
 fn rasterize_icon(svg: &str, size_px: i32) -> Option<tiny_skia::Pixmap> {
@@ -1215,7 +1209,7 @@ fn fill_ring(renderer: &mut Renderer, outer: Rect, inner: Rect, color: u32) {
 }
 
 /// A raised button: highlight on the top/left edges, a doubled shadow on the
-/// bottom/right. `one` and `two` are how deep the first and second design
+/// bottom/right. `one` and `two` are how deep the first and second logical
 /// pixel of bevel run in device pixels ([`Scale::bevel`]). Pressed, the
 /// button sinks: a shadow along the top/left edges only.
 #[allow(clippy::too_many_arguments)]

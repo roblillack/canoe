@@ -188,14 +188,13 @@ fn render_window_menu(state: &mut AppState, qh: &QueueHandle<AppState>) {
     };
 
     let mut context = state.context.borrow_mut();
-    let density = context.config.ui.density();
     let scale = context.window_menu.as_ref().and_then(|menu| {
         let output = context.outputs.get(&menu.output_id)?;
         let output = output.borrow();
         let device = menu
             .fractional
             .device_scale(output.preferred_scale, output.scale);
-        Some(canoe::scale::Scale::new(device, density))
+        Some(canoe::scale::Scale::new(device))
     });
     let scale = scale.unwrap_or_default();
     if let Some(menu) = context.window_menu.as_mut() {
@@ -231,14 +230,13 @@ fn open_window_menu_with_items(
         let context = state.context.borrow();
         let focused = context.focused_window;
         let menu_theme = canoe::MenuTheme::from_ui(&context.config.ui);
-        let density = context.config.ui.density();
         let info = context.outputs.get(&output_id).map(|output| {
             let out = output.borrow();
             (
                 out.width,
                 out.height,
                 out.wl_output.clone(),
-                out.render_scale(density),
+                out.render_scale(),
             )
         });
         (info, focused, menu_theme)
@@ -992,11 +990,10 @@ fn render_desktop_surface(
         };
         let label_font_size = ui.icons_font_size.unwrap_or(font_size * 0.80);
         let icons_enabled = ui.icons_enabled;
-        let density = ui.density();
         let scale = context
             .outputs
             .get(&output_id)
-            .map(|o| o.borrow().desktop_scale(density))
+            .map(|o| o.borrow().desktop_scale())
             .unwrap_or_default();
         let icons = if icons_enabled {
             context.collect_minimized_icons(output_id)
@@ -1305,9 +1302,9 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         let shadow_size = if !shadows_on {
                             0
                         } else if is_focused {
-                            ui.len(ui.shadows_active_size.max(0))
+                            ui.shadows_active_size.max(0)
                         } else {
-                            ui.len(ui.shadows_inactive_size.max(0))
+                            ui.shadows_inactive_size.max(0)
                         };
                         // Size the buffer for the larger of the active/inactive
                         // sizes so it stays constant across focus changes (no
@@ -1315,11 +1312,9 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         let buffer_shadow_size = if !shadows_on {
                             0
                         } else {
-                            ui.len(
-                                ui.shadows_active_size
-                                    .max(0)
-                                    .max(ui.shadows_inactive_size.max(0)),
-                            )
+                            ui.shadows_active_size
+                                .max(0)
+                                .max(ui.shadows_inactive_size.max(0))
                         };
                         let shadow_color = ui.shadows_color;
                         let use_ssd = w.decoration != Some(crate::config::WindowDecoration::Csd);
@@ -1357,7 +1352,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                 window_output.as_ref().and_then(|o| o.preferred_scale),
                                 integer,
                             );
-                            let scale = canoe::scale::Scale::new(device, ui.density());
+                            let scale = canoe::scale::Scale::new(device);
                             shadow.ensure_buffer(
                                 frame_width,
                                 frame_height,
@@ -1459,7 +1454,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                     window_output.as_ref().and_then(|o| o.preferred_scale),
                                     integer,
                                 );
-                                let scale = canoe::scale::Scale::new(device, ui.density());
+                                let scale = canoe::scale::Scale::new(device);
                                 let content_height = (height - swallow_top).max(1);
                                 // Ensure buffer is allocated
                                 titlebar.ensure_buffer(

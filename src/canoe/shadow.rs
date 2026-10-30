@@ -214,18 +214,18 @@ impl WindowShadow {
             // its far edges are wherever their logical positions land.
             let scale = self.scale;
             let shadow_size = shadow_size.max(0);
-            let origin = scale.edge(self.inset);
+            let origin = scale.px(self.inset);
             let rect = SoftShadowRect {
                 x: origin,
                 y: origin,
-                width: scale.edge(self.inset + frame_width) - origin,
-                height: scale.edge(self.inset + frame_height) - origin,
+                width: scale.px(self.inset + frame_width) - origin,
+                height: scale.px(self.inset + frame_height) - origin,
             };
             draw_shadow_soft(
                 &mut renderer,
                 rect,
-                scale.edge(shadow_size),
-                scale.edge(shadow_size / 2),
+                scale.px(shadow_size),
+                scale.px(shadow_size / 2),
                 shadow_color,
             );
         }

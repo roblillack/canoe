@@ -17,12 +17,14 @@ use super::render::Renderer;
 use super::scale::{FractionalSurface, Scale};
 use super::{shmfile, OutputId, WindowId};
 
-// Icon layout constants (design pixels)
-pub const ICON_SIZE: i32 = 32;
-const ICON_LABEL_HEIGHT: i32 = 14;
-const ICON_CELL_WIDTH: i32 = 64;
-const ICON_CELL_HEIGHT: i32 = 50;
-const ICON_MARGIN: i32 = 4;
+// Icon layout constants (logical pixels)
+pub const ICON_SIZE: i32 = 48;
+const ICON_LABEL_HEIGHT: i32 = 19;
+const ICON_CELL_WIDTH: i32 = 96;
+const ICON_CELL_HEIGHT: i32 = 72;
+const ICON_MARGIN: i32 = 5;
+/// How far the selected label's background reaches past the text.
+const LABEL_MARGIN: i32 = 3;
 
 /// Data for a minimized window icon.
 pub struct DesktopIcon {
@@ -203,18 +205,18 @@ impl DesktopSurface {
         }
 
         // Compute icon grid layout (bottom-left, left-to-right, then
-        // bottom-to-top), in design pixels taken to buffer pixels.
-        let cell_w = scale.design(ICON_CELL_WIDTH);
-        let cell_h = scale.design(ICON_CELL_HEIGHT);
-        let cols = ((buf_w - scale.design(ICON_MARGIN * 2)) / cell_w.max(1)).max(1);
+        // bottom-to-top), in logical pixels taken to buffer pixels.
+        let cell_w = scale.px(ICON_CELL_WIDTH);
+        let cell_h = scale.px(ICON_CELL_HEIGHT);
+        let cols = ((buf_w - scale.px(ICON_MARGIN * 2)) / cell_w.max(1)).max(1);
         self.icon_cols = cols;
 
         let mut layouts = Vec::with_capacity(desktop_icons.len());
         for (i, icon) in desktop_icons.iter().enumerate() {
             let col = i as i32 % cols;
             let row = i as i32 / cols;
-            let x = scale.design(ICON_MARGIN + col * ICON_CELL_WIDTH);
-            let y = buf_h - scale.design(ICON_MARGIN + ICON_CELL_HEIGHT + row * ICON_CELL_HEIGHT);
+            let x = scale.px(ICON_MARGIN + col * ICON_CELL_WIDTH);
+            let y = buf_h - scale.px(ICON_MARGIN + ICON_CELL_HEIGHT + row * ICON_CELL_HEIGHT);
             layouts.push(DesktopIconLayout {
                 window_id: icon.window_id,
                 x,
@@ -277,7 +279,7 @@ impl DesktopSurface {
 
             let ix = layout.x;
             let iy = layout.y;
-            let icon_px = scale.design(ICON_SIZE);
+            let icon_px = scale.px(ICON_SIZE);
 
             // Center the 32x32 icon square within the cell width
             let icon_offset_x = (cell_w - icon_px) / 2;
@@ -322,7 +324,7 @@ impl DesktopSurface {
                     iy,
                     icon_px,
                     icon_px,
-                    scale.ui(),
+                    scale.factor(),
                     icon_text,
                     font_size,
                     font_name,
@@ -337,8 +339,8 @@ impl DesktopSurface {
             // don't overlap neighbours; the selected label is allowed to
             // overflow up to 5x the icon width before being truncated.
             let label_y = iy + icon_px;
-            let label_h = scale.design(ICON_LABEL_HEIGHT);
-            let scaled_label_size = scale.design_f(label_font_size);
+            let label_h = scale.px(ICON_LABEL_HEIGHT);
+            let scaled_label_size = scale.px_f(label_font_size);
             let max_label_w = if is_selected { icon_px * 5 } else { cell_w };
             let display_title = truncate_with_ellipsis(
                 &icon.title,
@@ -354,7 +356,7 @@ impl DesktopSurface {
 
             // Draw label background if selected, sized to the text
             if is_selected {
-                let margin = scale.design(2);
+                let margin = scale.px(LABEL_MARGIN);
                 let bg_x = label_x - margin;
                 let bg_w = text_w + margin * 2;
                 renderer.fill_rect(bg_x, label_y, bg_w, label_h, label_bg);
@@ -366,7 +368,7 @@ impl DesktopSurface {
                 label_y,
                 text_w.max(1),
                 label_h,
-                scale.ui(),
+                scale.factor(),
                 label_text,
                 label_font_size,
                 label_font_name,
@@ -379,7 +381,7 @@ impl DesktopSurface {
     /// coordinates. Coordinates are in logical (surface-local) pixels;
     /// layouts are stored in buffer pixels.
     pub fn icon_at(&self, x: i32, y: i32) -> Option<WindowId> {
-        let (x, y) = (self.scale.edge(x), self.scale.edge(y));
+        let (x, y) = (self.scale.px(x), self.scale.px(y));
         for layout in &self.icons {
             if x >= layout.x
                 && x < layout.x + layout.width
