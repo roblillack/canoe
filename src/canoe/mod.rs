@@ -6,6 +6,7 @@ mod font;
 mod menu;
 mod output;
 mod render;
+pub mod scale;
 mod seat;
 mod shadow;
 mod shield;

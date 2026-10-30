@@ -147,7 +147,7 @@ impl<'a> Renderer<'a> {
         origin_y: i32,
         area_width: i32,
         area_height: i32,
-        scale: i32,
+        scale: f32,
         text_argb: u32,
         font_size: f32,
         font_name: Option<&str>,
@@ -158,7 +158,7 @@ impl<'a> Renderer<'a> {
         }
 
         let origin_y = origin_y + 1;
-        let size_px = (font_size * scale.max(1) as f32).round().max(1.0) as u32;
+        let size_px = (font_size * scale).round().max(1.0) as u32;
         let buffer_width = self.width();
         let buffer_height = self.height();
         let padding_x = padding_x.max(0);

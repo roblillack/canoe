@@ -1,6 +1,7 @@
 //! Titlebar rendering for windows
 
 use super::render::Renderer;
+use super::scale::{FractionalSurface, Scale};
 use super::shmfile::ShmPool;
 use crate::config::UiConfig;
 use crate::protocol::RiverDecorationV1;
@@ -10,19 +11,25 @@ use wayland_client::protocol::{
 };
 use wayland_client::QueueHandle;
 
-/// Titlebar height in pixels
-pub fn titlebar_height(ui: &UiConfig) -> i32 {
+/// Titlebar height in design pixels: `0.75·font_size` rounded, doubled plus
+/// one so the bar always has a center row.
+fn titlebar_design_height(ui: &UiConfig) -> i32 {
     let base = (0.75 * ui.font_size).round() as i32;
     (base * 2 + 1).max(1)
+}
+
+/// Titlebar height in logical pixels.
+pub fn titlebar_height(ui: &UiConfig) -> i32 {
+    ui.len(titlebar_design_height(ui))
 }
 
 /// Button background color (pressed left edge)
 const BUTTON_BG_PRESSED_LEFT: u32 = 0xA0A0A0FF;
 
+/// The fixed-size frame's outline, in design pixels.
 const BORDER_OUTER: i32 = 1;
-const BORDER_INNER: i32 = 1;
 
-const BUTTON_PADDING_X: i32 = 0;
+/// The gap between the minimize and maximize buttons, in logical pixels.
 const BUTTON_GAP: i32 = 1;
 
 const ICON_CLOSE_SVG: &str = include_str!("../../assets/icons/close.svg");
@@ -33,19 +40,19 @@ const ICON_UNMAXIMIZE_SVG: &str = include_str!("../../assets/icons/unmaximize.sv
 struct BaseFrameParams<'a> {
     ui: &'a UiConfig,
     is_active: bool,
-    content_width: i32,
-    titlebar_height: i32,
+    rects: &'a FrameRects,
     buffer_width: i32,
     buffer_height: i32,
-    height: i32,
-    scale: i32,
+    scale: Scale,
     show_minimize: bool,
     show_maximize: bool,
     frame_style: FrameStyle,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ButtonCacheKey {
+    size_px: i32,
+    bevel: (i32, i32),
     button_bg: u32,
     button_highlight: u32,
     button_shadow: u32,
@@ -53,8 +60,6 @@ struct ButtonCacheKey {
 
 #[derive(Clone, Debug)]
 struct ButtonCache {
-    size_px: i32,
-    titlebar_height: i32,
     key: ButtonCacheKey,
     close_normal: Vec<u8>,
     close_pressed: Vec<u8>,
@@ -64,7 +69,7 @@ struct ButtonCache {
     maximize_pressed: Vec<u8>,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Rect {
     pub x: i32,
     pub y: i32,
@@ -75,6 +80,82 @@ pub struct Rect {
 impl Rect {
     pub fn contains(&self, px: i32, py: i32) -> bool {
         px >= self.x && px < self.x + self.width && py >= self.y && py < self.y + self.height
+    }
+
+    fn right(&self) -> i32 {
+        self.x + self.width
+    }
+
+    fn bottom(&self) -> i32 {
+        self.y + self.height
+    }
+
+    /// Shrunk by `n` on every side; grown for a negative `n`.
+    fn inset(&self, n: i32) -> Rect {
+        Rect {
+            x: self.x + n,
+            y: self.y + n,
+            width: (self.width - 2 * n).max(0),
+            height: (self.height - 2 * n).max(0),
+        }
+    }
+}
+
+/// Where the frame's parts land in the buffer, in device pixels. Each edge is
+/// the device position of the logical edge River lays the window out by, so
+/// the cut-out lines up with the client's content at any fractional scale.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FrameRects {
+    /// The whole buffer.
+    outer: Rect,
+    /// Inside the border: titlebar and content.
+    inside: Rect,
+    /// The titlebar strip.
+    titlebar: Rect,
+    /// The transparent content cut-out.
+    content: Rect,
+}
+
+impl FrameRects {
+    fn new(
+        scale: &Scale,
+        border_width: i32,
+        titlebar_height: i32,
+        content_width: i32,
+        content_height: i32,
+    ) -> Self {
+        let width = content_width + border_width * 2;
+        let height = content_height + titlebar_height + border_width * 2;
+        let span = |from: i32, to: i32| (scale.edge(from), scale.edge(to) - scale.edge(from));
+        let (x, w) = span(border_width, border_width + content_width);
+        let (y, h) = span(border_width, height - border_width);
+        let (_, title_h) = span(border_width, border_width + titlebar_height);
+        Self {
+            outer: Rect {
+                x: 0,
+                y: 0,
+                width: scale.edge(width),
+                height: scale.edge(height),
+            },
+            inside: Rect {
+                x,
+                y,
+                width: w,
+                height: h,
+            },
+            titlebar: Rect {
+                x,
+                y,
+                width: w,
+                height: title_h.min(h),
+            },
+            content: Rect {
+                x,
+                y: y + title_h,
+                width: w,
+                height: (h - title_h).max(0),
+            },
+        }
     }
 }
 
@@ -104,15 +185,16 @@ pub enum FrameStyle {
     FixedSize,
 }
 
-/// The SSD border thickness to reserve and draw for a given frame style.
+/// The SSD border thickness to reserve and draw for a given frame style, in
+/// logical pixels.
 ///
 /// Non-resizable toplevels ([`FrameStyle::FixedSize`]) collapse the border to
 /// a single 1px outline that sits directly against the content/titlebar;
 /// every other style uses the configured border width.
 pub fn border_width(ui: &UiConfig, frame_style: FrameStyle) -> i32 {
     match frame_style {
-        FrameStyle::FixedSize => BORDER_OUTER,
-        _ => ui.border_width,
+        FrameStyle::FixedSize => ui.len(BORDER_OUTER),
+        _ => ui.len(ui.border_width),
     }
 }
 
@@ -140,16 +222,35 @@ impl IconCache {
     }
 }
 
+/// The titlebar buttons in logical pixels, relative to the titlebar's
+/// top-left corner.
 pub fn button_rects(
     content_width: i32,
     titlebar_height: i32,
     show_minimize: bool,
     show_maximize: bool,
 ) -> TitlebarButtons {
-    let size = titlebar_height;
-    let y = 0;
+    let strip = Rect {
+        x: 0,
+        y: 0,
+        width: content_width,
+        height: titlebar_height,
+    };
+    layout_buttons(strip, BUTTON_GAP, show_minimize, show_maximize)
+}
+
+/// Square buttons as tall as `strip`: close at the left, maximize and hide
+/// at the right, `gap` apart.
+fn layout_buttons(
+    strip: Rect,
+    gap: i32,
+    show_minimize: bool,
+    show_maximize: bool,
+) -> TitlebarButtons {
+    let size = strip.height;
+    let y = strip.y;
     let close = Rect {
-        x: BUTTON_PADDING_X,
+        x: strip.x,
         y,
         width: size,
         height: size,
@@ -157,22 +258,22 @@ pub fn button_rects(
 
     // Right-to-left: maximize is the rightmost (if present), then hide; if
     // maximize is hidden, the hide button slides into the rightmost slot.
-    let mut right_x = content_width - BUTTON_PADDING_X - size;
+    let mut right_x = strip.right() - size;
     let maximize = if show_maximize {
         let r = Rect {
-            x: right_x.max(0),
+            x: right_x.max(strip.x),
             y,
             width: size,
             height: size,
         };
-        right_x -= size + BUTTON_GAP;
+        right_x -= size + gap;
         Some(r)
     } else {
         None
     };
     let hide = if show_minimize {
         Some(Rect {
-            x: right_x.max(0),
+            x: right_x.max(strip.x),
             y,
             width: size,
             height: size,
@@ -231,11 +332,13 @@ pub struct Titlebar {
     pub surface: wl_surface::WlSurface,
     /// The river decoration object
     pub decoration: RiverDecorationV1,
+    /// Viewport and fractional-scale handles for the surface
+    pub fractional: FractionalSurface,
     /// Double-buffered shm pool backing the wl_buffer.
     shm_pool: ShmPool,
-    /// Current buffer width
+    /// Current surface width (logical px)
     pub width: i32,
-    /// Current buffer height
+    /// Current surface height (logical px)
     pub height: i32,
     /// Current buffer width in pixels
     pub buffer_width: i32,
@@ -249,8 +352,10 @@ pub struct Titlebar {
     pub border_width: i32,
     /// Titlebar height (logical px) of the current frame
     pub titlebar_height: i32,
-    /// Output scale factor
-    pub scale: i32,
+    /// The scale the buffer is drawn at
+    pub scale: Scale,
+    /// The frame's parts in buffer pixels
+    rects: FrameRects,
     /// Cached icon bitmaps (rasterized from embedded SVGs)
     icon_cache: Option<IconCache>,
     button_cache: Option<ButtonCache>,
@@ -275,10 +380,15 @@ pub struct Titlebar {
 
 impl Titlebar {
     /// Create a new titlebar
-    pub fn new(surface: wl_surface::WlSurface, decoration: RiverDecorationV1) -> Self {
+    pub fn new(
+        surface: wl_surface::WlSurface,
+        decoration: RiverDecorationV1,
+        fractional: FractionalSurface,
+    ) -> Self {
         Self {
             surface,
             decoration,
+            fractional,
             shm_pool: ShmPool::new("canoe-titlebar"),
             width: 0,
             height: 0,
@@ -288,7 +398,8 @@ impl Titlebar {
             content_height: 0,
             border_width: 0,
             titlebar_height: 0,
-            scale: 1,
+            scale: Scale::default(),
+            rects: FrameRects::default(),
             icon_cache: None,
             button_cache: None,
             output_names: Vec::new(),
@@ -321,7 +432,7 @@ impl Titlebar {
         content_height: i32,
         _shm: &wl_shm::WlShm,
         _qh: &QueueHandle<D>,
-        scale: i32,
+        scale: Scale,
         ui: &UiConfig,
         frame_style: FrameStyle,
     ) where
@@ -333,7 +444,6 @@ impl Titlebar {
             return;
         }
 
-        let scale = scale.max(1);
         let titlebar_height = titlebar_height(ui);
         let border_width = border_width(ui, frame_style);
         // Remember the frame geometry so commit() can damage just the painted
@@ -342,17 +452,25 @@ impl Titlebar {
         self.titlebar_height = titlebar_height;
         let width = content_width + border_width * 2;
         let height = content_height + titlebar_height + border_width * 2;
-        let buffer_width = width * scale;
-        let buffer_height = height * scale;
+        let (buffer_width, buffer_height) =
+            self.fractional.apply(&self.surface, width, height, &scale);
         if buffer_width <= 0 || buffer_height <= 0 {
             return;
         }
+        let rects = FrameRects::new(
+            &scale,
+            border_width,
+            titlebar_height,
+            content_width,
+            content_height,
+        );
 
         if self.width != width
             || self.height != height
             || self.buffer_width != buffer_width
             || self.buffer_height != buffer_height
             || self.scale != scale
+            || self.rects != rects
         {
             self.width = width;
             self.height = height;
@@ -361,6 +479,7 @@ impl Titlebar {
             self.content_width = content_width;
             self.content_height = content_height;
             self.scale = scale;
+            self.rects = rects;
             self.icon_cache = None;
             self.button_cache = None;
             self.dirty = true;
@@ -369,8 +488,6 @@ impl Titlebar {
             self.content_width = content_width;
             self.content_height = content_height;
         }
-
-        self.surface.set_buffer_scale(scale);
     }
 
     fn ensure_icon_cache(&mut self, size_px: i32) -> bool {
@@ -401,7 +518,6 @@ impl Titlebar {
             None => return false,
         };
 
-        let border_offset = 0;
         let mut border_colors = if params.is_active {
             params.ui.border_active
         } else {
@@ -421,92 +537,53 @@ impl Titlebar {
                 border_colors.mid = titlebar_bg;
             }
         }
-        let border_width = border_width(params.ui, params.frame_style);
-        // Always paint the 1px outer outline. Non-resizable toplevels stop
-        // here: the border is exactly that outline, hugging the content.
-        draw_border_layer(
-            &mut renderer,
-            border_offset,
-            BORDER_OUTER * params.scale,
-            border_colors.outer,
-        );
-        if !matches!(params.frame_style, FrameStyle::FixedSize) {
-            let mid_width = (border_width - BORDER_INNER - BORDER_OUTER).max(0);
-            draw_border_layer(
+        let rects = params.rects;
+        let line = params.scale.line();
+        if matches!(params.frame_style, FrameStyle::FixedSize) {
+            // Non-resizable toplevels: the border is just the outline,
+            // hugging the content.
+            fill_ring(
                 &mut renderer,
-                border_offset + BORDER_OUTER * params.scale,
-                mid_width * params.scale,
-                border_colors.mid,
+                rects.outer,
+                rects.inside,
+                border_colors.outer,
             );
-            draw_border_layer(
-                &mut renderer,
-                border_offset + (BORDER_OUTER + mid_width) * params.scale,
-                BORDER_INNER * params.scale,
-                border_colors.inner,
-            );
+        } else {
+            // A thin outer and inner line with the bulk of the border between
+            // them, however many device pixels the border comes to.
+            let outer_in = rects.outer.inset(line);
+            let inner_out = rects.inside.inset(-line);
+            fill_ring(&mut renderer, rects.outer, outer_in, border_colors.outer);
+            fill_ring(&mut renderer, outer_in, inner_out, border_colors.mid);
+            fill_ring(&mut renderer, inner_out, rects.inside, border_colors.inner);
         }
 
-        let bg_color = if params.is_active {
-            params.ui.titlebar_bg_active
-        } else {
-            params.ui.titlebar_bg_inactive
-        };
-        let bg_argb = rgba_to_argb(bg_color);
-        let title_height = params.titlebar_height.min(params.height - border_width * 2);
-        if title_height > 0 {
-            let title_x = border_width;
-            let title_y = border_width;
-            renderer.fill_rect(
-                title_x * params.scale,
-                title_y * params.scale,
-                params.content_width * params.scale,
-                title_height * params.scale,
-                bg_argb,
-            );
+        let bg_argb = rgba_to_argb(titlebar_bg);
+        let title = rects.titlebar;
+        if title.height > 0 {
+            renderer.fill_rect(title.x, title.y, title.width, title.height, bg_argb);
 
-            let buttons = button_rects(
-                params.content_width,
-                params.titlebar_height,
-                params.show_minimize,
-                params.show_maximize,
-            );
+            let buttons = layout_buttons(title, line, params.show_minimize, params.show_maximize);
             let button_border = rgba_to_argb(border_colors.outer);
-            draw_left_border(
-                &mut renderer,
-                (title_x + buttons.close.x + buttons.close.width) * params.scale,
-                title_y * params.scale,
-                title_height * params.scale,
-                button_border,
-                params.titlebar_height,
-            );
+            let mut divider = |x: i32| {
+                if x >= title.x {
+                    renderer.fill_rect(x, title.y, line, title.height, button_border);
+                }
+            };
+            divider(buttons.close.right());
             if let Some(hide) = buttons.hide {
-                draw_left_border(
-                    &mut renderer,
-                    (title_x + hide.x - 1) * params.scale,
-                    title_y * params.scale,
-                    title_height * params.scale,
-                    button_border,
-                    params.titlebar_height,
-                );
+                divider(hide.x - line);
             }
             if let Some(maximize) = buttons.maximize {
-                draw_left_border(
-                    &mut renderer,
-                    (title_x + maximize.x - 1) * params.scale,
-                    title_y * params.scale,
-                    title_height * params.scale,
-                    button_border,
-                    params.titlebar_height,
-                );
+                divider(maximize.x - line);
             }
 
-            let separator_y = title_y + title_height;
-            if separator_y >= 0 && separator_y < params.height - border_width {
+            if rects.content.height > 0 {
                 renderer.fill_rect(
-                    title_x * params.scale,
-                    separator_y * params.scale,
-                    params.content_width * params.scale,
-                    params.scale,
+                    title.x,
+                    title.bottom(),
+                    title.width,
+                    line,
                     rgba_to_argb(border_colors.outer),
                 );
             }
@@ -515,34 +592,20 @@ impl Titlebar {
         true
     }
 
-    fn button_cache_key(ui: &UiConfig) -> ButtonCacheKey {
-        ButtonCacheKey {
+    fn ensure_button_cache(&mut self, ui: &UiConfig, size_px: i32, bevel: (i32, i32)) {
+        if size_px <= 0 {
+            return;
+        }
+
+        let key = ButtonCacheKey {
+            size_px,
+            bevel,
             button_bg: ui.button_bg,
             button_highlight: ui.button_highlight,
             button_shadow: ui.button_shadow,
-        }
-    }
-
-    fn ensure_button_cache(
-        &mut self,
-        ui: &UiConfig,
-        titlebar_height: i32,
-        scale: i32,
-    ) -> Option<&ButtonCache> {
-        let size_px = titlebar_height * scale.max(1);
-        if size_px <= 0 {
-            return None;
-        }
-
-        let key = Self::button_cache_key(ui);
+        };
         let needs_rebuild = match self.button_cache {
-            Some(ref cache) => {
-                cache.size_px != size_px
-                    || cache.titlebar_height != titlebar_height
-                    || cache.key.button_bg != key.button_bg
-                    || cache.key.button_highlight != key.button_highlight
-                    || cache.key.button_shadow != key.button_shadow
-            }
+            Some(ref cache) => cache.key != key,
             None => true,
         };
 
@@ -551,56 +614,20 @@ impl Titlebar {
             let highlight = rgba_to_argb(ui.button_highlight);
             let shadow = rgba_to_argb(ui.button_shadow);
             let close_pressed_bg = rgba_to_argb(BUTTON_BG_PRESSED_LEFT);
-
-            let close_normal = build_button_fill(size_px, button_bg);
-            let close_pressed = build_button_fill(size_px, close_pressed_bg);
-            let hide_normal = build_button_bevel_cache(
-                size_px,
-                titlebar_height,
-                button_bg,
-                highlight,
-                shadow,
-                false,
-            );
-            let hide_pressed = build_button_bevel_cache(
-                size_px,
-                titlebar_height,
-                button_bg,
-                highlight,
-                shadow,
-                true,
-            );
-            let maximize_normal = build_button_bevel_cache(
-                size_px,
-                titlebar_height,
-                button_bg,
-                highlight,
-                shadow,
-                false,
-            );
-            let maximize_pressed = build_button_bevel_cache(
-                size_px,
-                titlebar_height,
-                button_bg,
-                highlight,
-                shadow,
-                true,
-            );
+            let bevel_button = |pressed| {
+                build_button_bevel_cache(size_px, bevel, button_bg, highlight, shadow, pressed)
+            };
 
             self.button_cache = Some(ButtonCache {
-                size_px,
-                titlebar_height,
                 key,
-                close_normal,
-                close_pressed,
-                hide_normal,
-                hide_pressed,
-                maximize_normal,
-                maximize_pressed,
+                close_normal: build_button_fill(size_px, button_bg),
+                close_pressed: build_button_fill(size_px, close_pressed_bg),
+                hide_normal: bevel_button(false),
+                hide_pressed: bevel_button(true),
+                maximize_normal: bevel_button(false),
+                maximize_pressed: bevel_button(true),
             });
         }
-
-        self.button_cache.as_ref()
     }
 
     /// Render the titlebar with the given title and state
@@ -651,25 +678,26 @@ impl Titlebar {
             return false;
         }
 
-        let scale = self.scale.max(1);
-        let titlebar_height = titlebar_height(ui);
-        let icon_size = icon_size_for_titlebar(titlebar_height);
-        let icon_size_px = icon_size * scale;
-        let icons_ready = self.ensure_icon_cache(icon_size_px);
-        self.ensure_button_cache(ui, titlebar_height, scale);
+        let scale = self.scale;
+        let rects = self.rects;
+        let line = scale.line();
+        let bevel = (scale.bevel(1), scale.bevel(2));
+        let design_height = titlebar_design_height(ui);
+        let button_size = rects.titlebar.height;
+        let icon_size = scale
+            .design(icon_size_for_titlebar(design_height))
+            .clamp(1, button_size.max(1));
+        let icons_ready = self.ensure_icon_cache(icon_size);
+        self.ensure_button_cache(ui, button_size, bevel);
 
-        let width = self.width;
-        let height = self.height;
         let buffer_width = self.buffer_width;
         let buffer_height = self.buffer_height;
-        let content_width = self.content_width;
-        let content_height = self.content_height;
-        if width <= 0
-            || height <= 0
+        if self.width <= 0
+            || self.height <= 0
             || buffer_width <= 0
             || buffer_height <= 0
-            || content_width <= 0
-            || content_height <= 0
+            || self.content_width <= 0
+            || self.content_height <= 0
         {
             return false;
         }
@@ -696,11 +724,9 @@ impl Titlebar {
         let base_params = BaseFrameParams {
             ui,
             is_active,
-            content_width,
-            titlebar_height,
+            rects: &rects,
             buffer_width,
             buffer_height,
-            height,
             scale,
             show_minimize,
             show_maximize,
@@ -747,15 +773,19 @@ impl Titlebar {
             } else {
                 ui.border_inactive
             };
-            let border_width = border_width(ui, frame_style);
-            let title_height = titlebar_height.min(height - border_width * 2);
-            if title_height > 0 {
-                let title_x = border_width;
-                let title_y = border_width;
-
-                let buttons =
-                    button_rects(content_width, titlebar_height, show_minimize, show_maximize);
+            let strip = rects.titlebar;
+            if strip.height > 0 {
+                let buttons = layout_buttons(strip, line, show_minimize, show_maximize);
                 let pressed_hover = if left_down { hovered_button } else { None };
+                // Centers the icon in a button, nudged by `offset` when pressed.
+                let icon_origin = |button: Rect, offset: i32| {
+                    (
+                        button.x + (button.width - icon_size) / 2 + offset,
+                        button.y + (button.height - icon_size) / 2 + offset,
+                    )
+                };
+
+                let close = buttons.close;
                 let close_pressed = pressed_hover == Some(TitlebarButton::Close);
                 if let Some(cache) = button_cache {
                     let close_bg = if close_pressed {
@@ -763,100 +793,75 @@ impl Titlebar {
                     } else {
                         &cache.close_normal
                     };
-                    renderer.blit_argb(
-                        close_bg,
-                        cache.size_px,
-                        cache.size_px,
-                        (title_x + buttons.close.x) * scale,
-                        (title_y + buttons.close.y) * scale,
-                    );
+                    renderer.blit_argb(close_bg, button_size, button_size, close.x, close.y);
                 } else {
                     let close_bg = if close_pressed {
                         rgba_to_argb(BUTTON_BG_PRESSED_LEFT)
                     } else {
                         rgba_to_argb(ui.button_bg)
                     };
-                    renderer.fill_rect(
-                        (title_x + buttons.close.x) * scale,
-                        (title_y + buttons.close.y) * scale,
-                        buttons.close.width * scale,
-                        title_height * scale,
-                        close_bg,
-                    );
+                    renderer.fill_rect(close.x, close.y, close.width, close.height, close_bg);
                 }
                 if icons_ready {
-                    let icon_x =
-                        (title_x + buttons.close.x + (buttons.close.width - icon_size) / 2) * scale;
-                    let icon_y =
-                        (title_y + buttons.close.y + (buttons.close.height - icon_size) / 2)
-                            * scale;
                     if let Some(ref icons) = self.icon_cache {
-                        renderer.blit_pixmap(&icons.close, icon_x, icon_y);
+                        let (x, y) = icon_origin(close, 0);
+                        renderer.blit_pixmap(&icons.close, x, y);
                     }
                 } else {
                     draw_glyph_close(
                         &mut renderer,
-                        (title_x + buttons.close.x) * scale,
-                        (title_y + buttons.close.y) * scale,
-                        buttons.close.width * scale,
+                        close.x,
+                        close.y,
+                        close.width,
                         rgba_to_argb(border_colors.outer),
-                        titlebar_height,
+                        design_height,
                     );
                 }
 
                 if let Some(hide) = buttons.hide {
                     let hide_pressed = pressed_hover == Some(TitlebarButton::Hide);
-                    let hide_offset = if hide_pressed { scale } else { 0 };
+                    let hide_offset = if hide_pressed { bevel.0 } else { 0 };
                     if let Some(cache) = button_cache {
                         let hide_bg = if hide_pressed {
                             &cache.hide_pressed
                         } else {
                             &cache.hide_normal
                         };
-                        renderer.blit_argb(
-                            hide_bg,
-                            cache.size_px,
-                            cache.size_px,
-                            (title_x + hide.x) * scale,
-                            (title_y + hide.y) * scale,
-                        );
+                        renderer.blit_argb(hide_bg, button_size, button_size, hide.x, hide.y);
                     } else {
                         draw_button_bevel(
                             &mut renderer,
-                            (title_x + hide.x) * scale,
-                            (title_y + hide.y) * scale,
-                            hide.width * scale,
+                            hide.x,
+                            hide.y,
+                            hide.width,
                             rgba_to_argb(ui.button_bg),
                             rgba_to_argb(ui.button_highlight),
                             rgba_to_argb(ui.button_shadow),
                             hide_pressed,
-                            titlebar_height,
+                            bevel,
                         );
                     }
                     if icons_ready {
-                        let icon_x =
-                            (title_x + hide.x + (hide.width - icon_size) / 2) * scale + hide_offset;
-                        let icon_y = (title_y + hide.y + (hide.height - icon_size) / 2) * scale
-                            + hide_offset;
                         if let Some(ref icons) = self.icon_cache {
-                            renderer.blit_pixmap(&icons.minimize, icon_x, icon_y);
+                            let (x, y) = icon_origin(hide, hide_offset);
+                            renderer.blit_pixmap(&icons.minimize, x, y);
                         }
                     } else {
                         draw_glyph_caret(
                             &mut renderer,
-                            (title_x + hide.x) * scale + hide_offset,
-                            (title_y + hide.y) * scale + hide_offset,
-                            hide.width * scale,
+                            hide.x + hide_offset,
+                            hide.y + hide_offset,
+                            hide.width,
                             rgba_to_argb(border_colors.outer),
                             true,
-                            titlebar_height,
+                            design_height,
                         );
                     }
                 }
 
                 if let Some(maximize) = buttons.maximize {
                     let maximize_pressed = pressed_hover == Some(TitlebarButton::Maximize);
-                    let maximize_offset = if maximize_pressed { scale } else { 0 };
+                    let maximize_offset = if maximize_pressed { bevel.0 } else { 0 };
                     if let Some(cache) = button_cache {
                         let maximize_bg = if maximize_pressed {
                             &cache.maximize_pressed
@@ -865,57 +870,52 @@ impl Titlebar {
                         };
                         renderer.blit_argb(
                             maximize_bg,
-                            cache.size_px,
-                            cache.size_px,
-                            (title_x + maximize.x) * scale,
-                            (title_y + maximize.y) * scale,
+                            button_size,
+                            button_size,
+                            maximize.x,
+                            maximize.y,
                         );
                     } else {
                         draw_button_bevel(
                             &mut renderer,
-                            (title_x + maximize.x) * scale,
-                            (title_y + maximize.y) * scale,
-                            maximize.width * scale,
+                            maximize.x,
+                            maximize.y,
+                            maximize.width,
                             rgba_to_argb(ui.button_bg),
                             rgba_to_argb(ui.button_highlight),
                             rgba_to_argb(ui.button_shadow),
                             maximize_pressed,
-                            titlebar_height,
+                            bevel,
                         );
                     }
                     if icons_ready {
-                        let icon_x = (title_x + maximize.x + (maximize.width - icon_size) / 2)
-                            * scale
-                            + maximize_offset;
-                        let icon_y = (title_y + maximize.y + (maximize.height - icon_size) / 2)
-                            * scale
-                            + maximize_offset;
                         if let Some(ref icons) = self.icon_cache {
                             let icon = if is_maximized {
                                 &icons.unmaximize
                             } else {
                                 &icons.maximize
                             };
-                            renderer.blit_pixmap(icon, icon_x, icon_y);
+                            let (x, y) = icon_origin(maximize, maximize_offset);
+                            renderer.blit_pixmap(icon, x, y);
                         }
                     } else if is_maximized {
                         draw_glyph_caret_pair(
                             &mut renderer,
-                            (title_x + maximize.x) * scale + maximize_offset,
-                            (title_y + maximize.y) * scale + maximize_offset,
-                            maximize.width * scale,
+                            maximize.x + maximize_offset,
+                            maximize.y + maximize_offset,
+                            maximize.width,
                             rgba_to_argb(border_colors.outer),
-                            titlebar_height,
+                            design_height,
                         );
                     } else {
                         draw_glyph_caret(
                             &mut renderer,
-                            (title_x + maximize.x) * scale + maximize_offset,
-                            (title_y + maximize.y) * scale + maximize_offset,
-                            maximize.width * scale,
+                            maximize.x + maximize_offset,
+                            maximize.y + maximize_offset,
+                            maximize.width,
                             rgba_to_argb(border_colors.outer),
                             false,
-                            titlebar_height,
+                            design_height,
                         );
                     }
                 }
@@ -923,15 +923,15 @@ impl Titlebar {
                 // Render title text if we have a title and font
                 if let Some(title_str) = title {
                     if !title_str.is_empty() {
-                        let text_start =
-                            (buttons.close.x + buttons.close.width + BUTTON_GAP).max(0);
-                        let text_padding = (ui.font_size * 0.5).round().max(0.0) as i32;
+                        let text_start = close.right() + line;
+                        let text_padding =
+                            scale.design((ui.font_size * 0.5).round().max(0.0) as i32);
                         let right_x = buttons
                             .hide
                             .map(|r| r.x)
                             .or_else(|| buttons.maximize.map(|r| r.x))
-                            .unwrap_or(content_width - BUTTON_PADDING_X);
-                        let text_end = (right_x - BUTTON_GAP - text_padding).min(content_width);
+                            .unwrap_or(strip.right());
+                        let text_end = (right_x - line - text_padding).min(strip.right());
                         let text_width = (text_end - text_start).max(0);
                         if text_width > 0 {
                             let text_color = if is_active {
@@ -942,15 +942,15 @@ impl Titlebar {
                             let text_argb = rgba_to_argb(text_color);
                             renderer.render_text(
                                 title_str,
-                                (title_x + text_start) * scale,
-                                title_y * scale,
-                                text_width * scale,
-                                title_height * scale,
-                                scale,
+                                text_start,
+                                strip.y,
+                                text_width,
+                                strip.height,
+                                scale.ui(),
                                 text_argb,
                                 ui.font_size,
                                 ui.font_name.as_deref(),
-                                text_padding * scale,
+                                text_padding,
                             );
                         }
                     }
@@ -996,7 +996,7 @@ impl Titlebar {
                     "[canoe damage] FULL  buf={}x{} scale={} damaged={}px (100.0%)",
                     self.buffer_width,
                     self.buffer_height,
-                    self.scale,
+                    self.scale.device(),
                     self.buffer_width as i64 * self.buffer_height as i64,
                 );
             } else {
@@ -1013,16 +1013,13 @@ impl Titlebar {
     /// Damage only the painted frame (border ring + titlebar), leaving the
     /// transparent content cut-out in the middle untouched.
     fn damage_frame(&self) {
-        let bw = self.border_width.max(0);
-        let tbh = self.titlebar_height.max(0);
-        let scale = self.scale.max(1);
-
-        // Transparent content cut-out in buffer pixels. The +1 keeps the row
-        // separating the titlebar from the content inside the damaged top strip.
-        let cut_x0 = bw * scale;
-        let cut_y0 = (bw + tbh + 1) * scale;
-        let cut_x1 = self.buffer_width - bw * scale;
-        let cut_y1 = self.buffer_height - bw * scale;
+        // Transparent content cut-out in buffer pixels. The separator line
+        // between titlebar and content stays inside the damaged top strip.
+        let content = self.rects.content;
+        let cut_x0 = content.x;
+        let cut_y0 = content.y + self.scale.line();
+        let cut_x1 = content.right();
+        let cut_y1 = content.bottom();
 
         // Degenerate geometry (tiny window, missing borders): just damage it all.
         if cut_x1 <= cut_x0 || cut_y1 <= cut_y0 {
@@ -1031,7 +1028,9 @@ impl Titlebar {
             #[cfg(feature = "debug-logging")]
             eprintln!(
                 "[canoe damage] FRAME->FULL (degenerate) buf={}x{} scale={}",
-                self.buffer_width, self.buffer_height, self.scale,
+                self.buffer_width,
+                self.buffer_height,
+                self.scale.device(),
             );
             return;
         }
@@ -1056,7 +1055,7 @@ impl Titlebar {
                 "[canoe damage] FRAME buf={}x{} scale={} damaged={}px / full={}px ({:.1}%)",
                 self.buffer_width,
                 self.buffer_height,
-                self.scale,
+                self.scale.device(),
                 damaged_px,
                 full_px,
                 100.0 * damaged_px as f64 / full_px.max(1) as f64,
@@ -1164,7 +1163,7 @@ fn build_button_fill(size_px: i32, color_argb: u32) -> Vec<u8> {
 
 fn build_button_bevel_cache(
     size_px: i32,
-    titlebar_height: i32,
+    bevel: (i32, i32),
     bg_argb: u32,
     highlight_argb: u32,
     shadow_argb: u32,
@@ -1184,48 +1183,41 @@ fn build_button_bevel_cache(
             highlight_argb,
             shadow_argb,
             pressed,
-            titlebar_height,
+            bevel,
         );
     }
     pixels
 }
 
-fn draw_border_layer(renderer: &mut Renderer, offset: i32, thickness: i32, color: u32) {
-    if thickness <= 0 {
-        return;
-    }
-
-    let layer_width = renderer.width() - offset * 2;
-    let layer_height = renderer.height() - offset * 2;
-    if layer_width <= 0 || layer_height <= 0 {
-        return;
-    }
-
+/// Fill the ring between `outer` and `inner` (which lies within it).
+fn fill_ring(renderer: &mut Renderer, outer: Rect, inner: Rect, color: u32) {
     let argb = rgba_to_argb(color);
-    renderer.fill_rect(offset, offset, layer_width, thickness, argb);
+    if inner.width <= 0 || inner.height <= 0 {
+        renderer.fill_rect(outer.x, outer.y, outer.width, outer.height, argb);
+        return;
+    }
+    renderer.fill_rect(outer.x, outer.y, outer.width, inner.y - outer.y, argb);
     renderer.fill_rect(
-        offset,
-        offset + layer_height - thickness,
-        layer_width,
-        thickness,
+        outer.x,
+        inner.bottom(),
+        outer.width,
+        outer.bottom() - inner.bottom(),
         argb,
     );
+    renderer.fill_rect(outer.x, inner.y, inner.x - outer.x, inner.height, argb);
     renderer.fill_rect(
-        offset,
-        offset + thickness,
-        thickness,
-        layer_height - thickness * 2,
-        argb,
-    );
-    renderer.fill_rect(
-        offset + layer_width - thickness,
-        offset + thickness,
-        thickness,
-        layer_height - thickness * 2,
+        inner.right(),
+        inner.y,
+        outer.right() - inner.right(),
+        inner.height,
         argb,
     );
 }
 
+/// A raised button: highlight on the top/left edges, a doubled shadow on the
+/// bottom/right. `one` and `two` are how deep the first and second design
+/// pixel of bevel run in device pixels ([`Scale::bevel`]). Pressed, the
+/// button sinks: a shadow along the top/left edges only.
 #[allow(clippy::too_many_arguments)]
 fn draw_button_bevel(
     renderer: &mut Renderer,
@@ -1236,9 +1228,8 @@ fn draw_button_bevel(
     highlight_argb: u32,
     shadow_argb: u32,
     pressed: bool,
-    titlebar_height: i32,
+    (one, two): (i32, i32),
 ) {
-    let unit = (size / titlebar_height.max(1)).max(1);
     let (highlight_argb, shadow_argb) = if pressed {
         (shadow_argb, bg_argb)
     } else {
@@ -1248,50 +1239,34 @@ fn draw_button_bevel(
     renderer.fill_rect(x, y, size, size, bg_argb);
 
     // highlight: horizontal, vertical
-    renderer.fill_rect(x, y, size, unit, highlight_argb);
-    renderer.fill_rect(x, y, unit, size, highlight_argb);
+    renderer.fill_rect(x, y, size, one, highlight_argb);
+    renderer.fill_rect(x, y, one, size, highlight_argb);
 
     if pressed {
         return;
     }
 
-    if size >= 3 * unit {
-        // shadow, inner: horizontal, vertical
+    if size >= one + two {
+        // shadow, inner (from `one` in to `two`): horizontal, vertical
         renderer.fill_rect(
-            x + unit,
-            y + size - 2 * unit,
-            size - 2 * unit,
-            unit,
+            x + one,
+            y + size - two,
+            size - 2 * one,
+            two - one,
             shadow_argb,
         );
         renderer.fill_rect(
-            x + size - 2 * unit,
-            y + unit,
-            unit,
-            size - 2 * unit,
+            x + size - two,
+            y + one,
+            two - one,
+            size - 2 * one,
             shadow_argb,
         );
     }
 
     // shadow, outer: horizontal, vertical
-    renderer.fill_rect(x, y + size - unit, size, unit, shadow_argb);
-    renderer.fill_rect(x + size - unit, y, unit, size, shadow_argb);
-}
-
-#[allow(clippy::too_many_arguments)]
-fn draw_left_border(
-    renderer: &mut Renderer,
-    x: i32,
-    y: i32,
-    height: i32,
-    color_argb: u32,
-    titlebar_height: i32,
-) {
-    if x < 0 {
-        return;
-    }
-    let unit = (height / titlebar_height.max(1)).max(1);
-    renderer.fill_rect(x, y, unit, height, color_argb);
+    renderer.fill_rect(x, y + size - one, size, one, shadow_argb);
+    renderer.fill_rect(x + size - one, y, one, size, shadow_argb);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1382,6 +1357,7 @@ fn draw_glyph_caret_pair(
 impl Drop for Titlebar {
     fn drop(&mut self) {
         self.shm_pool.destroy();
+        self.fractional.destroy();
         // Decoration (role object) must be destroyed before the surface
         self.decoration.destroy();
         self.surface.destroy();

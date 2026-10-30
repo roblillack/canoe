@@ -140,8 +140,15 @@ reload — no restart needed; canoe rebinds every seat's shortcuts.
 UI options live under the `[ui]` table and let you tune borders, titlebars, and menu colors.
 Colors accept `#RGB`, `#RRGGBB`, or `#RRGGBBAA`.
 
+Sizes (borders, shadows, fonts) are given in pixels at 72 dpi, the same density
+[Saudade](https://github.com/roblillack/saudade) lays out its apps at, so window
+chrome and app content come out the same size. They scale with the display's
+(fractional) scale and are drawn crisply at its native resolution. Set `ui_dpi = 96`
+to draw everything at the plain Wayland logical size instead, a quarter smaller.
+
 ```toml
 [ui]
+ui_dpi = 72                     # density the sizes below are aimed at (48 to 192)
 border_width = 10
 border_active = { outer = "#FFD000", mid = "#000000", inner = "#FFD000" }
 border_inactive = { outer = "#000000", mid = "#000000", inner = "#000000" }

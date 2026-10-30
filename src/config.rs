@@ -110,6 +110,11 @@ pub struct XCursorTheme {
 /// UI theme configuration
 #[derive(Debug, Clone)]
 pub struct UiConfig {
+    /// The density every other size here is aimed at, in dpi: what one of
+    /// their pixels spans. 72 (the default) draws the chrome 4/3 the size of
+    /// a 96-dpi Wayland logical pixel, matching saudade apps; 96 draws it at
+    /// the platform's own size. See [`crate::canoe::scale`].
+    pub ui_dpi: f32,
     pub border_width: i32,
     pub border_active: BorderLayers,
     pub border_inactive: BorderLayers,
@@ -159,6 +164,7 @@ pub struct UiConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
+            ui_dpi: crate::canoe::scale::DEFAULT_UI_DPI,
             border_width: 4,
             border_active: BorderLayers::default(),
             border_inactive: BorderLayers::default(),
@@ -284,6 +290,8 @@ struct RuleFile {
 
 #[derive(Debug, Deserialize)]
 struct UiConfigFile {
+    #[serde(default, deserialize_with = "deserialize_opt_f32")]
+    ui_dpi: Option<f32>,
     border_width: Option<i32>,
     border_active: Option<BorderLayersFile>,
     border_inactive: Option<BorderLayersFile>,
@@ -355,8 +363,35 @@ impl BorderLayers {
     }
 }
 
+/// What `ui_dpi` may be set to: half the nominal 96 to twice it.
+const UI_DPI_RANGE: std::ops::RangeInclusive<f32> = 48.0..=192.0;
+
 impl UiConfig {
+    /// Logical (Wayland surface) pixels per design pixel: 96 / [`ui_dpi`].
+    ///
+    /// [`ui_dpi`]: UiConfig::ui_dpi
+    pub fn density(&self) -> f32 {
+        crate::canoe::scale::NOMINAL_DPI / self.ui_dpi
+    }
+
+    /// A design-pixel length in logical pixels. Nonzero lengths stay nonzero.
+    pub fn len(&self, design: i32) -> i32 {
+        let logical = (design as f32 * self.density()).round() as i32;
+        if design > 0 {
+            logical.max(1)
+        } else {
+            logical
+        }
+    }
+
     fn apply(&mut self, overrides: UiConfigFile) {
+        if let Some(ui_dpi) = overrides.ui_dpi {
+            if ui_dpi.is_finite() && UI_DPI_RANGE.contains(&ui_dpi) {
+                self.ui_dpi = ui_dpi;
+            } else {
+                eprintln!("canoe: ignoring ui_dpi = {ui_dpi}, expected 48 to 192");
+            }
+        }
         if let Some(border_width) = overrides.border_width {
             self.border_width = border_width;
         }
@@ -790,6 +825,24 @@ mod tests {
         assert_eq!(ui.icons_text, Some(0x101010FF));
         assert_eq!(ui.icons_highlight_bg, Some(0xFFD000FF));
         assert_eq!(ui.icons_highlight_text, Some(0x000000FF));
+    }
+
+    #[test]
+    fn test_ui_dpi() {
+        let mut ui = UiConfig::default();
+        assert_eq!(ui.ui_dpi, 72.0);
+        assert_eq!(ui.len(4), 5);
+        assert_eq!(ui.len(19), 25);
+        assert_eq!(ui.len(1), 1);
+
+        let file_config = toml::from_str::<FileConfig>("[ui]\nui_dpi = 96").expect("parse config");
+        ui.apply(file_config.ui.expect("ui present"));
+        assert_eq!(ui.ui_dpi, 96.0);
+        assert_eq!(ui.len(19), 19);
+
+        let file_config = toml::from_str::<FileConfig>("[ui]\nui_dpi = 0").expect("parse config");
+        ui.apply(file_config.ui.expect("ui present"));
+        assert_eq!(ui.ui_dpi, 96.0);
     }
 
     #[test]

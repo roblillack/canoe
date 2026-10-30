@@ -2353,8 +2353,8 @@ impl Context {
         };
         let output_ref = output.borrow();
 
-        let scale = output_ref.scale.max(1);
-        let icon_size_px = super::desktop::ICON_SIZE * scale;
+        let scale = output_ref.desktop_scale(self.config.ui.density());
+        let icon_size_px = scale.design(super::desktop::ICON_SIZE);
 
         // Collect window data into a temp vec to avoid holding borrow of self.windows
         // while calling self.get_icon.
@@ -2755,10 +2755,9 @@ impl Context {
                     .get(&output_id)
                     .and_then(|o| {
                         let o = o.borrow();
-                        let scale = o.scale;
                         o.desktop_surface
                             .as_ref()
-                            .and_then(|d| d.icon_at(surface_x, surface_y, scale))
+                            .and_then(|d| d.icon_at(surface_x, surface_y))
                     })
                     .is_some();
                 if on_icon {

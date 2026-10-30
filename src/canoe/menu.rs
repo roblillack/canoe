@@ -11,7 +11,10 @@ use wayland_client::protocol::{
 use wayland_client::QueueHandle;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 
-use super::{font, render::Renderer, shadow::draw_shadow_soft, shmfile, OutputId, WindowId};
+use super::scale::{FractionalSurface, Scale};
+use super::shadow::{draw_shadow_soft, SoftShadowRect};
+use super::titlebar::Rect;
+use super::{font, render::Renderer, shmfile, OutputId, WindowId};
 
 /// Menu entry data.
 #[derive(Debug, Clone)]
@@ -23,18 +26,24 @@ pub struct MenuItem {
 }
 
 /// Window menu surface and state.
+///
+/// The menu is laid out in design pixels and drawn at the surface's
+/// [`Scale`]; its surface is sized in logical pixels to fit.
 pub struct WindowMenu {
     pub surface: wl_surface::WlSurface,
     pub layer_surface: ZwlrLayerSurfaceV1,
+    pub fractional: FractionalSurface,
     pub buffer: Option<wl_buffer::WlBuffer>,
     pub pool: Option<wl_shm_pool::WlShmPool>,
     pub memfile: Option<File>,
     pub mmap: Option<MmapMut>,
+    /// Surface width (logical px)
     pub width: i32,
+    /// Surface height (logical px)
     pub height: i32,
     pub buffer_width: i32,
     pub buffer_height: i32,
-    pub scale: i32,
+    pub scale: Scale,
     pub configured: bool,
     pub items: Vec<MenuItem>,
     pub header_title: Option<String>,
@@ -43,15 +52,18 @@ pub struct WindowMenu {
     pub origin_x: i32,
     pub origin_y: i32,
     pub theme: MenuTheme,
+    /// Width of the rows' content, between the borders (design px)
+    inner_width: i32,
     cache: Option<MenuCache>,
 }
 
-const MENU_BORDER: i32 = 1;
+// Layout metrics, in design pixels.
 const ITEM_PADDING_X: i32 = 8;
 const ITEM_PADDING_Y: i32 = 4;
 const ICON_SIZE: i32 = 10;
 const ICON_GAP: i32 = 6;
 const ACTIVE_DIAMOND_SIZE: i32 = 8;
+const FALLBACK_WIDTH: i32 = 120;
 
 /// Fallback flat drop-shadow size used when soft shadows are disabled.
 const L_SHADOW_SIZE: i32 = 3;
@@ -74,13 +86,15 @@ pub struct MenuTheme {
     pub shadows_enabled: bool,
     pub shadow_size: i32,
     pub shadow_color: u32,
+    /// Logical pixels per design pixel ([`UiConfig::density`]).
+    pub density: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 struct MenuCacheKey {
     width: i32,
     height: i32,
-    scale: i32,
+    scale: Scale,
     font_size: f32,
     bg: u32,
     text: u32,
@@ -112,10 +126,11 @@ impl MenuTheme {
             shadows_enabled: ui.shadows_enabled,
             shadow_size: ui.shadows_active_size.max(0),
             shadow_color: ui.shadows_color,
+            density: ui.density(),
         }
     }
 
-    /// Pixels of shadow that extend to the left of the menu content.
+    /// Design pixels of shadow that extend to the left of the menu content.
     pub fn shadow_left(&self) -> i32 {
         if self.shadows_enabled {
             self.shadow_size
@@ -124,9 +139,9 @@ impl MenuTheme {
         }
     }
 
-    /// Pixels of shadow that extend above the menu content. Soft mode uses
-    /// half the nominal size so the shadow looks like it's cast by a light
-    /// source above the menu (matching the window drop shadow).
+    /// Design pixels of shadow that extend above the menu content. Soft mode
+    /// uses half the nominal size so the shadow looks like it's cast by a
+    /// light source above the menu (matching the window drop shadow).
     pub fn shadow_top(&self) -> i32 {
         if self.shadows_enabled {
             self.shadow_size / 2
@@ -135,7 +150,7 @@ impl MenuTheme {
         }
     }
 
-    /// Pixels of shadow that extend to the right of the menu content.
+    /// Design pixels of shadow that extend to the right of the menu content.
     pub fn shadow_right(&self) -> i32 {
         if self.shadows_enabled {
             self.shadow_size
@@ -144,8 +159,8 @@ impl MenuTheme {
         }
     }
 
-    /// Pixels of shadow that extend below the menu content. Soft mode uses
-    /// 1.5x the nominal size to account for the downward offset of the
+    /// Design pixels of shadow that extend below the menu content. Soft mode
+    /// uses 1.5x the nominal size to account for the downward offset of the
     /// rendered shape; matches the window drop shadow.
     pub fn shadow_bottom(&self) -> i32 {
         if self.shadows_enabled {
@@ -154,6 +169,31 @@ impl MenuTheme {
             L_SHADOW_SIZE
         }
     }
+
+    /// A design-pixel length in logical pixels, rounded up.
+    fn logical(&self, design: i32) -> i32 {
+        (design as f32 * self.density).ceil() as i32
+    }
+}
+
+/// Where the menu's parts land in the buffer, in device pixels.
+struct MenuGeometry {
+    /// The menu box, border included.
+    menu: Rect,
+    /// Thin-line thickness: the border.
+    line: i32,
+}
+
+impl MenuGeometry {
+    /// The device-pixel rows `[top, bottom)` of the row starting `design_top`
+    /// design pixels below the top border.
+    fn row(&self, scale: &Scale, design_top: i32, design_height: i32) -> (i32, i32) {
+        let origin = self.menu.y + self.line;
+        (
+            origin + scale.design(design_top),
+            origin + scale.design(design_top + design_height),
+        )
+    }
 }
 
 impl WindowMenu {
@@ -161,17 +201,26 @@ impl WindowMenu {
     pub fn new(
         surface: wl_surface::WlSurface,
         layer_surface: ZwlrLayerSurfaceV1,
+        fractional: FractionalSurface,
         output_id: OutputId,
         items: Vec<MenuItem>,
         header_title: Option<String>,
         origin_x: i32,
         origin_y: i32,
         theme: MenuTheme,
+        scale: Scale,
     ) -> Self {
-        let (width, height) = measure_menu(&items, &theme, header_title.as_deref());
+        let inner_width = measure_inner_width(&items, &theme, header_title.as_deref(), &scale);
+        let row_count = items.len() as i32 + i32::from(header_title.is_some());
+        let design_width = theme.shadow_left() + inner_width + 2 + theme.shadow_right();
+        let design_height =
+            theme.shadow_top() + row_count * item_height(&theme) + 2 + theme.shadow_bottom();
+        let width = theme.logical(design_width);
+        let height = theme.logical(design_height);
         Self {
             surface,
             layer_surface,
+            fractional,
             buffer: None,
             pool: None,
             memfile: None,
@@ -180,7 +229,7 @@ impl WindowMenu {
             height,
             buffer_width: width,
             buffer_height: height,
-            scale: 1,
+            scale,
             configured: false,
             items,
             header_title,
@@ -189,36 +238,49 @@ impl WindowMenu {
             origin_x,
             origin_y,
             theme,
+            inner_width,
             cache: None,
         }
     }
 
+    fn row_count(&self) -> i32 {
+        self.items.len() as i32 + i32::from(self.header_title.is_some())
+    }
+
+    fn geometry(&self) -> MenuGeometry {
+        let scale = &self.scale;
+        let line = scale.line();
+        let rows = self.row_count() * item_height(&self.theme);
+        MenuGeometry {
+            menu: Rect {
+                x: scale.design(self.theme.shadow_left()),
+                y: scale.design(self.theme.shadow_top()),
+                width: scale.design(self.inner_width) + line * 2,
+                height: scale.design(rows) + line * 2,
+            },
+            line,
+        }
+    }
+
     pub fn item_at(&self, x: i32, y: i32) -> Option<usize> {
-        let content_w = self.menu_width();
-        let content_h = self.menu_height();
-        let content_x = self.theme.shadow_left() + MENU_BORDER;
-        let content_y = self.theme.shadow_top() + MENU_BORDER;
-        let content_w = content_w - MENU_BORDER * 2;
-        let content_h = content_h - MENU_BORDER * 2;
-        if x < content_x
-            || y < content_y
-            || x >= content_x + content_w
-            || y >= content_y + content_h
+        let geometry = self.geometry();
+        let (x, y) = (self.scale.edge(x), self.scale.edge(y));
+        let menu = geometry.menu;
+        let line = geometry.line;
+        if x < menu.x + line
+            || x >= menu.x + menu.width - line
+            || y < menu.y + line
+            || y >= menu.y + menu.height - line
         {
             return None;
         }
 
-        let header_h = self.header_height();
         let item_h = item_height(&self.theme);
-        if y < content_y + header_h {
-            return None;
-        }
-        let idx = ((y - content_y - header_h) / item_h) as usize;
-        if idx < self.items.len() {
-            Some(idx)
-        } else {
-            None
-        }
+        let header_h = self.header_height();
+        (0..self.items.len()).find(|&idx| {
+            let (top, bottom) = geometry.row(&self.scale, header_h + idx as i32 * item_h, item_h);
+            y >= top && y < bottom
+        })
     }
 
     pub fn update_hover(&mut self, x: i32, y: i32) -> bool {
@@ -254,7 +316,7 @@ impl WindowMenu {
         false
     }
 
-    pub fn ensure_buffer<D>(&mut self, shm: &wl_shm::WlShm, qh: &QueueHandle<D>, scale: i32)
+    pub fn ensure_buffer<D>(&mut self, shm: &wl_shm::WlShm, qh: &QueueHandle<D>, scale: Scale)
     where
         D: 'static
             + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
@@ -264,9 +326,9 @@ impl WindowMenu {
             return;
         }
 
-        let scale = scale.max(1);
-        let buffer_width = self.width * scale;
-        let buffer_height = self.height * scale;
+        let (buffer_width, buffer_height) =
+            self.fractional
+                .apply(&self.surface, self.width, self.height, &scale);
         if buffer_width <= 0 || buffer_height <= 0 {
             return;
         }
@@ -278,8 +340,7 @@ impl WindowMenu {
         {
             return;
         }
-
-        self.surface.set_buffer_scale(scale);
+        self.reset_buffer();
 
         let stride = buffer_width * 4;
         let size = stride * buffer_height;
@@ -329,9 +390,7 @@ impl WindowMenu {
     }
 
     pub fn render(&mut self) {
-        let menu_w = self.menu_width();
-        let menu_h = self.menu_height();
-        if menu_w <= 0 || menu_h <= 0 {
+        if self.buffer.is_none() {
             return;
         }
 
@@ -339,21 +398,17 @@ impl WindowMenu {
             return;
         }
 
+        let geometry = self.geometry();
         let theme = self.theme.clone();
-        let header_title = self.header_title.clone();
         let hovered_idx = self.hovered;
         let hovered_item = hovered_idx.and_then(|idx| self.items.get(idx).cloned());
         let item_h = item_height(&theme);
-        let header_h = if header_title.is_some() { item_h } else { 0 };
-        let scale = self.scale.max(1);
-        let content_x_px = theme.shadow_left() * scale;
-        let content_y_px = theme.shadow_top() * scale;
+        let header_h = self.header_height();
+        let scale = self.scale;
         let row_ctx = MenuRowContext {
-            menu_w,
+            geometry: &geometry,
             item_h,
-            scale,
-            content_x_px,
-            content_y_px,
+            scale: &scale,
             theme: &theme,
         };
 
@@ -377,8 +432,8 @@ impl WindowMenu {
         };
 
         if let (Some(idx), Some(item)) = (hovered_idx, hovered_item.as_ref()) {
-            let row_y = MENU_BORDER + header_h + (idx as i32 * item_h);
-            draw_menu_row(&mut renderer, item, row_y, true, &row_ctx);
+            let row_top = header_h + idx as i32 * item_h;
+            draw_menu_row(&mut renderer, item, row_top, true, &row_ctx);
         }
     }
 
@@ -389,18 +444,23 @@ impl WindowMenu {
     ) where
         D: 'static + wayland_client::Dispatch<wl_region::WlRegion, ()>,
     {
-        let menu_w = self.menu_width();
-        let menu_h = self.menu_height();
-        if menu_w <= 0 || menu_h <= 0 {
+        if self.width <= 0 || self.height <= 0 {
             return;
         }
 
+        // The region is in logical pixels: the menu box, measured back from
+        // where it's drawn.
+        let menu = self.geometry().menu;
+        let device = self.scale.device();
+        let to_logical = |px: i32| (px as f64 / device).round() as i32;
+        let x = to_logical(menu.x);
+        let y = to_logical(menu.y);
         let region = compositor.create_region(qh, ());
         region.add(
-            self.theme.shadow_left(),
-            self.theme.shadow_top(),
-            menu_w,
-            menu_h,
+            x,
+            y,
+            to_logical(menu.x + menu.width) - x,
+            to_logical(menu.y + menu.height) - y,
         );
         self.surface.set_input_region(Some(&region));
         region.destroy();
@@ -415,23 +475,17 @@ impl WindowMenu {
         }
     }
 
-    fn menu_width(&self) -> i32 {
-        (self.width - self.theme.shadow_left() - self.theme.shadow_right()).max(0)
-    }
-
-    fn menu_height(&self) -> i32 {
-        (self.height - self.theme.shadow_top() - self.theme.shadow_bottom()).max(0)
-    }
-
     /// Surface-local offset (x, y) of the point that should sit under the
     /// pointer when the menu is opened: horizontally one half-row-height in
     /// from the menu's left edge, vertically at the vertical center of the
     /// title (first) row.
     pub fn pointer_anchor(&self) -> (i32, i32) {
         let half_row = item_height(&self.theme) / 2;
+        let density = self.theme.density;
+        let logical = |design: i32| (design as f32 * density).round() as i32;
         (
-            self.theme.shadow_left() + half_row,
-            self.theme.shadow_top() + MENU_BORDER + half_row,
+            logical(self.theme.shadow_left() + half_row),
+            logical(self.theme.shadow_top() + 1 + half_row),
         )
     }
 
@@ -452,52 +506,41 @@ impl Drop for WindowMenu {
         if let Some(pool) = self.pool.take() {
             pool.destroy();
         }
+        self.fractional.destroy();
         self.layer_surface.destroy();
         self.surface.destroy();
     }
 }
 
+/// Height of a row, in design pixels.
 fn item_height(theme: &MenuTheme) -> i32 {
     let font_h = theme.font_size.ceil() as i32;
     (font_h + ITEM_PADDING_Y * 2).max(1)
 }
 
-fn measure_menu(items: &[MenuItem], theme: &MenuTheme, header_title: Option<&str>) -> (i32, i32) {
-    let mut max_width = 0.0f32;
-    let mut has_font = false;
-    for item in items {
-        if let Some(width) =
-            font::measure_text(theme.font_name.as_deref(), theme.font_size, &item.title)
-        {
-            has_font = true;
-            if width > max_width {
-                max_width = width;
-            }
+/// Width of the rows between the borders, in design pixels. The text is
+/// measured at the size it will be drawn at, then taken back to design
+/// pixels, so hinting at that size can't push it past its slot.
+fn measure_inner_width(
+    items: &[MenuItem],
+    theme: &MenuTheme,
+    header_title: Option<&str>,
+    scale: &Scale,
+) -> i32 {
+    let font_px = scale.design_f(theme.font_size);
+    let widest = items
+        .iter()
+        .map(|item| item.title.as_str())
+        .chain(header_title)
+        .filter_map(|text| font::measure_text(theme.font_name.as_deref(), font_px, text))
+        .reduce(f32::max);
+    match widest {
+        Some(width) => {
+            let text_w = (width / scale.ui()).ceil() as i32;
+            ITEM_PADDING_X * 2 + ICON_SIZE + ICON_GAP + text_w
         }
+        None => FALLBACK_WIDTH,
     }
-    if let Some(title) = header_title {
-        if let Some(width) = font::measure_text(theme.font_name.as_deref(), theme.font_size, title)
-        {
-            has_font = true;
-            if width > max_width {
-                max_width = width;
-            }
-        }
-    }
-    let row_count = items.len() as i32 + if header_title.is_some() { 1 } else { 0 };
-    let pad_w = theme.shadow_left() + theme.shadow_right();
-    let pad_h = theme.shadow_top() + theme.shadow_bottom();
-    if !has_font {
-        let menu_w = 120;
-        let menu_h = (row_count * item_height(theme)).max(1) + MENU_BORDER * 2;
-        return (menu_w + pad_w, menu_h + pad_h);
-    }
-
-    let content_w = ITEM_PADDING_X * 2 + ICON_SIZE + ICON_GAP + max_width.ceil() as i32;
-    let content_h = item_height(theme) * row_count;
-    let menu_w = content_w + MENU_BORDER * 2;
-    let menu_h = content_h + MENU_BORDER * 2;
-    (menu_w + pad_w, menu_h + pad_h)
 }
 
 fn items_hash(items: &[MenuItem]) -> u64 {
@@ -550,63 +593,46 @@ impl WindowMenu {
         }
 
         let mut pixels = vec![0u8; (self.buffer_width * self.buffer_height * 4) as usize];
-        clear_buffer(&mut pixels);
         let mut renderer = match Renderer::new(&mut pixels, self.buffer_width, self.buffer_height) {
             Some(renderer) => renderer,
             None => return false,
         };
 
-        let menu_w = self.menu_width();
-        let menu_h = self.menu_height();
-        let scale = self.scale.max(1);
-        let menu_w_px = menu_w * scale;
-        let menu_h_px = menu_h * scale;
-        let content_x_px = self.theme.shadow_left() * scale;
-        let content_y_px = self.theme.shadow_top() * scale;
+        let geometry = self.geometry();
+        let menu = geometry.menu;
+        let scale = self.scale;
 
-        draw_menu_shadow(
-            &mut renderer,
-            &self.theme,
-            menu_w,
-            menu_h,
-            content_x_px,
-            content_y_px,
-            scale,
-        );
+        draw_menu_shadow(&mut renderer, &self.theme, &geometry, &scale);
 
         renderer.fill_rect(
-            content_x_px,
-            content_y_px,
-            menu_w_px,
-            menu_h_px,
+            menu.x,
+            menu.y,
+            menu.width,
+            menu.height,
             rgba_to_argb(self.theme.bg),
         );
 
         draw_border_rect(
             &mut renderer,
-            content_x_px,
-            content_y_px,
-            menu_w_px,
-            menu_h_px,
+            menu,
+            geometry.line,
             rgba_to_argb(BORDER_COLOR),
         );
 
         let item_h = item_height(&self.theme);
         let header_h = self.header_height();
         let row_ctx = MenuRowContext {
-            menu_w,
+            geometry: &geometry,
             item_h,
-            scale,
-            content_x_px,
-            content_y_px,
+            scale: &scale,
             theme: &self.theme,
         };
         if let Some(title) = self.header_title.as_deref() {
-            draw_menu_header(&mut renderer, title, MENU_BORDER, &row_ctx);
+            draw_menu_header(&mut renderer, title, &row_ctx);
         }
         for (idx, item) in self.items.iter().enumerate() {
-            let row_y = MENU_BORDER + header_h + (idx as i32 * item_h);
-            draw_menu_row(&mut renderer, item, row_y, false, &row_ctx);
+            let row_top = header_h + idx as i32 * item_h;
+            draw_menu_row(&mut renderer, item, row_top, false, &row_ctx);
         }
 
         self.cache = Some(MenuCache { key, pixels });
@@ -615,48 +641,72 @@ impl WindowMenu {
 }
 
 struct MenuRowContext<'a> {
-    menu_w: i32,
+    geometry: &'a MenuGeometry,
+    /// Row height, in design pixels.
     item_h: i32,
-    scale: i32,
-    /// Buffer-space x offset of the menu content area (left edge), in pixels.
-    content_x_px: i32,
-    /// Buffer-space y offset of the menu content area (top edge), in pixels.
-    content_y_px: i32,
+    scale: &'a Scale,
     theme: &'a MenuTheme,
 }
 
-fn draw_menu_header(renderer: &mut Renderer, title: &str, row_y: i32, ctx: &MenuRowContext<'_>) {
+impl MenuRowContext<'_> {
+    /// Fill the row starting `row_top` design pixels below the top border,
+    /// border to border; returns its device-pixel `(top, height)`.
+    fn fill_row(&self, renderer: &mut Renderer, row_top: i32, color_argb: u32) -> (i32, i32) {
+        let menu = self.geometry.menu;
+        let line = self.geometry.line;
+        let (top, bottom) = self.geometry.row(self.scale, row_top, self.item_h);
+        renderer.fill_rect(
+            menu.x + line,
+            top,
+            menu.width - line * 2,
+            bottom - top,
+            color_argb,
+        );
+        (top, bottom - top)
+    }
+
+    /// Device x of a point `design_x` design pixels in from the left border.
+    fn x(&self, design_x: i32) -> i32 {
+        self.geometry.menu.x + self.geometry.line + self.scale.design(design_x)
+    }
+
+    /// Draw `text` in the row, from `design_x` to the right border.
+    fn text(
+        &self,
+        renderer: &mut Renderer,
+        text: &str,
+        design_x: i32,
+        (top, height): (i32, i32),
+        color_argb: u32,
+    ) {
+        let menu = self.geometry.menu;
+        let x = self.x(design_x);
+        renderer.render_text(
+            text,
+            x,
+            top,
+            menu.x + menu.width - self.geometry.line - x,
+            height,
+            self.scale.ui(),
+            color_argb,
+            self.theme.font_size,
+            self.theme.font_name.as_deref(),
+            0,
+        );
+    }
+}
+
+fn draw_menu_header(renderer: &mut Renderer, title: &str, ctx: &MenuRowContext<'_>) {
     let bg = rgba_to_argb(ctx.theme.titlebar_bg);
     let text_color = rgba_to_argb(ctx.theme.titlebar_text);
-
-    renderer.fill_rect(
-        ctx.content_x_px + MENU_BORDER * ctx.scale,
-        ctx.content_y_px + row_y * ctx.scale,
-        (ctx.menu_w - MENU_BORDER * 2) * ctx.scale,
-        ctx.item_h * ctx.scale,
-        bg,
-    );
-
-    let text_start_x = MENU_BORDER + ITEM_PADDING_X;
-    let text_area_w = ctx.menu_w - MENU_BORDER * 2 - text_start_x + MENU_BORDER;
-    renderer.render_text(
-        title,
-        ctx.content_x_px + text_start_x * ctx.scale,
-        ctx.content_y_px + row_y * ctx.scale,
-        text_area_w * ctx.scale,
-        ctx.item_h * ctx.scale,
-        ctx.scale,
-        text_color,
-        ctx.theme.font_size,
-        ctx.theme.font_name.as_deref(),
-        0,
-    );
+    let row = ctx.fill_row(renderer, 0, bg);
+    ctx.text(renderer, title, ITEM_PADDING_X, row, text_color);
 }
 
 fn draw_menu_row(
     renderer: &mut Renderer,
     item: &MenuItem,
-    row_y: i32,
+    row_top: i32,
     is_active: bool,
     ctx: &MenuRowContext<'_>,
 ) {
@@ -676,49 +726,38 @@ fn draw_menu_row(
         rgba_to_argb(ctx.theme.text)
     };
 
-    renderer.fill_rect(
-        ctx.content_x_px + MENU_BORDER * ctx.scale,
-        ctx.content_y_px + row_y * ctx.scale,
-        (ctx.menu_w - MENU_BORDER * 2) * ctx.scale,
-        ctx.item_h * ctx.scale,
-        bg,
-    );
+    let row = ctx.fill_row(renderer, row_top, bg);
+    let (top, height) = row;
+    let scale = ctx.scale;
 
-    let start_x = MENU_BORDER + ITEM_PADDING_X;
+    let icon_x = ctx.x(ITEM_PADDING_X);
+    let icon_size = scale.design(ICON_SIZE);
     if item.hidden {
         draw_dashed_rect(
             renderer,
-            ctx.content_x_px + start_x * ctx.scale,
-            ctx.content_y_px + (row_y + (ctx.item_h - ICON_SIZE) / 2) * ctx.scale,
-            ICON_SIZE * ctx.scale,
-            ICON_SIZE * ctx.scale,
+            Rect {
+                x: icon_x,
+                y: top + (height - icon_size) / 2,
+                width: icon_size,
+                height: icon_size,
+            },
+            ctx.geometry.line,
             icon_color,
         );
     }
     if item.active {
+        let diamond = scale.design(ACTIVE_DIAMOND_SIZE);
         draw_diamond(
             renderer,
-            ctx.content_x_px + (start_x + (ICON_SIZE - ACTIVE_DIAMOND_SIZE) / 2) * ctx.scale,
-            ctx.content_y_px + (row_y + (ctx.item_h - ACTIVE_DIAMOND_SIZE) / 2) * ctx.scale,
-            ACTIVE_DIAMOND_SIZE * ctx.scale,
+            icon_x + (icon_size - diamond) / 2,
+            top + (height - diamond) / 2,
+            diamond,
             text_color,
         );
     }
 
-    let text_start_x = start_x + ICON_SIZE + ICON_GAP;
-    let text_area_w = ctx.menu_w - MENU_BORDER * 2 - text_start_x + MENU_BORDER;
-    renderer.render_text(
-        &item.title,
-        ctx.content_x_px + text_start_x * ctx.scale,
-        ctx.content_y_px + row_y * ctx.scale,
-        text_area_w * ctx.scale,
-        ctx.item_h * ctx.scale,
-        ctx.scale,
-        text_color,
-        ctx.theme.font_size,
-        ctx.theme.font_name.as_deref(),
-        0,
-    );
+    let text_x = ITEM_PADDING_X + ICON_SIZE + ICON_GAP;
+    ctx.text(renderer, &item.title, text_x, row, text_color);
 }
 
 fn rgba_to_argb(rgba: u32) -> u32 {
@@ -729,40 +768,31 @@ fn rgba_to_argb(rgba: u32) -> u32 {
     (a << 24) | (r << 16) | (g << 8) | b
 }
 
-fn clear_buffer(pixels: &mut [u8]) {
-    for chunk in pixels.chunks_exact_mut(4) {
-        chunk.copy_from_slice(&[0, 0, 0, 0]);
-    }
-}
-
-fn draw_border_rect(
-    renderer: &mut Renderer,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    color_argb: u32,
-) {
-    if width <= 0 || height <= 0 {
+fn draw_border_rect(renderer: &mut Renderer, rect: Rect, line: i32, color_argb: u32) {
+    if rect.width <= 0 || rect.height <= 0 {
         return;
     }
 
-    renderer.fill_rect(x, y, width, 1, color_argb);
-    renderer.fill_rect(x, y + height - 1, width, 1, color_argb);
-    renderer.fill_rect(x, y, 1, height, color_argb);
-    renderer.fill_rect(x + width - 1, y, 1, height, color_argb);
+    let Rect {
+        x,
+        y,
+        width,
+        height,
+    } = rect;
+    renderer.fill_rect(x, y, width, line, color_argb);
+    renderer.fill_rect(x, y + height - line, width, line, color_argb);
+    renderer.fill_rect(x, y, line, height, color_argb);
+    renderer.fill_rect(x + width - line, y, line, height, color_argb);
 }
 
 fn draw_menu_shadow(
     renderer: &mut Renderer,
     theme: &MenuTheme,
-    menu_w: i32,
-    menu_h: i32,
-    content_x_px: i32,
-    content_y_px: i32,
-    scale: i32,
+    geometry: &MenuGeometry,
+    scale: &Scale,
 ) {
-    if menu_w <= 0 || menu_h <= 0 {
+    let menu = geometry.menu;
+    if menu.width <= 0 || menu.height <= 0 {
         return;
     }
 
@@ -770,66 +800,66 @@ fn draw_menu_shadow(
         if theme.shadow_size <= 0 {
             return;
         }
-        // Shrink the rendered shape height by size/2 so the falloff sits
-        // lower in the buffer; combined with the asymmetric padding from
+        // Push the shape's top edge down by size/2 so the falloff sits lower
+        // in the buffer; combined with the asymmetric padding from
         // MenuTheme::shadow_top/bottom this produces the same "light from
         // above" offset as the window drop shadow.
-        let frame_h_shrunk = (menu_h - theme.shadow_size / 2).max(1);
+        let drop = scale.design(theme.shadow_size / 2);
         draw_shadow_soft(
             renderer,
-            menu_w,
-            frame_h_shrunk,
-            theme.shadow_size,
+            SoftShadowRect {
+                x: menu.x,
+                y: menu.y + drop,
+                width: menu.width,
+                height: (menu.height - drop).max(1),
+            },
+            scale.design(theme.shadow_size),
             0,
             theme.shadow_color,
-            scale,
         );
     } else {
-        let l_size = L_SHADOW_SIZE * scale;
-        let menu_w_px = menu_w * scale;
-        let menu_h_px = menu_h * scale;
+        let l_size = scale.design(L_SHADOW_SIZE);
         let color = rgba_to_argb(L_SHADOW_COLOR);
         renderer.fill_rect(
-            content_x_px + l_size,
-            content_y_px + menu_h_px,
-            menu_w_px,
+            menu.x + l_size,
+            menu.y + menu.height,
+            menu.width,
             l_size,
             color,
         );
         renderer.fill_rect(
-            content_x_px + menu_w_px,
-            content_y_px + l_size,
+            menu.x + menu.width,
+            menu.y + l_size,
             l_size,
-            menu_h_px,
+            menu.height,
             color,
         );
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn draw_dashed_rect(
-    renderer: &mut Renderer,
-    x: i32,
-    y: i32,
-    width: i32,
-    height: i32,
-    color_argb: u32,
-) {
-    let dash = 2;
-    let gap = 2;
+/// A dashed outline `line` device pixels thick, dashes and gaps two lines long.
+fn draw_dashed_rect(renderer: &mut Renderer, rect: Rect, line: i32, color_argb: u32) {
+    let Rect {
+        x,
+        y,
+        width,
+        height,
+    } = rect;
+    let dash = line * 2;
+    let gap = line * 2;
     let mut px = x;
     while px < x + width {
         let segment = (x + width - px).min(dash);
-        renderer.fill_rect(px, y, segment, 1, color_argb);
-        renderer.fill_rect(px, y + height - 1, segment, 1, color_argb);
+        renderer.fill_rect(px, y, segment, line, color_argb);
+        renderer.fill_rect(px, y + height - line, segment, line, color_argb);
         px += dash + gap;
     }
 
     let mut py = y;
     while py < y + height {
         let segment = (y + height - py).min(dash);
-        renderer.fill_rect(x, py, 1, segment, color_argb);
-        renderer.fill_rect(x + width - 1, py, 1, segment, color_argb);
+        renderer.fill_rect(x, py, line, segment, color_argb);
+        renderer.fill_rect(x + width - line, py, line, segment, color_argb);
         py += dash + gap;
     }
 }
