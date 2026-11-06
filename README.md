@@ -126,10 +126,8 @@ as resizing and tiled. Its size doesn't change.
 
 Canoe reads `~/.config/canoe/canoe.toml`. After editing it, send `SIGHUP` to
 re-read it without restarting (e.g. `pkill -HUP canoe`); this refreshes the
-theme, desktop, window rules, and key bindings. **Startup commands and environment
-variables require a full restart of the compositor to take effect**. Pass 
-`--no-config` to ignore the file and use the built-in defaults (reloads keep 
-honoring this).
+theme, desktop, window rules, and key bindings. Pass `--no-config` to ignore the
+file and use the built-in defaults (reloads keep honoring this).
 
 The main modifier defaults to `super`, but you can change it:
 
@@ -163,31 +161,39 @@ lock_cmd = ["swaylock", "-f", "-c", "000000"]
 
 ### Startup commands
 
-Have system commands that run upon initialization of Canoe. This is useful for
-performing routine procedures such as performing display configurations, setting
-desktop wallpapers, or starting up other shell utilities. Startup commands are 
-ran sequentially.
+`startup_cmds` lists programs Canoe launches when it starts, e.g. to configure
+displays, set a wallpaper, or start a notification daemon. Each entry is a
+program name or an argv array, like `launcher_cmd`. A plain string is not run
+through a shell, so pass arguments as an array (`"swaybg -i wall.png"` would
+look for a program with that literal name).
 
 ```toml
 startup_cmds = [
-    # Supports simple programs
     "kanshi",
-    # AND programs with arguments
-    ["systemctl", "--user", "start", "xdg-desktop-portal-wlr.service"]
+    "mako",
+    ["swaybg", "-i", "/home/me/wallpaper.png", "-m", "fill"],
 ]
 ```
 
+The commands are launched in order, but Canoe does not wait for one to finish
+before starting the next. They run only at startup: a `SIGHUP` reload does not
+run them again, so changes take effect the next time Canoe starts.
+
 ### Environment variables
 
-Bind your environment variables under the `[env]` table. All values must be a
-string.
+Variables under the `[env]` table are set for every program Canoe launches:
+startup commands, the launcher, terminal, screen locker, and hotkey commands.
+They do not change Canoe's own environment. Changes apply to programs launched
+after the next `SIGHUP` reload.
 
 ```toml
 [env]
-# XDG session type
-XDG_SESSION_TYPE = "wayland"
-XDG_CURRENT_DESKTOP = "river:wlroots"
+MOZ_ENABLE_WAYLAND = "1"
+QT_QPA_PLATFORM = "wayland"
 ```
+
+All values must be strings: `MOZ_ENABLE_WAYLAND = 1` is a type error, which
+makes Canoe ignore the whole configuration file.
 
 ### Hotkeys
 
