@@ -108,8 +108,10 @@ same window or screen gets the same answer without asking, once.
    `systemctl --user restart xdg-desktop-portal xdg-desktop-portal-wlr`.
 
 The portal needs to know which Wayland display to capture. On startup Canoe
-exports `WAYLAND_DISPLAY` and `XDG_CURRENT_DESKTOP` to the systemd user manager
-and D-Bus activation environment. If you manage the session environment
+exports `WAYLAND_DISPLAY` and `XDG_CURRENT_DESKTOP` (defaulting to `river`) to
+the systemd user manager and D-Bus activation environment, using the same
+values as the programs it launches (see [Environment
+variables](#environment-variables)). If you manage the session environment
 yourself (or run Canoe nested), turn that off:
 
 ```toml
@@ -184,7 +186,9 @@ run them again, so changes take effect the next time Canoe starts.
 Variables under the `[env]` table are set for every program Canoe launches:
 startup commands, the launcher, terminal, screen locker, and hotkey commands.
 They do not change Canoe's own environment. Changes apply to programs launched
-after the next `SIGHUP` reload.
+after the next `SIGHUP` reload. Values for `WAYLAND_DISPLAY` and
+`XDG_CURRENT_DESKTOP` are also what Canoe exports for the screen-sharing portal
+on startup (see [Screen Sharing](#screen-sharing)).
 
 ```toml
 [env]
