@@ -159,7 +159,7 @@ pub struct UiConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            border_width: 4,
+            border_width: 5,
             border_active: BorderLayers::default(),
             border_inactive: BorderLayers::default(),
             titlebar_text_active: 0xFFFFFFFF,
@@ -174,11 +174,11 @@ impl Default for UiConfig {
             button_highlight: 0xFFFFFFFF,
             button_shadow: 0x808080FF,
             shadows_enabled: true,
-            shadows_active_size: 20,
-            shadows_inactive_size: 10,
+            shadows_active_size: 25,
+            shadows_inactive_size: 12,
             shadows_color: 0x00000033,
             font_name: None,
-            font_size: 12.0,
+            font_size: 15.0,
             desktop_background: 0x008080FF,
             icons_enabled: true,
             icons_font_name: None,
@@ -827,8 +827,8 @@ mod tests {
     fn test_shadow_config_defaults() {
         let ui = UiConfig::default();
         assert!(ui.shadows_enabled);
-        assert_eq!(ui.shadows_active_size, 20);
-        assert_eq!(ui.shadows_inactive_size, 10);
+        assert_eq!(ui.shadows_active_size, 25);
+        assert_eq!(ui.shadows_inactive_size, 12);
         assert_eq!(ui.shadows_color, 0x00000033);
     }
 

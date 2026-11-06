@@ -113,9 +113,7 @@ impl ShieldSurface {
 
     pub fn render(&mut self) {
         if let Some(ref mut mmap) = self.mmap {
-            for chunk in mmap.as_mut().chunks_exact_mut(4) {
-                chunk.copy_from_slice(&[0, 0, 0, 0]);
-            }
+            mmap.as_mut().fill(0);
         }
     }
 

@@ -140,6 +140,9 @@ reload — no restart needed; canoe rebinds every seat's shortcuts.
 UI options live under the `[ui]` table and let you tune borders, titlebars, and menu colors.
 Colors accept `#RGB`, `#RRGGBB`, or `#RRGGBBAA`.
 
+Sizes (borders, shadows, fonts) are given in logical pixels. They scale with the
+display's (fractional) scale and are drawn crisply at its native resolution.
+
 ```toml
 [ui]
 border_width = 10
@@ -157,15 +160,15 @@ button_bg = "#202020"
 button_highlight = "#FFD000"
 button_shadow = "#000000"
 shadows_enabled = true          # master toggle; when false menus fall back to a flat L-shape
-shadows_active_size = 20        # soft shadow size for the focused window (and menus)
-shadows_inactive_size = 10      # soft shadow size for non-focused windows
+shadows_active_size = 25        # soft shadow size for the focused window (and menus)
+shadows_inactive_size = 12      # soft shadow size for non-focused windows
 shadows_color = "#00000033"     # shadow color used for the soft drop shadow
 font_name = "Sans"
-font_size = 12.0
+font_size = 15.0
 desktop_background = "#101010"
 icons_enabled = true            # set to false to hide minimized-window icons on the desktop
 icons_font_name = "Sans"        # optional; defaults to a regular-weight variant of font_name
-icons_font_size = 10.0          # optional; defaults to font_size * 0.80
+icons_font_size = 12.0          # optional; defaults to font_size * 0.80
 icons_text = "#FFFFFF"          # optional; defaults to menu_text
 icons_highlight_bg = "#FFD000"  # optional; defaults to menu_highlight_bg
 icons_highlight_text = "#000000"# optional; defaults to menu_highlight_text

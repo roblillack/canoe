@@ -44,6 +44,12 @@ use wayland_client::protocol::{
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::WpCursorShapeDeviceV1;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
+use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
+use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::{
+    self, WpFractionalScaleV1,
+};
+use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
+use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 
@@ -65,6 +71,8 @@ struct Globals {
     rwm_libinput_config: Option<RiverLibinputConfigV1>,
     wlr_layer_shell: Option<ZwlrLayerShellV1>,
     cursor_shape_manager: Option<WpCursorShapeManagerV1>,
+    viewporter: Option<WpViewporter>,
+    fractional_scale_manager: Option<WpFractionalScaleManagerV1>,
     wl_seats: HashMap<u32, wl_seat::WlSeat>,
     wl_seat_has_pointer: HashMap<u32, bool>,
     wl_outputs: HashMap<u32, wl_output::WlOutput>,
@@ -72,6 +80,61 @@ struct Globals {
 }
 
 const CLOSE_DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// Which surface a `wp_fractional_scale_v1` reports for.
+#[derive(Debug, Clone, Copy)]
+enum ScaleTarget {
+    Titlebar(canoe::WindowId),
+    Shadow(canoe::WindowId),
+    Menu,
+    Desktop(canoe::OutputId),
+}
+
+/// Give `surface` a viewport and subscribe it to fractional-scale updates,
+/// where the compositor supports them.
+fn fractional_surface(
+    globals: &Globals,
+    surface: &wl_surface::WlSurface,
+    target: ScaleTarget,
+    qh: &QueueHandle<AppState>,
+) -> canoe::scale::FractionalSurface {
+    let viewport = globals
+        .viewporter
+        .as_ref()
+        .map(|viewporter| viewporter.get_viewport(surface, qh, ()));
+    let fractional = globals
+        .fractional_scale_manager
+        .as_ref()
+        .map(|manager| manager.get_fractional_scale(surface, qh, target));
+    canoe::scale::FractionalSurface::new(viewport, fractional)
+}
+
+/// The integer scale of the outputs a decoration surface is on: the largest,
+/// else the window's output's.
+/// Where a window's content sits on the output it's drawn on, in logical
+/// pixels from the output's corner: what the compositor rounds the window's
+/// and its decorations' edges from. A window spanning outputs lines up on
+/// the one it belongs to.
+fn window_origin(window: &canoe::window::Window, output: Option<&canoe::Output>) -> (i32, i32) {
+    match output {
+        Some(output) => (window.x - output.x, window.y - output.y),
+        None => (window.x, window.y),
+    }
+}
+
+fn integer_surface_scale(
+    globals: &Globals,
+    output_names: &[u32],
+    window_output: Option<&canoe::Output>,
+) -> i32 {
+    output_names
+        .iter()
+        .filter_map(|name| globals.wl_output_scales.get(name).copied())
+        .max()
+        .or_else(|| window_output.map(|output| output.scale))
+        .unwrap_or(1)
+        .max(1)
+}
 
 fn attach_wl_seat(
     state: &mut AppState,
@@ -136,16 +199,15 @@ fn render_window_menu(state: &mut AppState, qh: &QueueHandle<AppState>) {
     };
 
     let mut context = state.context.borrow_mut();
-    let scale = context
-        .window_menu
-        .as_ref()
-        .and_then(|menu| {
-            context
-                .outputs
-                .get(&menu.output_id)
-                .map(|output| output.borrow().scale)
-        })
-        .unwrap_or(1);
+    let scale = context.window_menu.as_ref().and_then(|menu| {
+        let output = context.outputs.get(&menu.output_id)?;
+        let output = output.borrow();
+        let device = menu
+            .fractional
+            .device_scale(output.preferred_scale, output.scale);
+        Some(canoe::scale::Scale::new(device))
+    });
+    let scale = scale.unwrap_or_default();
     if let Some(menu) = context.window_menu.as_mut() {
         if !menu.configured {
             return;
@@ -181,12 +243,17 @@ fn open_window_menu_with_items(
         let menu_theme = canoe::MenuTheme::from_ui(&context.config.ui);
         let info = context.outputs.get(&output_id).map(|output| {
             let out = output.borrow();
-            (out.width, out.height, out.wl_output.clone())
+            (
+                out.width,
+                out.height,
+                out.wl_output.clone(),
+                out.render_scale(),
+            )
         });
         (info, focused, menu_theme)
     };
 
-    let Some((ow, oh, wl_output)) = output_info else {
+    let Some((ow, oh, wl_output, scale)) = output_info else {
         return;
     };
 
@@ -204,15 +271,18 @@ fn open_window_menu_with_items(
         canoe::LayerSurfaceKind::Menu,
     );
 
+    let fractional = fractional_surface(&state.globals, &surface, ScaleTarget::Menu, qh);
     let mut menu = canoe::WindowMenu::new(
         surface,
         layer_surface,
+        fractional,
         output_id,
         items,
         header_title,
         pointer.0,
         pointer.1,
         menu_theme,
+        scale,
     );
     let mut initial_preview = None;
     if mode == canoe::WindowMenuMode::AltTab {
@@ -863,9 +933,16 @@ fn ensure_desktop_surface(
     layer_surface.set_size(0, 0);
     surface.commit();
 
+    let fractional = fractional_surface(
+        &state.globals,
+        &surface,
+        ScaleTarget::Desktop(output_id),
+        qh,
+    );
     output.borrow_mut().desktop_surface = Some(canoe::DesktopSurface::new(
         surface,
         layer_surface,
+        fractional,
         output_id,
     ));
 }
@@ -927,8 +1004,8 @@ fn render_desktop_surface(
         let scale = context
             .outputs
             .get(&output_id)
-            .map(|o| o.borrow().scale)
-            .unwrap_or(1);
+            .map(|o| o.borrow().desktop_scale())
+            .unwrap_or_default();
         let icons = if icons_enabled {
             context.collect_minimized_icons(output_id)
         } else {
@@ -967,7 +1044,6 @@ fn render_desktop_surface(
         bg_color,
         &icons,
         &icon_theme,
-        scale,
         font_name.as_deref(),
         font_size,
         Some(label_font_name.as_str()),
@@ -1087,6 +1163,15 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                     let lc: RiverLibinputConfigV1 = registry.bind(name, version.min(1), qh, ());
                     state.globals.rwm_libinput_config = Some(lc.clone());
                     state.context.borrow_mut().rwm_libinput_config = Some(lc);
+                }
+                "wp_viewporter" => {
+                    let viewporter: WpViewporter = registry.bind(name, version.min(1), qh, ());
+                    state.globals.viewporter = Some(viewporter);
+                }
+                "wp_fractional_scale_manager_v1" => {
+                    let manager: WpFractionalScaleManagerV1 =
+                        registry.bind(name, version.min(1), qh, ());
+                    state.globals.fractional_scale_manager = Some(manager);
                 }
                 "wp_cursor_shape_manager_v1" => {
                     let manager: WpCursorShapeManagerV1 =
@@ -1263,32 +1348,40 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         let frame_width = (width + border_width * 2).max(1);
                         let frame_height =
                             (content_height + titlebar_height + border_width * 2).max(1);
-                        let shadow_frame_height = (frame_height - (shadow_size / 2)).max(1);
+                        let fit = w.frame_fit();
 
-                        let output_scale = w
-                            .output
-                            .as_ref()
-                            .and_then(|o| o.upgrade())
-                            .map(|o| o.borrow().scale);
-                        let shadow_output_names = w
-                            .shadow
-                            .as_ref()
-                            .map(|s| s.output_names.clone())
-                            .unwrap_or_default();
-                        let shadow_surface_scale = if shadow_output_names.is_empty() {
-                            None
+                        let window_output = w.output.as_ref().and_then(|o| o.upgrade());
+                        let window_output = window_output.as_ref().map(|o| o.borrow());
+                        let (window_x, window_y) = window_origin(&w, window_output.as_deref());
+
+                        // The rect sits `buffer_shadow_size` in from the
+                        // buffer edges, so position the surface by that inset
+                        // (constant across focus). The drop-shadow shift still
+                        // tracks the actual band size.
+                        let offset_x = if use_ssd {
+                            -border_width - buffer_shadow_size
                         } else {
-                            let mut max_scale = 1;
-                            for name in &shadow_output_names {
-                                if let Some(scale) = state.globals.wl_output_scales.get(name) {
-                                    max_scale = max_scale.max(*scale);
-                                }
-                            }
-                            Some(max_scale)
+                            -buffer_shadow_size
                         };
-                        let scale = shadow_surface_scale.or(output_scale).unwrap_or(1);
+                        let shadow_shift = shadow_size / 2;
+                        let offset_y = if use_ssd {
+                            -border_width - titlebar_height + swallow_top - buffer_shadow_size
+                                + shadow_shift
+                        } else {
+                            -buffer_shadow_size + shadow_shift
+                        };
 
                         if let Some(ref mut shadow) = w.shadow {
+                            let integer = integer_surface_scale(
+                                &state.globals,
+                                &shadow.output_names,
+                                window_output.as_deref(),
+                            );
+                            let device = shadow.fractional.device_scale(
+                                window_output.as_ref().and_then(|o| o.preferred_scale),
+                                integer,
+                            );
+                            let scale = canoe::scale::Scale::new(device);
                             shadow.ensure_buffer(
                                 frame_width,
                                 frame_height,
@@ -1296,6 +1389,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                 shm,
                                 qh,
                                 scale,
+                                canoe::scale::Origin::new(window_x + offset_x, window_y + offset_y),
                             );
                             if let Some(ref compositor) = state.globals.compositor {
                                 #[cfg(feature = "debug-logging")]
@@ -1308,35 +1402,32 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                             }
                             #[cfg(feature = "debug-logging")]
                             let sh_t0 = Instant::now();
-                            let did_render = shadow.render(
-                                frame_width,
-                                shadow_frame_height,
-                                shadow_size,
-                                shadow_color,
-                                scale,
-                                shm,
-                                qh,
+                            // Cast the shadow from the device pixels the frame
+                            // actually covers, its top dropped by the shift.
+                            let frame = canoe::titlebar::DeviceFrame::new(
+                                &scale,
+                                fit,
+                                canoe::scale::Origin::new(
+                                    window_x - border_width,
+                                    window_y - border_width - titlebar_height + swallow_top,
+                                ),
+                                border_width,
+                                titlebar_height,
+                                width,
+                                content_height,
                             );
+                            let drop = scale.px(shadow_shift).min(frame.outer.height - 1).max(0);
+                            let cast = canoe::titlebar::Rect {
+                                y: frame.outer.y + drop,
+                                height: frame.outer.height - drop,
+                                ..frame.outer
+                            };
+                            let did_render =
+                                shadow.render(cast, shadow_size, shadow_color, shm, qh);
                             #[cfg(feature = "debug-logging")]
                             {
                                 shadow_render_us += sh_t0.elapsed().as_micros();
                             }
-                            // The rect sits `buffer_shadow_size` in from the
-                            // buffer edges, so position the surface by that inset
-                            // (constant across focus). The drop-shadow shift still
-                            // tracks the actual band size.
-                            let offset_x = if use_ssd {
-                                -border_width - buffer_shadow_size
-                            } else {
-                                -buffer_shadow_size
-                            };
-                            let shadow_shift = shadow_size / 2;
-                            let offset_y = if use_ssd {
-                                -border_width - titlebar_height + swallow_top - buffer_shadow_size
-                                    + shadow_shift
-                            } else {
-                                -buffer_shadow_size + shadow_shift
-                            };
                             shadow.set_offset(offset_x, offset_y);
                             if did_render && shadow.is_ready() {
                                 shadow.sync_next_commit();
@@ -1376,32 +1467,28 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         let hovered_button = w.titlebar_hovered;
                         let titlebar_left_down = w.titlebar_left_down;
                         let swallow_top = w.swallow_top;
+                        let frame_fit = w.frame_fit();
 
                         // Update titlebar if it exists and window has valid dimensions
-                        let output_scale = w
-                            .output
-                            .as_ref()
-                            .and_then(|o| o.upgrade())
-                            .map(|o| o.borrow().scale);
-                        let titlebar_output_names = w
-                            .titlebar
-                            .as_ref()
-                            .map(|t| t.output_names.clone())
-                            .unwrap_or_default();
-                        let titlebar_surface_scale = if titlebar_output_names.is_empty() {
-                            None
-                        } else {
-                            let mut max_scale = 1;
-                            for name in &titlebar_output_names {
-                                if let Some(scale) = state.globals.wl_output_scales.get(name) {
-                                    max_scale = max_scale.max(*scale);
-                                }
-                            }
-                            Some(max_scale)
-                        };
-                        let scale = titlebar_surface_scale.or(output_scale).unwrap_or(1);
+                        let window_output = w.output.as_ref().and_then(|o| o.upgrade());
+                        let window_output = window_output.as_ref().map(|o| o.borrow());
+                        let (window_x, window_y) = window_origin(&w, window_output.as_deref());
+                        let border_width = canoe::titlebar::border_width(ui, frame_style);
+                        let titlebar_height = canoe::titlebar::titlebar_height(ui);
+                        let (offset_x, offset_y) =
+                            (-border_width, -border_width - titlebar_height + swallow_top);
                         if let Some(ref mut titlebar) = w.titlebar {
                             if width > 0 && height > 0 {
+                                let integer = integer_surface_scale(
+                                    &state.globals,
+                                    &titlebar.output_names,
+                                    window_output.as_deref(),
+                                );
+                                let device = titlebar.fractional.device_scale(
+                                    window_output.as_ref().and_then(|o| o.preferred_scale),
+                                    integer,
+                                );
+                                let scale = canoe::scale::Scale::new(device);
                                 let content_height = (height - swallow_top).max(1);
                                 // Ensure buffer is allocated
                                 titlebar.ensure_buffer(
@@ -1410,6 +1497,11 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                     shm,
                                     qh,
                                     scale,
+                                    canoe::scale::Origin::new(
+                                        window_x + offset_x,
+                                        window_y + offset_y,
+                                    ),
+                                    frame_fit,
                                     ui,
                                     frame_style,
                                 );
@@ -1445,12 +1537,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                 }
 
                                 // Position decoration so it sits above content with borders
-                                let border_width = canoe::titlebar::border_width(ui, frame_style);
-                                let titlebar_height = canoe::titlebar::titlebar_height(ui);
-                                titlebar.set_offset(
-                                    -border_width,
-                                    -border_width - titlebar_height + swallow_top,
-                                );
+                                titlebar.set_offset(offset_x, offset_y);
 
                                 // Sync and commit (only if we have a buffer)
                                 if did_render && titlebar.is_ready() {
@@ -1522,7 +1609,14 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         id.get_decoration_below(&shadow_surface, qh, window_id);
 
                     // Create shadow surface
-                    let shadow = canoe::WindowShadow::new(shadow_surface, shadow_decoration);
+                    let fractional = fractional_surface(
+                        &state.globals,
+                        &shadow_surface,
+                        ScaleTarget::Shadow(window_id),
+                        qh,
+                    );
+                    let shadow =
+                        canoe::WindowShadow::new(shadow_surface, shadow_decoration, fractional);
                     window.borrow_mut().shadow = Some(shadow);
 
                     // Create surface for titlebar
@@ -1533,7 +1627,13 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         id.get_decoration_above(&surface, qh, window_id);
 
                     // Create titlebar
-                    let titlebar = canoe::Titlebar::new(surface, decoration);
+                    let fractional = fractional_surface(
+                        &state.globals,
+                        &surface,
+                        ScaleTarget::Titlebar(window_id),
+                        qh,
+                    );
+                    let titlebar = canoe::Titlebar::new(surface, decoration, fractional);
                     window.borrow_mut().titlebar = Some(titlebar);
                 }
 
@@ -2825,16 +2925,11 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                                         // Hit-test desktop icons
                                         let hit = {
                                             let context = state.context.borrow();
-                                            let scale = context
-                                                .outputs
-                                                .get(&output_id)
-                                                .map(|o| o.borrow().scale)
-                                                .unwrap_or(1);
                                             context.outputs.get(&output_id).and_then(|o| {
                                                 o.borrow()
                                                     .desktop_surface
                                                     .as_ref()
-                                                    .and_then(|d| d.icon_at(px, py, scale))
+                                                    .and_then(|d| d.icon_at(px, py))
                                             })
                                         };
                                         if let Some(icon_window_id) = hit {
@@ -2916,16 +3011,11 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                                     } else if button == crate::config::button::RIGHT {
                                         let icon_hit = {
                                             let context = state.context.borrow();
-                                            let scale = context
-                                                .outputs
-                                                .get(&output_id)
-                                                .map(|o| o.borrow().scale)
-                                                .unwrap_or(1);
                                             context.outputs.get(&output_id).and_then(|o| {
                                                 o.borrow()
                                                     .desktop_surface
                                                     .as_ref()
-                                                    .and_then(|d| d.icon_at(px, py, scale))
+                                                    .and_then(|d| d.icon_at(px, py))
                                             })
                                         };
                                         if let Some(icon_window_id) = icon_hit {
@@ -3358,6 +3448,138 @@ impl Dispatch<wl_output::WlOutput, ()> for AppState {
             };
             for output in outputs {
                 output.borrow_mut().scale = scale;
+            }
+        }
+    }
+}
+
+impl Dispatch<WpViewporter, ()> for AppState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WpViewporter,
+        _event: wayland_protocols::wp::viewporter::client::wp_viewporter::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // wp_viewporter has no events
+    }
+}
+
+impl Dispatch<WpViewport, ()> for AppState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WpViewport,
+        _event: wayland_protocols::wp::viewporter::client::wp_viewport::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // wp_viewport has no events
+    }
+}
+
+impl Dispatch<WpFractionalScaleManagerV1, ()> for AppState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WpFractionalScaleManagerV1,
+        _event: wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // wp_fractional_scale_manager_v1 has no events
+    }
+}
+
+impl Dispatch<WpFractionalScaleV1, ScaleTarget> for AppState {
+    fn event(
+        state: &mut Self,
+        _proxy: &WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        target: &ScaleTarget,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        let wp_fractional_scale_v1::Event::PreferredScale { scale } = event else {
+            return;
+        };
+        match *target {
+            ScaleTarget::Titlebar(window_id) | ScaleTarget::Shadow(window_id) => {
+                let changed = {
+                    let context = state.context.borrow();
+                    let Some(window) = context.windows.get(&window_id) else {
+                        return;
+                    };
+                    let mut w = window.borrow_mut();
+                    let changed = match *target {
+                        ScaleTarget::Titlebar(_) => w
+                            .titlebar
+                            .as_mut()
+                            .is_some_and(|t| t.fractional.set_preferred(scale)),
+                        _ => w
+                            .shadow
+                            .as_mut()
+                            .is_some_and(|s| s.fractional.set_preferred(scale)),
+                    };
+                    if let Some(output) = w.output.as_ref().and_then(|o| o.upgrade()) {
+                        output.borrow_mut().preferred_scale = Some(scale);
+                    }
+                    changed
+                };
+                // Decorations are redrawn in the next render sequence, which
+                // picks the new scale up and reallocates the buffer.
+                if changed {
+                    request_manage_dirty(state);
+                }
+            }
+            ScaleTarget::Menu => {
+                let changed = {
+                    let context = state.context.borrow();
+                    match context.window_menu.as_ref() {
+                        Some(menu) => {
+                            if let Some(output) = context.outputs.get(&menu.output_id) {
+                                output.borrow_mut().preferred_scale = Some(scale);
+                            }
+                            true
+                        }
+                        None => false,
+                    }
+                };
+                if changed {
+                    let changed = state
+                        .context
+                        .borrow_mut()
+                        .window_menu
+                        .as_mut()
+                        .is_some_and(|menu| menu.fractional.set_preferred(scale));
+                    if changed {
+                        render_window_menu(state, qh);
+                    }
+                }
+            }
+            ScaleTarget::Desktop(output_id) => {
+                let changed = {
+                    let context = state.context.borrow();
+                    let Some(output) = context.outputs.get(&output_id) else {
+                        return;
+                    };
+                    let mut out = output.borrow_mut();
+                    out.preferred_scale = Some(scale);
+                    match out.desktop_surface.as_mut() {
+                        Some(desktop) => {
+                            let changed = desktop.fractional.set_preferred(scale);
+                            if changed {
+                                desktop.dirty = true;
+                            }
+                            changed
+                        }
+                        None => false,
+                    }
+                };
+                if changed {
+                    render_desktop_surface(state, output_id, qh);
+                }
             }
         }
     }
