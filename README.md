@@ -15,6 +15,7 @@ A stacking window manager for the River Wayland compositor, written in Rust.
 - Minimized windows shown as icons on the desktop (can be disabled)
 - Optional forcing server-side decorations via per-window rules
 - Optional "swallowing" of client-side decoration via per-window rules
+- Screen sharing of whole screens or individual windows, picked by clicking them
 
 ## Installation
 
@@ -67,6 +68,59 @@ cargo build --release
 | Drag window edges | Resize window |
 | `Super+Left Drag` | Move window (anywhere) |
 | `Super+Right Drag` | Resize window (anywhere) |
+
+## Screen Sharing
+
+Apps share the screen through the screencast portal. On River that portal is
+[xdg-desktop-portal-wlr](https://github.com/emersion/xdg-desktop-portal-wlr)
+(0.8 or newer for sharing single windows). It asks a *chooser* program what to
+share, and Canoe is one: when an app wants to share, Canoe dims all screens and
+highlights the window or screen under the pointer. Click to share it, or use
+`Tab`/arrow keys and `Return`; `Esc` or a right click cancels.
+
+Chrome asks twice per share: once for the preview in its own dialog, and again
+when you confirm there. A request within 10 seconds of your pick that offers the
+same window or screen gets the same answer without asking, once.
+
+1. Install `xdg-desktop-portal-wlr` (e.g. `apt install xdg-desktop-portal-wlr`).
+
+2. Route screen sharing to it in `~/.config/xdg-desktop-portal/river-portals.conf`:
+
+   ```ini
+   [preferred]
+   default=gtk
+   org.freedesktop.impl.portal.ScreenCast=wlr
+   org.freedesktop.impl.portal.Screenshot=wlr
+   ```
+
+3. Make Canoe its chooser in `~/.config/xdg-desktop-portal-wlr/config`:
+
+   ```ini
+   [screencast]
+   chooser_type=dmenu
+   chooser_cmd=canoe --share-picker
+   ```
+
+   The portal runs as a systemd user service, whose `PATH` may not include
+   `~/.cargo/bin`; give the full path to `canoe` if it lives there.
+
+4. Restart the portals (or log in again):
+   `systemctl --user restart xdg-desktop-portal xdg-desktop-portal-wlr`.
+
+The portal needs to know which Wayland display to capture. On startup Canoe
+exports `WAYLAND_DISPLAY` and `XDG_CURRENT_DESKTOP` to the systemd user manager
+and D-Bus activation environment. If you manage the session environment
+yourself (or run Canoe nested), turn that off:
+
+```toml
+update_activation_environment = false
+```
+
+wlroots 0.20.2 and earlier can show a black share when an app captures a
+window that is already being captured (Chrome does this, previewing the window
+while it asks to share it) and the window doesn't change. To work around it,
+Canoe makes a window repaint shortly after you pick it, by briefly flagging it
+as resizing and tiled. Its size doesn't change.
 
 ## Configuration
 
@@ -170,6 +224,9 @@ reload — no restart needed; canoe rebinds every seat's shortcuts.
 UI options live under the `[ui]` table and let you tune borders, titlebars, and menu colors.
 Colors accept `#RGB`, `#RRGGBB`, or `#RRGGBBAA`.
 
+Sizes (borders, shadows, fonts) are given in logical pixels. They scale with the
+display's (fractional) scale and are drawn crisply at its native resolution.
+
 ```toml
 [ui]
 border_width = 10
@@ -187,15 +244,15 @@ button_bg = "#202020"
 button_highlight = "#FFD000"
 button_shadow = "#000000"
 shadows_enabled = true          # master toggle; when false menus fall back to a flat L-shape
-shadows_active_size = 20        # soft shadow size for the focused window (and menus)
-shadows_inactive_size = 10      # soft shadow size for non-focused windows
+shadows_active_size = 25        # soft shadow size for the focused window (and menus)
+shadows_inactive_size = 12      # soft shadow size for non-focused windows
 shadows_color = "#00000033"     # shadow color used for the soft drop shadow
 font_name = "Sans"
-font_size = 12.0
+font_size = 15.0
 desktop_background = "#101010"
 icons_enabled = true            # set to false to hide minimized-window icons on the desktop
 icons_font_name = "Sans"        # optional; defaults to a regular-weight variant of font_name
-icons_font_size = 10.0          # optional; defaults to font_size * 0.80
+icons_font_size = 12.0          # optional; defaults to font_size * 0.80
 icons_text = "#FFFFFF"          # optional; defaults to menu_text
 icons_highlight_bg = "#FFD000"  # optional; defaults to menu_highlight_bg
 icons_highlight_text = "#000000"# optional; defaults to menu_highlight_text
@@ -233,6 +290,7 @@ swallow_top = 48
 - foot terminal (for Super+Shift+Return)
 - fuzzel (for Super+Space launcher)
 - swaylock (for Super+L screen lock)
+- xdg-desktop-portal-wlr (for screen sharing)
 
 ## License
 

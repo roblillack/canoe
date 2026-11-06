@@ -38,6 +38,10 @@ pub struct Output {
     pub height: i32,
     /// Output scale factor (integer)
     pub scale: i32,
+    /// The fractional scale (in 120ths) the compositor last asked one of our
+    /// surfaces on this output to draw at. Seeds surfaces that haven't been
+    /// told their own yet.
+    pub preferred_scale: Option<u32>,
 
     /// Currently fullscreen window on this output
     pub fullscreen_window: Option<Weak<RefCell<super::Window>>>,
@@ -70,6 +74,7 @@ impl Output {
             width: 0,
             height: 0,
             scale: 1,
+            preferred_scale: None,
             fullscreen_window: None,
             exclusive_x: 0,
             exclusive_y: 0,
@@ -77,6 +82,30 @@ impl Output {
             exclusive_height: 0,
             desktop_surface: None,
             removed: false,
+        }
+    }
+
+    /// The scale a surface on this output draws at before the compositor has
+    /// told it its own: the fractional scale another surface here was given,
+    /// else the integer output scale.
+    pub fn render_scale(&self) -> super::scale::Scale {
+        let device = match self.preferred_scale {
+            Some(preferred) => preferred as f64 / super::scale::FRACTIONAL_DENOMINATOR as f64,
+            None => self.scale.max(1) as f64,
+        };
+        super::scale::Scale::new(device)
+    }
+
+    /// The scale the desktop surface draws at: its own preferred scale once
+    /// it has one, else [`render_scale`](Self::render_scale)'s.
+    pub fn desktop_scale(&self) -> super::scale::Scale {
+        match self.desktop_surface {
+            Some(ref desktop) => super::scale::Scale::new(
+                desktop
+                    .fractional
+                    .device_scale(self.preferred_scale, self.scale),
+            ),
+            None => self.render_scale(),
         }
     }
 
