@@ -797,6 +797,56 @@ mod tests {
     }
 
     #[test]
+    fn test_startup_cmds_and_env_parsing() {
+        let contents = r#"
+            startup_cmds = [
+                "kanshi",
+                ["swaybg", " -i ", "/tmp/wall.png", ""],
+                "",
+                [],
+            ]
+
+            [env]
+            MOZ_ENABLE_WAYLAND = "1"
+            QT_QPA_PLATFORM = "wayland"
+        "#;
+
+        let file_config = toml::from_str::<FileConfig>(contents).expect("parse config");
+
+        let startup_cmds =
+            startup_cmds_from_file(file_config.startup_cmds.expect("startup_cmds present"));
+        assert_eq!(
+            startup_cmds,
+            vec![
+                vec!["kanshi".to_string()],
+                vec![
+                    "swaybg".to_string(),
+                    "-i".to_string(),
+                    "/tmp/wall.png".to_string()
+                ],
+            ]
+        );
+
+        let env = file_config.env.expect("env present");
+        assert_eq!(env.len(), 2);
+        assert_eq!(env.get("MOZ_ENABLE_WAYLAND").map(String::as_str), Some("1"));
+        assert_eq!(
+            env.get("QT_QPA_PLATFORM").map(String::as_str),
+            Some("wayland")
+        );
+    }
+
+    #[test]
+    fn test_env_rejects_non_string_values() {
+        let contents = r#"
+            [env]
+            MOZ_ENABLE_WAYLAND = 1
+        "#;
+
+        assert!(toml::from_str::<FileConfig>(contents).is_err());
+    }
+
+    #[test]
     fn test_icons_config_parsing() {
         let contents = r##"
             [ui]
