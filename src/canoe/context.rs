@@ -40,6 +40,9 @@ pub struct Context {
     // Current state
     pub current_output: Option<OutputId>,
     pub current_seat: Option<SeatId>,
+    /// Output last announced to River as the default for layer-shell
+    /// surfaces. See [`Context::sync_layer_shell_default_output`].
+    layer_shell_default_output: Option<OutputId>,
 
     // ID generators
     next_window_id: WindowId,
@@ -116,6 +119,7 @@ impl Context {
 
             current_output: None,
             current_seat: None,
+            layer_shell_default_output: None,
 
             next_window_id: 0,
             next_output_id: 0,
@@ -262,9 +266,11 @@ impl Context {
         // Update current output if necessary
         if self.current_output == Some(output_id) {
             self.current_output = self.outputs.keys().find(|&&id| id != output_id).copied();
-            if let Some(current_output) = self.current_output {
-                self.set_default_layer_shell_output(current_output);
-            }
+        }
+        // River forgets the default when its output goes away; the next
+        // manage sequence announces the new one.
+        if self.layer_shell_default_output == Some(output_id) {
+            self.layer_shell_default_output = None;
         }
 
         self.outputs.remove(&output_id);
@@ -805,7 +811,6 @@ impl Context {
         };
 
         self.current_output = Some(output_ids[next_idx]);
-        self.set_default_layer_shell_output(output_ids[next_idx]);
 
         // Focus top window on new output
         if let Some(output) = self.outputs.get(&output_ids[next_idx]) {
@@ -1114,13 +1119,23 @@ impl Context {
         })
     }
 
-    fn set_default_layer_shell_output(&self, output_id: OutputId) {
+    /// Tell River which output new layer surfaces without an explicit output
+    /// (e.g. fuzzel) should appear on, if `current_output` changed since the
+    /// last announcement. `set_default` is only valid inside a manage
+    /// sequence, so this must only be called from `handle_manage_start`.
+    fn sync_layer_shell_default_output(&mut self) {
+        let Some(output_id) = self.current_output else {
+            return;
+        };
+        if self.layer_shell_default_output == Some(output_id) {
+            return;
+        }
         let Some(output) = self.outputs.get(&output_id) else {
             return;
         };
-        let output_ref = output.borrow();
-        if let Some(ref layer_shell_output) = output_ref.layer_shell_output {
+        if let Some(ref layer_shell_output) = output.borrow().layer_shell_output {
             layer_shell_output.set_default();
+            self.layer_shell_default_output = Some(output_id);
         }
     }
 
@@ -1132,7 +1147,6 @@ impl Context {
             if self.focused_window == Some(window_id) {
                 self.current_output = Some(output_id);
                 self.last_focused_output = Some(output_id);
-                self.set_default_layer_shell_output(output_id);
             }
         }
     }
@@ -1992,6 +2006,8 @@ impl Context {
         for output_id in output_ids {
             self.arrange_output(output_id);
         }
+
+        self.sync_layer_shell_default_output();
     }
 
     /// Handle a window event
