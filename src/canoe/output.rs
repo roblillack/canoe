@@ -181,13 +181,6 @@ impl Output {
         self.exclusive_height = height;
     }
 
-    /// Mark as the default output for layer shell
-    pub fn set_as_default(&self) {
-        if let Some(ref layer_shell_output) = self.layer_shell_output {
-            layer_shell_output.set_default();
-        }
-    }
-
     /// Check if a point is within this output
     pub fn contains_point(&self, x: i32, y: i32) -> bool {
         x >= self.x && x < self.x + self.width && y >= self.y && y < self.y + self.height
