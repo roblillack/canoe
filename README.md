@@ -131,6 +131,10 @@ re-read it without restarting (e.g. `pkill -HUP canoe`); this refreshes the
 theme, desktop, window rules, and key bindings. Pass `--no-config` to ignore the
 file and use the built-in defaults (reloads keep honoring this).
 
+[`contrib/canoe.toml`](contrib/canoe.toml) lists every setting with its
+default and is a good starting point for your own configuration;
+[`contrib/themes/`](contrib/themes) has an example theme.
+
 The main modifier defaults to `super`, but you can change it:
 
 ```toml
@@ -265,7 +269,7 @@ icons_font_name = "Sans"        # optional; defaults to a regular-weight variant
 icons_font_size = 12.0          # optional; defaults to font_size * 0.80
 icons_text = "#FFFFFF"          # optional; defaults to menu_text
 icons_highlight_bg = "#FFD000"  # optional; defaults to menu_highlight_bg
-icons_highlight_text = "#000000"# optional; defaults to menu_highlight_text
+icons_highlight_text = "#000000" # optional; defaults to menu_highlight_text
 ```
 
 ### Rule Matching
