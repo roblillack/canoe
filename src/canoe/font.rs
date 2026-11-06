@@ -63,12 +63,33 @@ impl FontCache {
                 {
                     return None;
                 }
-                self.clear_fallbacks();
                 self.loaded.as_mut()?.size_px = size_px;
+                self.resize_fallbacks(size_px);
             }
         }
 
         Some(())
+    }
+
+    /// Bring all fallback faces to `size_px`. Faces that cannot be resized
+    /// (e.g. bitmap-only fonts without a matching strike) are dropped and
+    /// will be looked up again on demand.
+    fn resize_fallbacks(&mut self, size_px: u32) {
+        self.fallbacks.retain_mut(|fallback| {
+            if fallback.size_px == size_px {
+                return true;
+            }
+            let ok =
+                unsafe { freetype::succeeded(ft::FT_Set_Pixel_Sizes(fallback.face, 0, size_px)) };
+            if ok {
+                fallback.size_px = size_px;
+            } else {
+                unsafe {
+                    ft::FT_Done_Face(fallback.face);
+                }
+            }
+            ok
+        });
     }
 
     fn load_font(&self, matched: FontMatch, query: &str, size_px: u32) -> Option<LoadedFont> {
