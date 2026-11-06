@@ -1198,7 +1198,12 @@ fn render_desktop_surface(
         return;
     }
 
-    desktop.ensure_buffer(shm, qh, scale);
+    if icons.is_empty() {
+        // Nothing to draw: a single transparent pixel covers the output.
+        desktop.ensure_solid_buffer(shm, qh);
+    } else {
+        desktop.ensure_buffer(shm, qh, scale);
+    }
     desktop.render_with_icons(
         0, // transparent fill: wallpaper/fill on the background layer shows through
         &icons,
