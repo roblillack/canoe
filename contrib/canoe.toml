@@ -21,11 +21,7 @@
 #lock_cmd = "swaylock"
 
 # Programs launched once when Canoe starts (not on reload). Empty by default.
-#startup_cmds = [
-#    "kanshi",
-#    "mako",
-#    ["swaybg", "-i", "/home/me/wallpaper.png", "-m", "fill"],
-#]
+#startup_cmds = ["kanshi", "mako", ["swaybg", "-i", "/home/me/bg.png"]]
 
 # Export WAYLAND_DISPLAY and XDG_CURRENT_DESKTOP to the systemd user manager
 # and D-Bus activation environment on startup (needed for screen sharing).

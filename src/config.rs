@@ -877,6 +877,73 @@ mod tests {
         assert_eq!(ui.icons_highlight_text, Some(0x000000FF));
     }
 
+    const SAMPLE_CONFIG: &str = include_str!("../contrib/canoe.toml");
+
+    /// Uncomment the settings in the sample config: lines where `#` is
+    /// directly followed by text. Explanatory comments start with `# `.
+    fn uncomment_settings(contents: &str) -> String {
+        contents
+            .lines()
+            .map(|line| match line.strip_prefix('#') {
+                Some(rest) if !rest.is_empty() && !rest.starts_with([' ', '#']) => rest,
+                _ => line,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn test_sample_config_changes_nothing() {
+        let file_config: FileConfig = toml::from_str(SAMPLE_CONFIG).expect("sample parses");
+        let mut config = Config::default();
+        config.apply(file_config);
+
+        let defaults = Config::default();
+        assert_eq!(format!("{:?}", config), format!("{:?}", defaults));
+    }
+
+    #[test]
+    fn test_sample_config_shows_defaults() {
+        let contents = uncomment_settings(SAMPLE_CONFIG);
+        let file_config: FileConfig = toml::from_str(&contents).expect("uncommented sample parses");
+        let mut config = Config::default();
+        config.apply(file_config);
+
+        let defaults = Config::default();
+        assert_eq!(config.main_modifier, defaults.main_modifier);
+        assert_eq!(config.launcher_cmd, defaults.launcher_cmd);
+        assert_eq!(config.terminal_cmd, defaults.terminal_cmd);
+        assert_eq!(config.lock_cmd, defaults.lock_cmd);
+        assert_eq!(
+            config.update_activation_environment,
+            defaults.update_activation_environment
+        );
+
+        // The sample spells out the values that UiConfig leaves as `None` and
+        // derives at runtime.
+        let mut expected_ui = defaults.ui.clone();
+        expected_ui.font_name = Some("sans".to_string());
+        expected_ui.icons_font_name = Some("sans".to_string());
+        expected_ui.icons_font_size = Some(expected_ui.font_size * 0.80);
+        expected_ui.icons_text = Some(expected_ui.menu_text);
+        expected_ui.icons_highlight_bg = Some(expected_ui.menu_highlight_bg);
+        expected_ui.icons_highlight_text = Some(expected_ui.menu_highlight_text);
+        assert_eq!(format!("{:?}", config.ui), format!("{:?}", expected_ui));
+
+        // Settings that are empty by default show examples instead.
+        assert!(!config.startup_cmds.is_empty());
+        assert!(!config.env.is_empty());
+        assert!(!config.hotkeys.is_empty());
+        assert!(!config.rules.is_empty());
+    }
+
+    #[test]
+    fn test_sample_theme_parses() {
+        let contents = include_str!("../contrib/themes/yellow.toml");
+        let file_config: FileConfig = toml::from_str(contents).expect("theme parses");
+        assert!(file_config.ui.is_some());
+    }
+
     #[test]
     fn test_icons_config_defaults() {
         let ui = UiConfig::default();
