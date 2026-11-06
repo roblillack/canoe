@@ -264,6 +264,7 @@ shadows_color = "#00000033"     # shadow color used for the soft drop shadow
 font_name = "Sans"
 font_size = 15.0
 desktop_background = "#101010"
+desktop_menu = true             # set to false to let clicks on the empty desktop reach a wallpaper client
 icons_enabled = true            # set to false to hide minimized-window icons on the desktop
 icons_font_name = "Sans"        # optional; defaults to a regular-weight variant of font_name
 icons_font_size = 12.0          # optional; defaults to font_size * 0.80
@@ -271,6 +272,25 @@ icons_text = "#FFFFFF"          # optional; defaults to menu_text
 icons_highlight_bg = "#FFD000"  # optional; defaults to menu_highlight_bg
 icons_highlight_text = "#000000" # optional; defaults to menu_highlight_text
 ```
+
+#### Desktop and wallpapers
+
+Canoe draws the desktop on two layer-shell surfaces per output:
+
+- `desktop_background` is a solid fill on the `background` layer. River stacks
+  surfaces on the same layer in the order they are created, so a wallpaper
+  client such as `swaybg` started after Canoe is drawn on top of it, and the
+  fill shows through wherever the wallpaper is transparent. Set an alpha of
+  `00` (e.g. `"#00000000"`) to skip the fill surface entirely.
+- Minimized-window icons are drawn on a transparent surface on the `bottom`
+  layer, above any wallpaper.
+
+By default the icon surface takes pointer input across the whole output:
+right-clicking the empty desktop opens the window menu, and left-clicking it
+unfocuses the current window and deselects icons. With `desktop_menu = false`,
+only the icons take input and every other click goes to whatever is below,
+e.g. an interactive wallpaper like `shaderbg`. Canoe then no longer sees clicks
+on the empty desktop, so they neither open the menu nor unfocus windows.
 
 ### Rule Matching
 

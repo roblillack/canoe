@@ -25,6 +25,7 @@ shadows_color = "#00000033"     # shadow color used for the soft drop shadow
 font_name = "Sans"
 font_size = 12.0
 desktop_background = "#101010"
+desktop_menu = true             # set to false to let clicks on the empty desktop reach a wallpaper client
 icons_enabled = true            # set to false to hide minimized-window icons on the desktop
 icons_font_name = "Sans"        # optional; defaults to a regular-weight variant of font_name
 icons_font_size = 10.0          # optional; defaults to font_size * 0.80
