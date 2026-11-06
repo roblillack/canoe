@@ -294,10 +294,7 @@ fn open_window_menu_with_items(
     let mut initial_preview = None;
     if mode == canoe::WindowMenuMode::AltTab {
         menu.select_window(focused_window);
-        match initial_direction {
-            binding::Direction::Forward => menu.select_next(),
-            binding::Direction::Reverse => menu.select_previous(),
-        };
+        menu.select_step(initial_direction);
         initial_preview = menu
             .hovered
             .and_then(|idx| menu.items.get(idx).map(|item| item.window_id));
@@ -712,10 +709,7 @@ fn handle_window_menu_cycle(
         let is_alt_tab = context.window_menu_mode == Some(canoe::WindowMenuMode::AltTab);
         if let Some(menu) = context.window_menu.as_mut() {
             if is_alt_tab {
-                if match direction {
-                    binding::Direction::Forward => menu.select_next(),
-                    binding::Direction::Reverse => menu.select_previous(),
-                } {
+                if menu.select_step(direction) {
                     should_render = true;
                     preview_window = menu
                         .hovered

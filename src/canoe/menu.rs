@@ -1,5 +1,6 @@
 //! Window menu rendering and interaction.
 
+use crate::binding::Direction;
 use crate::config::UiConfig;
 use memmap2::MmapMut;
 use std::fs::File;
@@ -307,6 +308,14 @@ impl WindowMenu {
             return true;
         }
         false
+    }
+
+    /// Move the selection one step in `direction`, wrapping around.
+    pub fn select_step(&mut self, direction: Direction) -> bool {
+        match direction {
+            Direction::Forward => self.select_next(),
+            Direction::Reverse => self.select_previous(),
+        }
     }
 
     pub fn select_window(&mut self, window_id: Option<WindowId>) -> bool {
