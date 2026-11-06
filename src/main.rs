@@ -943,11 +943,15 @@ fn ensure_desktop_background(
         return;
     }
 
-    let wl_output = output.borrow().wl_output.clone();
+    // Wait until the output's wl_output is known rather than letting the
+    // compositor pick one and recreating the surface later.
+    let Some(wl_output) = output.borrow().wl_output.clone() else {
+        return;
+    };
     let surface = compositor.create_surface(qh, ());
     let layer_surface = layer_shell.get_layer_surface(
         &surface,
-        wl_output.as_ref(),
+        Some(&wl_output),
         wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer::Background,
         "canoe-desktop-background".to_string(),
         qh,
@@ -999,11 +1003,13 @@ fn ensure_desktop_surface(
         return;
     }
 
-    let wl_output = output.borrow().wl_output.clone();
+    let Some(wl_output) = output.borrow().wl_output.clone() else {
+        return;
+    };
     let surface = compositor.create_surface(qh, ());
     let layer_surface = layer_shell.get_layer_surface(
         &surface,
-        wl_output.as_ref(),
+        Some(&wl_output),
         wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer::Bottom,
         "canoe-desktop".to_string(),
         qh,
@@ -1519,6 +1525,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                         if out.wl_output_name != name {
                             continue;
                         }
+                        let changed = out.wl_output.as_ref() != Some(&output);
                         out.wl_output = Some(output.clone());
                         out.scale = state
                             .globals
@@ -1527,15 +1534,13 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                             .copied()
                             .unwrap_or(1);
                         let output_id = out.id;
-                        let had_desktop = out.desktop_surface.is_some();
-                        if had_desktop {
+                        // Layer surfaces are bound to an output for life.
+                        if changed {
                             out.desktop_surface = None;
                             out.desktop_background = None;
                         }
                         drop(out);
-                        if had_desktop || state.globals.wlr_layer_shell.is_some() {
-                            ensure_desktop_surfaces(state, output_id, qh);
-                        }
+                        ensure_desktop_surfaces(state, output_id, qh);
                     }
                 }
                 "wl_seat" => {
@@ -2428,7 +2433,9 @@ impl Dispatch<RiverOutputV1, canoe::OutputId> for AppState {
             Event::WlOutput { name } => {
                 let mut out = output.borrow_mut();
                 out.wl_output_name = name;
-                out.wl_output = state.globals.wl_outputs.get(&name).cloned();
+                let wl_output = state.globals.wl_outputs.get(&name).cloned();
+                let changed = out.wl_output != wl_output;
+                out.wl_output = wl_output;
                 out.name = state.globals.wl_output_names.get(&name).cloned();
                 out.scale = state
                     .globals
@@ -2436,8 +2443,8 @@ impl Dispatch<RiverOutputV1, canoe::OutputId> for AppState {
                     .get(&name)
                     .copied()
                     .unwrap_or(1);
-                let had_desktop = out.desktop_surface.is_some();
-                if had_desktop {
+                // Layer surfaces are bound to an output for life.
+                if changed {
                     out.desktop_surface = None;
                     out.desktop_background = None;
                 }
