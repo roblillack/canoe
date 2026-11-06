@@ -14,7 +14,7 @@ use wayland_client::QueueHandle;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 
 use super::render::Renderer;
-use super::scale::{FractionalSurface, Scale};
+use super::scale::{FractionalSurface, Origin, Scale};
 use super::{shmfile, OutputId, WindowId};
 
 // Icon layout constants (logical pixels)
@@ -124,9 +124,14 @@ impl DesktopSurface {
             return;
         }
 
-        let (buf_w, buf_h) = self
-            .fractional
-            .apply(&self.surface, self.width, self.height, &scale);
+        let (buf_w, buf_h) = self.fractional.apply(
+            &self.surface,
+            self.width,
+            self.height,
+            &scale,
+            // The desktop covers its output from the corner.
+            Origin::default(),
+        );
         self.scale = scale;
 
         if self.buffer.is_some() && self.buf_width == buf_w && self.buf_height == buf_h {

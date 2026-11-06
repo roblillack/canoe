@@ -9,6 +9,15 @@
 //! [`Scale`] maps one to the other: surface edges round to the device pixel
 //! nearest to where River puts them, and thin lines and bevels are kept to
 //! whole device pixels so they never blur across a pixel and a half.
+//!
+//! River's renderer (the wlroots scene graph) rounds every surface edge from
+//! the *output's* origin, not the surface's: a surface at logical `x`, `w`
+//! wide, covers device columns `round(x·s)` up to `round((x + w)·s)`. Where an
+//! edge of a decoration lands inside its buffer therefore depends on where the
+//! surface sits on the output — see [`Origin`] and [`Scale::edge`]. Rounding
+//! from the surface's own corner instead leaves the frame's cut-out a device
+//! pixel off the client's content at some positions, and stretches the buffer
+//! by a pixel whenever its size doesn't match the box it's drawn into.
 
 use wayland_client::protocol::wl_surface;
 use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::WpFractionalScaleV1;
@@ -21,6 +30,21 @@ pub const FRACTIONAL_DENOMINATOR: u32 = 120;
 /// bevel is drawn 1.5x deep so it doesn't vanish into a bigger face. See
 /// [`Scale::bevel`].
 const BEVEL_PIN: f64 = 1.125;
+
+/// Where a surface's top-left corner sits, in logical pixels from the
+/// top-left corner of the output it's drawn on. This is what the compositor
+/// rounds the surface's edges from; see [`Scale::edge`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Origin {
+    pub x: i32,
+    pub y: i32,
+}
+
+impl Origin {
+    pub fn new(x: i32, y: i32) -> Self {
+        Self { x, y }
+    }
+}
 
 /// How a surface's logical pixels map to device pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -61,6 +85,25 @@ impl Scale {
     /// A logical coordinate or length in device pixels, rounded.
     pub fn px(&self, logical: i32) -> i32 {
         (logical as f64 * self.device).round() as i32
+    }
+
+    /// Where the surface-local logical coordinate `logical` lands, in device
+    /// pixels from the surface's first device pixel, for a surface whose
+    /// corner sits `origin` logical pixels from the output's (one axis of an
+    /// [`Origin`]).
+    ///
+    /// This rounds exactly as wlroots' scene renderer does —
+    /// `round((origin + logical) · scale)`, from the output's origin, in
+    /// single precision like its `float` scale — so an edge drawn at
+    /// `edge(origin, e)` falls on the same device pixel as the edge of any
+    /// other surface River puts at logical `origin + e`, such as the client's
+    /// content. `edge(origin, width)` is the size of the box the compositor
+    /// draws a surface `width` wide into, so a buffer that size is presented
+    /// pixel for pixel.
+    pub fn edge(&self, origin: i32, logical: i32) -> i32 {
+        let device = self.device as f32;
+        let at = |v: i32| (v as f32 * device).round() as i32;
+        at(origin + logical) - at(origin)
     }
 
     /// A fractional logical size (a font size, say) in device pixels,
@@ -138,14 +181,17 @@ impl FractionalSurface {
     }
 
     /// Size `surface` to `width`×`height` logical pixels at `scale`, and
-    /// return the buffer size that covers it in device pixels. The state is
-    /// double-buffered: it takes effect with the next commit.
+    /// return the buffer size that covers it in device pixels: the box the
+    /// compositor draws the surface into when its corner sits at `origin`, so
+    /// the buffer isn't resampled. The state is double-buffered: it takes
+    /// effect with the next commit.
     pub fn apply(
         &mut self,
         surface: &wl_surface::WlSurface,
         width: i32,
         height: i32,
         scale: &Scale,
+        origin: Origin,
     ) -> (i32, i32) {
         match self.viewport {
             Some(ref viewport) => {
@@ -154,7 +200,10 @@ impl FractionalSurface {
                     viewport.set_destination(width, height);
                     self.destination = Some((width, height));
                 }
-                (scale.px(width).max(1), scale.px(height).max(1))
+                (
+                    scale.edge(origin.x, width).max(1),
+                    scale.edge(origin.y, height).max(1),
+                )
             }
             None => {
                 let integer = (scale.device().round() as i32).max(1);
@@ -198,6 +247,55 @@ mod tests {
         assert_eq!((scale.bevel(1), scale.bevel(2)), (1, 2));
         let scale = Scale::new(1.5);
         assert_eq!((scale.bevel(1), scale.bevel(2)), (2, 4));
+    }
+
+    /// wlroots' `scale_box`: a box at logical `x`, `w` wide, covers device
+    /// pixels `round(x·s)` up to `round((x + w)·s)`, from the output's origin.
+    fn wlroots_box(scale: f32, x: i32, w: i32) -> (i32, i32) {
+        let at = |v: i32| (v as f32 * scale).round() as i32;
+        (at(x), at(x + w) - at(x))
+    }
+
+    #[test]
+    fn edges_land_where_wlroots_puts_them() {
+        for device in [1.0, 1.15, 1.25, 1.5, 1.75, 2.0, 2.25] {
+            let scale = Scale::new(device);
+            for origin in -40..40 {
+                let (surface_x, _) = wlroots_box(device as f32, origin, 1);
+                for e in 0..40 {
+                    let (other_x, _) = wlroots_box(device as f32, origin + e, 1);
+                    assert_eq!(
+                        surface_x + scale.edge(origin, e),
+                        other_x,
+                        "scale {device}, origin {origin}, edge {e}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn edges_depend_on_where_the_surface_sits() {
+        // A 5px border at 1.25: from a corner at -3 the content starts 7
+        // device pixels in (round(2.5) - round(-3.75) = 3 - -4), not the 6 a
+        // border rounded on its own would make.
+        let scale = Scale::new(1.25);
+        assert_eq!(scale.edge(-3, 5), 7);
+        assert_eq!(scale.edge(0, 5), 6);
+        assert_eq!(scale.edge(1, 5), 7); // round(7.5) - round(1.25)
+        assert_eq!(scale.edge(2, 5), 6); // round(8.75) - round(2.5)
+        assert_eq!(scale.edge(-3, 5) + scale.edge(2, 100), scale.edge(-3, 105));
+    }
+
+    #[test]
+    fn buffers_match_the_box_they_are_drawn_into() {
+        let scale = Scale::new(1.25);
+        for origin in -10..10 {
+            for width in 1..50 {
+                let (_, box_width) = wlroots_box(1.25, origin, width);
+                assert_eq!(scale.edge(origin, width), box_width);
+            }
+        }
     }
 
     #[test]

@@ -11,7 +11,7 @@ use wayland_client::protocol::{
 use wayland_client::QueueHandle;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 
-use super::scale::{FractionalSurface, Scale};
+use super::scale::{FractionalSurface, Origin, Scale};
 use super::shadow::{draw_shadow_soft, SoftShadowRect};
 use super::titlebar::Rect;
 use super::{font, render::Renderer, shmfile, OutputId, WindowId};
@@ -313,9 +313,13 @@ impl WindowMenu {
             return;
         }
 
-        let (buffer_width, buffer_height) =
-            self.fractional
-                .apply(&self.surface, self.width, self.height, &scale);
+        let (buffer_width, buffer_height) = self.fractional.apply(
+            &self.surface,
+            self.width,
+            self.height,
+            &scale,
+            Origin::new(self.origin_x, self.origin_y),
+        );
         if buffer_width <= 0 || buffer_height <= 0 {
             return;
         }

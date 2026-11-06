@@ -1,7 +1,7 @@
 //! Titlebar rendering for windows
 
 use super::render::Renderer;
-use super::scale::{FractionalSurface, Scale};
+use super::scale::{FractionalSurface, Origin, Scale};
 use super::shmfile::ShmPool;
 use crate::config::UiConfig;
 use crate::protocol::RiverDecorationV1;
@@ -97,8 +97,9 @@ impl Rect {
 }
 
 /// Where the frame's parts land in the buffer, in device pixels. Each edge is
-/// the device position of the logical edge River lays the window out by, so
-/// the cut-out lines up with the client's content at any fractional scale.
+/// rounded from the output's origin, as the compositor rounds the client's
+/// content (see [`Scale::edge`]), so the cut-out lines up with the content at
+/// any fractional scale wherever the window sits.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FrameRects {
     /// The whole buffer.
@@ -112,8 +113,10 @@ struct FrameRects {
 }
 
 impl FrameRects {
+    /// The frame of a surface whose corner sits at `origin`.
     fn new(
         scale: &Scale,
+        origin: Origin,
         border_width: i32,
         titlebar_height: i32,
         content_width: i32,
@@ -121,16 +124,23 @@ impl FrameRects {
     ) -> Self {
         let width = content_width + border_width * 2;
         let height = content_height + titlebar_height + border_width * 2;
-        let span = |from: i32, to: i32| (scale.px(from), scale.px(to) - scale.px(from));
-        let (x, w) = span(border_width, border_width + content_width);
-        let (y, h) = span(border_width, height - border_width);
-        let (_, title_h) = span(border_width, border_width + titlebar_height);
+        let edge_x = |at: i32| scale.edge(origin.x, at);
+        let edge_y = |at: i32| scale.edge(origin.y, at);
+        let (x, w) = (
+            edge_x(border_width),
+            edge_x(border_width + content_width) - edge_x(border_width),
+        );
+        let (y, h) = (
+            edge_y(border_width),
+            edge_y(height - border_width) - edge_y(border_width),
+        );
+        let title_h = edge_y(border_width + titlebar_height) - y;
         Self {
             outer: Rect {
                 x: 0,
                 y: 0,
-                width: scale.px(width),
-                height: scale.px(height),
+                width: edge_x(width),
+                height: edge_y(height),
             },
             inside: Rect {
                 x,
@@ -420,6 +430,10 @@ impl Titlebar {
     /// Record the geometry the next `render()` will draw into. The actual
     /// shm slot is rotated/allocated lazily inside `render()` so a frame that
     /// turns out to be a no-op doesn't burn a new wl_buffer.
+    ///
+    /// `origin` is where the surface's corner sits on its output: where the
+    /// frame's edges fall in the buffer depends on it, so moving the window
+    /// redraws the frame whenever that shifts an edge.
     #[allow(clippy::too_many_arguments)]
     pub fn ensure_buffer<D>(
         &mut self,
@@ -428,6 +442,7 @@ impl Titlebar {
         _shm: &wl_shm::WlShm,
         _qh: &QueueHandle<D>,
         scale: Scale,
+        origin: Origin,
         ui: &UiConfig,
         frame_style: FrameStyle,
     ) where
@@ -448,12 +463,14 @@ impl Titlebar {
         let width = content_width + border_width * 2;
         let height = content_height + titlebar_height + border_width * 2;
         let (buffer_width, buffer_height) =
-            self.fractional.apply(&self.surface, width, height, &scale);
+            self.fractional
+                .apply(&self.surface, width, height, &scale, origin);
         if buffer_width <= 0 || buffer_height <= 0 {
             return;
         }
         let rects = FrameRects::new(
             &scale,
+            origin,
             border_width,
             titlebar_height,
             content_width,
@@ -475,8 +492,9 @@ impl Titlebar {
             self.content_height = content_height;
             self.scale = scale;
             self.rects = rects;
-            self.icon_cache = None;
-            self.button_cache = None;
+            // The icon and button caches are keyed by their pixel size and
+            // rebuild themselves when it changes; keeping them saves
+            // re-rasterizing the icons every time a move shifts an edge.
             self.dirty = true;
             self.needs_full_damage = true;
         } else {
@@ -1355,5 +1373,81 @@ impl Drop for Titlebar {
         // Decoration (role object) must be destroyed before the surface
         self.decoration.destroy();
         self.surface.destroy();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Where wlroots draws a box at logical `x`, `w` wide, on an output at
+    /// `scale`: device pixels `[round(x·s), round((x + w)·s))`.
+    fn device_span(scale: f64, x: i32, w: i32) -> (i32, i32) {
+        let at = |v: i32| (v as f32 * scale as f32).round() as i32;
+        (at(x), at(x + w))
+    }
+
+    /// The frame's content cut-out, put where the compositor puts the frame,
+    /// covers exactly the device pixels the client's content does.
+    #[test]
+    fn cut_out_matches_content_wherever_the_window_sits() {
+        let (border, title) = (5, 25);
+        let (content_w, content_h) = (200, 120);
+        for device in [1.0, 1.25, 1.5, 1.75, 2.0] {
+            let scale = Scale::new(device);
+            for window_x in -12..12 {
+                for window_y in [-7, 0, 3, 30] {
+                    let origin = Origin::new(window_x - border, window_y - border - title);
+                    let rects =
+                        FrameRects::new(&scale, origin, border, title, content_w, content_h);
+                    let (frame_x, frame_x1) = device_span(device, origin.x, content_w + 2 * border);
+                    let (frame_y, frame_y1) =
+                        device_span(device, origin.y, content_h + title + 2 * border);
+                    let (content_x, content_x1) = device_span(device, window_x, content_w);
+                    let (content_y, content_y1) = device_span(device, window_y, content_h);
+
+                    let at = format!("scale {device}, window at {window_x},{window_y}");
+                    let content = rects.content;
+                    assert_eq!(frame_x + content.x, content_x, "left edge, {at}");
+                    assert_eq!(frame_x + content.right(), content_x1, "right edge, {at}");
+                    assert_eq!(frame_y + content.y, content_y, "top edge, {at}");
+                    assert_eq!(frame_y + content.bottom(), content_y1, "bottom edge, {at}");
+
+                    // The buffer fills the box it's drawn into: no resampling.
+                    assert_eq!(rects.outer.width, frame_x1 - frame_x, "buffer width, {at}");
+                    assert_eq!(
+                        rects.outer.height,
+                        frame_y1 - frame_y,
+                        "buffer height, {at}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn titlebar_meets_the_content() {
+        let scale = Scale::new(1.25);
+        for y in -8..8 {
+            let rects = FrameRects::new(&scale, Origin::new(0, y), 5, 25, 100, 80);
+            assert_eq!(rects.titlebar.bottom(), rects.content.y);
+            assert_eq!(rects.titlebar.y, rects.inside.y);
+            assert_eq!(rects.content.bottom(), rects.inside.bottom());
+            // 25 logical pixels at 1.25 are 31 or 32 device pixels, depending
+            // on where the strip starts.
+            assert!((31..=32).contains(&rects.titlebar.height));
+        }
+    }
+
+    /// The case that used to leave a one-pixel gap: a 5px border at 1.25 with
+    /// the window at x = 2. The content starts at device pixel round(2.5) = 3,
+    /// and the frame at round(-3.75) = -4, so the cut-out must start 7 device
+    /// pixels in, not the 6 a 5px border rounds to on its own.
+    #[test]
+    fn border_ends_where_content_starts() {
+        let rects = FrameRects::new(&Scale::new(1.25), Origin::new(-3, 0), 5, 25, 100, 80);
+        assert_eq!(rects.content.x, 7);
+        let rects = FrameRects::new(&Scale::new(1.25), Origin::new(0, 0), 5, 25, 100, 80);
+        assert_eq!(rects.content.x, 6);
     }
 }

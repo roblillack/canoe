@@ -111,6 +111,17 @@ fn fractional_surface(
 
 /// The integer scale of the outputs a decoration surface is on: the largest,
 /// else the window's output's.
+/// Where a window's content sits on the output it's drawn on, in logical
+/// pixels from the output's corner: what the compositor rounds the window's
+/// and its decorations' edges from. A window spanning outputs lines up on
+/// the one it belongs to.
+fn window_origin(window: &canoe::window::Window, output: Option<&canoe::Output>) -> (i32, i32) {
+    match output {
+        Some(output) => (window.x - output.x, window.y - output.y),
+        None => (window.x, window.y),
+    }
+}
+
 fn integer_surface_scale(
     globals: &Globals,
     output_names: &[u32],
@@ -1341,6 +1352,24 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
 
                         let window_output = w.output.as_ref().and_then(|o| o.upgrade());
                         let window_output = window_output.as_ref().map(|o| o.borrow());
+                        let (window_x, window_y) = window_origin(&w, window_output.as_deref());
+
+                        // The rect sits `buffer_shadow_size` in from the
+                        // buffer edges, so position the surface by that inset
+                        // (constant across focus). The drop-shadow shift still
+                        // tracks the actual band size.
+                        let offset_x = if use_ssd {
+                            -border_width - buffer_shadow_size
+                        } else {
+                            -buffer_shadow_size
+                        };
+                        let shadow_shift = shadow_size / 2;
+                        let offset_y = if use_ssd {
+                            -border_width - titlebar_height + swallow_top - buffer_shadow_size
+                                + shadow_shift
+                        } else {
+                            -buffer_shadow_size + shadow_shift
+                        };
 
                         if let Some(ref mut shadow) = w.shadow {
                             let integer = integer_surface_scale(
@@ -1360,6 +1389,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                 shm,
                                 qh,
                                 scale,
+                                canoe::scale::Origin::new(window_x + offset_x, window_y + offset_y),
                             );
                             if let Some(ref compositor) = state.globals.compositor {
                                 #[cfg(feature = "debug-logging")]
@@ -1384,22 +1414,6 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                             {
                                 shadow_render_us += sh_t0.elapsed().as_micros();
                             }
-                            // The rect sits `buffer_shadow_size` in from the
-                            // buffer edges, so position the surface by that inset
-                            // (constant across focus). The drop-shadow shift still
-                            // tracks the actual band size.
-                            let offset_x = if use_ssd {
-                                -border_width - buffer_shadow_size
-                            } else {
-                                -buffer_shadow_size
-                            };
-                            let shadow_shift = shadow_size / 2;
-                            let offset_y = if use_ssd {
-                                -border_width - titlebar_height + swallow_top - buffer_shadow_size
-                                    + shadow_shift
-                            } else {
-                                -buffer_shadow_size + shadow_shift
-                            };
                             shadow.set_offset(offset_x, offset_y);
                             if did_render && shadow.is_ready() {
                                 shadow.sync_next_commit();
@@ -1443,6 +1457,11 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         // Update titlebar if it exists and window has valid dimensions
                         let window_output = w.output.as_ref().and_then(|o| o.upgrade());
                         let window_output = window_output.as_ref().map(|o| o.borrow());
+                        let (window_x, window_y) = window_origin(&w, window_output.as_deref());
+                        let border_width = canoe::titlebar::border_width(ui, frame_style);
+                        let titlebar_height = canoe::titlebar::titlebar_height(ui);
+                        let (offset_x, offset_y) =
+                            (-border_width, -border_width - titlebar_height + swallow_top);
                         if let Some(ref mut titlebar) = w.titlebar {
                             if width > 0 && height > 0 {
                                 let integer = integer_surface_scale(
@@ -1463,6 +1482,10 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                     shm,
                                     qh,
                                     scale,
+                                    canoe::scale::Origin::new(
+                                        window_x + offset_x,
+                                        window_y + offset_y,
+                                    ),
                                     ui,
                                     frame_style,
                                 );
@@ -1498,12 +1521,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                 }
 
                                 // Position decoration so it sits above content with borders
-                                let border_width = canoe::titlebar::border_width(ui, frame_style);
-                                let titlebar_height = canoe::titlebar::titlebar_height(ui);
-                                titlebar.set_offset(
-                                    -border_width,
-                                    -border_width - titlebar_height + swallow_top,
-                                );
+                                titlebar.set_offset(offset_x, offset_y);
 
                                 // Sync and commit (only if we have a buffer)
                                 if did_render && titlebar.is_ready() {
