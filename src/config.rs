@@ -555,8 +555,8 @@ fn string_or_vec_nested(vector: Option<Vec<StringOrVec>>) -> Option<Vec<Vec<Stri
                 i += 1;
             }
             Some(new_vec)
-        },
-        None => None
+        }
+        None => None,
     }
 }
 
@@ -732,13 +732,10 @@ pub fn load_config(skip_config: bool) -> Config {
                     }
                 }
                 if let Some(startup_cmds) = string_or_vec_nested(file_config.startup_cmds) {
-                    let startup_cmds: Vec<Vec<String>> = 
-                        startup_cmds
-                            .iter()
-                            .map(|vec| 
-                                clean_cmd_args(vec.to_vec())
-                            )
-                            .collect();
+                    let startup_cmds: Vec<Vec<String>> = startup_cmds
+                        .iter()
+                        .map(|vec| clean_cmd_args(vec.to_vec()))
+                        .collect();
                     if !startup_cmds.is_empty() {
                         config.startup_cmds = startup_cmds;
                     }
