@@ -696,52 +696,59 @@ pub fn load_config(skip_config: bool) -> Config {
     if let Some(path) = config_path() {
         if let Ok(contents) = std::fs::read_to_string(&path) {
             if let Ok(file_config) = toml::from_str::<FileConfig>(&contents) {
-                if let Some(env) = file_config.env {
-                    if !env.is_empty() {
-                        config.env = env
-                    }
-                }
-                if let Some(main_modifier) = file_config.main_modifier {
-                    config.main_modifier = main_modifier;
-                }
-                if let Some(launcher_cmd) = string_or_vec(file_config.launcher_cmd) {
-                    let launcher_cmd = clean_cmd_args(launcher_cmd);
-                    if !launcher_cmd.is_empty() {
-                        config.launcher_cmd = launcher_cmd;
-                    }
-                }
-                if let Some(terminal_cmd) = string_or_vec(file_config.terminal_cmd) {
-                    let terminal_cmd = clean_cmd_args(terminal_cmd);
-                    if !terminal_cmd.is_empty() {
-                        config.terminal_cmd = terminal_cmd;
-                    }
-                }
-                if let Some(lock_cmd) = string_or_vec(file_config.lock_cmd) {
-                    let lock_cmd = clean_cmd_args(lock_cmd);
-                    if !lock_cmd.is_empty() {
-                        config.lock_cmd = lock_cmd;
-                    }
-                }
-                if let Some(startup_cmds) = file_config.startup_cmds {
-                    config.startup_cmds = startup_cmds_from_file(startup_cmds);
-                }
-                if let Some(update) = file_config.update_activation_environment {
-                    config.update_activation_environment = update;
-                }
-                if let Some(ui) = file_config.ui {
-                    config.ui.apply(ui);
-                }
-                if let Some(rules) = file_config.rules {
-                    config.rules = rules_from_file(rules);
-                }
-                if let Some(hotkeys) = file_config.hotkeys {
-                    config.hotkeys = hotkeys_from_file(hotkeys);
-                }
+                config.apply(file_config);
             }
         }
     }
 
     config
+}
+
+impl Config {
+    /// Apply the settings present in a parsed config file.
+    fn apply(&mut self, file: FileConfig) {
+        if let Some(env) = file.env {
+            if !env.is_empty() {
+                self.env = env
+            }
+        }
+        if let Some(main_modifier) = file.main_modifier {
+            self.main_modifier = main_modifier;
+        }
+        if let Some(launcher_cmd) = string_or_vec(file.launcher_cmd) {
+            let launcher_cmd = clean_cmd_args(launcher_cmd);
+            if !launcher_cmd.is_empty() {
+                self.launcher_cmd = launcher_cmd;
+            }
+        }
+        if let Some(terminal_cmd) = string_or_vec(file.terminal_cmd) {
+            let terminal_cmd = clean_cmd_args(terminal_cmd);
+            if !terminal_cmd.is_empty() {
+                self.terminal_cmd = terminal_cmd;
+            }
+        }
+        if let Some(lock_cmd) = string_or_vec(file.lock_cmd) {
+            let lock_cmd = clean_cmd_args(lock_cmd);
+            if !lock_cmd.is_empty() {
+                self.lock_cmd = lock_cmd;
+            }
+        }
+        if let Some(startup_cmds) = file.startup_cmds {
+            self.startup_cmds = startup_cmds_from_file(startup_cmds);
+        }
+        if let Some(update) = file.update_activation_environment {
+            self.update_activation_environment = update;
+        }
+        if let Some(ui) = file.ui {
+            self.ui.apply(ui);
+        }
+        if let Some(rules) = file.rules {
+            self.rules = rules_from_file(rules);
+        }
+        if let Some(hotkeys) = file.hotkeys {
+            self.hotkeys = hotkeys_from_file(hotkeys);
+        }
+    }
 }
 
 /// Get default window rules
@@ -868,6 +875,73 @@ mod tests {
         assert_eq!(ui.icons_text, Some(0x101010FF));
         assert_eq!(ui.icons_highlight_bg, Some(0xFFD000FF));
         assert_eq!(ui.icons_highlight_text, Some(0x000000FF));
+    }
+
+    const SAMPLE_CONFIG: &str = include_str!("../contrib/canoe.toml");
+
+    /// Uncomment the settings in the sample config: lines where `#` is
+    /// directly followed by text. Explanatory comments start with `# `.
+    fn uncomment_settings(contents: &str) -> String {
+        contents
+            .lines()
+            .map(|line| match line.strip_prefix('#') {
+                Some(rest) if !rest.is_empty() && !rest.starts_with([' ', '#']) => rest,
+                _ => line,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn test_sample_config_changes_nothing() {
+        let file_config: FileConfig = toml::from_str(SAMPLE_CONFIG).expect("sample parses");
+        let mut config = Config::default();
+        config.apply(file_config);
+
+        let defaults = Config::default();
+        assert_eq!(format!("{:?}", config), format!("{:?}", defaults));
+    }
+
+    #[test]
+    fn test_sample_config_shows_defaults() {
+        let contents = uncomment_settings(SAMPLE_CONFIG);
+        let file_config: FileConfig = toml::from_str(&contents).expect("uncommented sample parses");
+        let mut config = Config::default();
+        config.apply(file_config);
+
+        let defaults = Config::default();
+        assert_eq!(config.main_modifier, defaults.main_modifier);
+        assert_eq!(config.launcher_cmd, defaults.launcher_cmd);
+        assert_eq!(config.terminal_cmd, defaults.terminal_cmd);
+        assert_eq!(config.lock_cmd, defaults.lock_cmd);
+        assert_eq!(
+            config.update_activation_environment,
+            defaults.update_activation_environment
+        );
+
+        // The sample spells out the values that UiConfig leaves as `None` and
+        // derives at runtime.
+        let mut expected_ui = defaults.ui.clone();
+        expected_ui.font_name = Some("sans".to_string());
+        expected_ui.icons_font_name = Some("sans".to_string());
+        expected_ui.icons_font_size = Some(expected_ui.font_size * 0.80);
+        expected_ui.icons_text = Some(expected_ui.menu_text);
+        expected_ui.icons_highlight_bg = Some(expected_ui.menu_highlight_bg);
+        expected_ui.icons_highlight_text = Some(expected_ui.menu_highlight_text);
+        assert_eq!(format!("{:?}", config.ui), format!("{:?}", expected_ui));
+
+        // Settings that are empty by default show examples instead.
+        assert!(!config.startup_cmds.is_empty());
+        assert!(!config.env.is_empty());
+        assert!(!config.hotkeys.is_empty());
+        assert!(!config.rules.is_empty());
+    }
+
+    #[test]
+    fn test_sample_theme_parses() {
+        let contents = include_str!("../contrib/themes/yellow.toml");
+        let file_config: FileConfig = toml::from_str(contents).expect("theme parses");
+        assert!(file_config.ui.is_some());
     }
 
     #[test]
