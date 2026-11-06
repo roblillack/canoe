@@ -111,6 +111,9 @@ pub struct Window {
     pub app_id: Option<String>,
     /// Window title
     pub title: Option<String>,
+    /// Compositor-assigned identifier, shared with ext-foreign-toplevel-list-v1
+    /// (river_window_v1 version 4 and later)
+    pub identifier: Option<String>,
     /// Parent window (if any)
     pub parent: Option<WindowId>,
     /// Swallow top pixels from window content
@@ -195,6 +198,7 @@ impl Window {
             pid: 0,
             app_id: None,
             title: None,
+            identifier: None,
             parent: None,
             swallow_top: 0,
             x: 0,
@@ -272,6 +276,35 @@ impl Window {
         } else {
             super::titlebar::FrameStyle::Normal
         }
+    }
+
+    /// How this window's frame takes up fractional-scale rounding: tiled
+    /// windows meet the screen edges and each other exactly; floating ones
+    /// keep their border and titlebar a constant size as they move.
+    pub fn frame_fit(&self) -> super::titlebar::FrameFit {
+        if self.maximized || self.snap_state.is_some() {
+            super::titlebar::FrameFit::Tiled
+        } else {
+            super::titlebar::FrameFit::Floating
+        }
+    }
+
+    /// The rectangle the window covers on screen, decorations included, in
+    /// global logical coordinates: `(x, y, width, height)`.
+    pub fn frame_rect(&self, ui: &crate::config::UiConfig) -> (i32, i32, i32, i32) {
+        let fullscreen = !matches!(self.fullscreen, FullscreenState::None);
+        if fullscreen || self.decoration == Some(WindowDecoration::Csd) {
+            return (self.x, self.y, self.width, self.height);
+        }
+        let border = super::titlebar::border_width(ui, self.frame_style());
+        let titlebar = super::titlebar::titlebar_height(ui);
+        let swallow_top = self.swallow_top.clamp(0, self.height);
+        (
+            self.x - border,
+            self.y - border - titlebar + swallow_top,
+            self.width + border * 2,
+            self.height - swallow_top + titlebar + border * 2,
+        )
     }
 
     /// Check if window is visible on the given output

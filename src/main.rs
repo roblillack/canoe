@@ -5,6 +5,7 @@
 mod binding;
 mod canoe;
 mod config;
+mod ipc;
 mod protocol;
 mod rule;
 
@@ -44,6 +45,12 @@ use wayland_client::protocol::{
 use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle};
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::WpCursorShapeDeviceV1;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_manager_v1::WpCursorShapeManagerV1;
+use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::WpFractionalScaleManagerV1;
+use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::{
+    self, WpFractionalScaleV1,
+};
+use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
+use wayland_protocols::wp::viewporter::client::wp_viewporter::WpViewporter;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::ZwlrLayerShellV1;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 
@@ -51,6 +58,8 @@ use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrL
 struct AppState {
     context: Rc<RefCell<Context>>,
     globals: Globals,
+    /// Where `canoe --share-picker` requests arrive.
+    share_server: Option<ipc::ShareServer>,
 }
 
 /// Collected Wayland globals
@@ -65,13 +74,73 @@ struct Globals {
     rwm_libinput_config: Option<RiverLibinputConfigV1>,
     wlr_layer_shell: Option<ZwlrLayerShellV1>,
     cursor_shape_manager: Option<WpCursorShapeManagerV1>,
+    viewporter: Option<WpViewporter>,
+    fractional_scale_manager: Option<WpFractionalScaleManagerV1>,
     wl_seats: HashMap<u32, wl_seat::WlSeat>,
     wl_seat_has_pointer: HashMap<u32, bool>,
     wl_outputs: HashMap<u32, wl_output::WlOutput>,
     wl_output_scales: HashMap<u32, i32>,
+    /// `wl_output.name` (e.g. "DP-1") per wl_output global name.
+    wl_output_names: HashMap<u32, String>,
 }
 
 const CLOSE_DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// Which surface a `wp_fractional_scale_v1` reports for.
+#[derive(Debug, Clone, Copy)]
+enum ScaleTarget {
+    Titlebar(canoe::WindowId),
+    Shadow(canoe::WindowId),
+    Menu,
+    Desktop(canoe::OutputId),
+    SharePicker(canoe::OutputId),
+}
+
+/// Give `surface` a viewport and subscribe it to fractional-scale updates,
+/// where the compositor supports them.
+fn fractional_surface(
+    globals: &Globals,
+    surface: &wl_surface::WlSurface,
+    target: ScaleTarget,
+    qh: &QueueHandle<AppState>,
+) -> canoe::scale::FractionalSurface {
+    let viewport = globals
+        .viewporter
+        .as_ref()
+        .map(|viewporter| viewporter.get_viewport(surface, qh, ()));
+    let fractional = globals
+        .fractional_scale_manager
+        .as_ref()
+        .map(|manager| manager.get_fractional_scale(surface, qh, target));
+    canoe::scale::FractionalSurface::new(viewport, fractional)
+}
+
+/// The integer scale of the outputs a decoration surface is on: the largest,
+/// else the window's output's.
+/// Where a window's content sits on the output it's drawn on, in logical
+/// pixels from the output's corner: what the compositor rounds the window's
+/// and its decorations' edges from. A window spanning outputs lines up on
+/// the one it belongs to.
+fn window_origin(window: &canoe::window::Window, output: Option<&canoe::Output>) -> (i32, i32) {
+    match output {
+        Some(output) => (window.x - output.x, window.y - output.y),
+        None => (window.x, window.y),
+    }
+}
+
+fn integer_surface_scale(
+    globals: &Globals,
+    output_names: &[u32],
+    window_output: Option<&canoe::Output>,
+) -> i32 {
+    output_names
+        .iter()
+        .filter_map(|name| globals.wl_output_scales.get(name).copied())
+        .max()
+        .or_else(|| window_output.map(|output| output.scale))
+        .unwrap_or(1)
+        .max(1)
+}
 
 fn attach_wl_seat(
     state: &mut AppState,
@@ -136,16 +205,15 @@ fn render_window_menu(state: &mut AppState, qh: &QueueHandle<AppState>) {
     };
 
     let mut context = state.context.borrow_mut();
-    let scale = context
-        .window_menu
-        .as_ref()
-        .and_then(|menu| {
-            context
-                .outputs
-                .get(&menu.output_id)
-                .map(|output| output.borrow().scale)
-        })
-        .unwrap_or(1);
+    let scale = context.window_menu.as_ref().and_then(|menu| {
+        let output = context.outputs.get(&menu.output_id)?;
+        let output = output.borrow();
+        let device = menu
+            .fractional
+            .device_scale(output.preferred_scale, output.scale);
+        Some(canoe::scale::Scale::new(device))
+    });
+    let scale = scale.unwrap_or_default();
     if let Some(menu) = context.window_menu.as_mut() {
         if !menu.configured {
             return;
@@ -181,12 +249,17 @@ fn open_window_menu_with_items(
         let menu_theme = canoe::MenuTheme::from_ui(&context.config.ui);
         let info = context.outputs.get(&output_id).map(|output| {
             let out = output.borrow();
-            (out.width, out.height, out.wl_output.clone())
+            (
+                out.width,
+                out.height,
+                out.wl_output.clone(),
+                out.render_scale(),
+            )
         });
         (info, focused, menu_theme)
     };
 
-    let Some((ow, oh, wl_output)) = output_info else {
+    let Some((ow, oh, wl_output, scale)) = output_info else {
         return;
     };
 
@@ -204,15 +277,18 @@ fn open_window_menu_with_items(
         canoe::LayerSurfaceKind::Menu,
     );
 
+    let fractional = fractional_surface(&state.globals, &surface, ScaleTarget::Menu, qh);
     let mut menu = canoe::WindowMenu::new(
         surface,
         layer_surface,
+        fractional,
         output_id,
         items,
         header_title,
         pointer.0,
         pointer.1,
         menu_theme,
+        scale,
     );
     let mut initial_preview = None;
     if mode == canoe::WindowMenuMode::AltTab {
@@ -863,9 +939,16 @@ fn ensure_desktop_surface(
     layer_surface.set_size(0, 0);
     surface.commit();
 
+    let fractional = fractional_surface(
+        &state.globals,
+        &surface,
+        ScaleTarget::Desktop(output_id),
+        qh,
+    );
     output.borrow_mut().desktop_surface = Some(canoe::DesktopSurface::new(
         surface,
         layer_surface,
+        fractional,
         output_id,
     ));
 }
@@ -927,8 +1010,8 @@ fn render_desktop_surface(
         let scale = context
             .outputs
             .get(&output_id)
-            .map(|o| o.borrow().scale)
-            .unwrap_or(1);
+            .map(|o| o.borrow().desktop_scale())
+            .unwrap_or_default();
         let icons = if icons_enabled {
             context.collect_minimized_icons(output_id)
         } else {
@@ -967,7 +1050,6 @@ fn render_desktop_surface(
         bg_color,
         &icons,
         &icon_theme,
-        scale,
         font_name.as_deref(),
         font_size,
         Some(label_font_name.as_str()),
@@ -985,6 +1067,266 @@ fn render_all_desktop_surfaces(state: &mut AppState, qh: &QueueHandle<AppState>)
     };
     for output_id in output_ids {
         render_desktop_surface(state, output_id, qh);
+    }
+}
+
+/// Answer a `canoe --share-picker` request without asking the user.
+fn decline_share_request(state: &mut AppState, request: canoe::share_picker::ShareRequestId) {
+    if let Some(server) = state.share_server.as_mut() {
+        server.reply(request, None);
+    }
+}
+
+/// Open the screen-sharing picker for a `canoe --share-picker` request: an
+/// overlay on every output that highlights the window or screen under the
+/// pointer.
+fn start_share_picker(
+    state: &mut AppState,
+    request: ipc::ShareRequest,
+    qh: &QueueHandle<AppState>,
+) {
+    use wayland_protocols_wlr::layer_shell::v1::client::{
+        zwlr_layer_shell_v1, zwlr_layer_surface_v1,
+    };
+
+    let (Some(compositor), Some(layer_shell)) = (
+        state.globals.compositor.clone(),
+        state.globals.wlr_layer_shell.clone(),
+    ) else {
+        decline_share_request(state, request.id);
+        return;
+    };
+
+    let (seat_id, candidates) = {
+        let context = state.context.borrow();
+        // One question at a time; and nothing is shared from a locked screen.
+        if context.share_picker.is_some() || context.session_locked {
+            drop(context);
+            decline_share_request(state, request.id);
+            return;
+        }
+        let Some(seat_id) = context.current_seat else {
+            drop(context);
+            decline_share_request(state, request.id);
+            return;
+        };
+        (seat_id, context.share_candidates(&request.lines))
+    };
+    // Chrome asks again right after the user picked something; give it the
+    // same answer.
+    let repeated = state.context.borrow_mut().repeat_share_choice(&candidates);
+    if let Some(candidate) = repeated {
+        if let Some(server) = state.share_server.as_mut() {
+            server.reply(request.id, Some(&candidate.reply));
+        }
+        return;
+    }
+    if candidates.is_empty() {
+        decline_share_request(state, request.id);
+        return;
+    }
+
+    let outputs: Vec<(canoe::OutputId, wl_output::WlOutput)> = {
+        let mut context = state.context.borrow_mut();
+        if context.window_menu.is_some() {
+            context.close_window_menu();
+        }
+        // Leave desktop icon selection; the picker takes the keyboard.
+        if let Some(output_id) = context.icon_focus_output.take() {
+            if let Some(output) = context.outputs.get(&output_id) {
+                if let Some(desktop) = output.borrow_mut().desktop_surface.as_mut() {
+                    desktop.selected_icon = None;
+                    desktop.dirty = true;
+                }
+            }
+        }
+        context
+            .outputs
+            .iter()
+            .filter_map(|(&id, o)| o.borrow().wl_output.clone().map(|wl| (id, wl)))
+            .collect()
+    };
+
+    let theme = {
+        let context = state.context.borrow();
+        canoe::share_picker::PickerTheme::from_ui(&context.config.ui)
+    };
+    let mut picker = canoe::share_picker::SharePicker::new(request.id, seat_id, candidates, theme);
+    for (output_id, wl_output) in outputs {
+        let surface = compositor.create_surface(qh, ());
+        let layer_surface = layer_shell.get_layer_surface(
+            &surface,
+            Some(&wl_output),
+            zwlr_layer_shell_v1::Layer::Overlay,
+            "canoe-share-picker".to_string(),
+            qh,
+            canoe::LayerSurfaceKind::SharePicker(output_id),
+        );
+        layer_surface.set_anchor(
+            zwlr_layer_surface_v1::Anchor::Top
+                | zwlr_layer_surface_v1::Anchor::Bottom
+                | zwlr_layer_surface_v1::Anchor::Left
+                | zwlr_layer_surface_v1::Anchor::Right,
+        );
+        layer_surface.set_exclusive_zone(-1);
+        layer_surface
+            .set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
+        layer_surface.set_size(0, 0);
+        surface.commit();
+        let fractional = fractional_surface(
+            &state.globals,
+            &surface,
+            ScaleTarget::SharePicker(output_id),
+            qh,
+        );
+        picker
+            .surfaces
+            .push(canoe::share_picker::PickerSurface::new(
+                surface,
+                layer_surface,
+                fractional,
+                output_id,
+            ));
+    }
+
+    let mut context = state.context.borrow_mut();
+    context.share_picker = Some(picker);
+    if let Some(seat) = context.seats.get(&seat_id).cloned() {
+        let (px, py) = {
+            let seat = seat.borrow();
+            (seat.pointer_x, seat.pointer_y)
+        };
+        let hovered = context.share_candidate_at(px, py);
+        if let Some(picker) = context.share_picker.as_mut() {
+            picker.hovered = hovered;
+        }
+        // Binding modes may only change in a manage sequence.
+        seat.borrow_mut().queue_action(binding::Action::SwitchMode {
+            mode: config::Mode::SharePicker,
+        });
+    }
+    if let Some(ref rwm) = context.rwm {
+        rwm.manage_dirty();
+    }
+}
+
+/// Redraw the picker overlay on every output.
+fn render_share_picker(state: &mut AppState, qh: &QueueHandle<AppState>) {
+    let (Some(shm), Some(compositor)) = (
+        state.globals.shm.as_ref(),
+        state.globals.compositor.as_ref(),
+    ) else {
+        return;
+    };
+    let mut context = state.context.borrow_mut();
+    let highlight = context.share_highlight();
+    let context = &mut *context;
+    let Some(picker) = context.share_picker.as_mut() else {
+        return;
+    };
+    let banner = picker.banner();
+    let canoe::share_picker::SharePicker {
+        surfaces, theme, ..
+    } = picker;
+    for surface in surfaces.iter_mut() {
+        let Some(output) = context.outputs.get(&surface.output_id) else {
+            continue;
+        };
+        let out = output.borrow();
+        let scale = canoe::scale::Scale::new(
+            surface
+                .fractional
+                .device_scale(out.preferred_scale, out.scale),
+        );
+        let scene = canoe::share_picker::PickerScene {
+            highlight: highlight
+                .as_ref()
+                .map(|&((x, y, w, h), _)| (x - out.x, y - out.y, w, h)),
+            label: highlight.as_ref().map(|(_, label)| label.as_str()),
+            banner,
+            theme,
+        };
+        surface.render(&scene, scale, shm, compositor, qh);
+    }
+}
+
+/// Highlight the picker target under the seat's pointer.
+fn update_share_picker_hover(
+    state: &mut AppState,
+    seat: &Rc<RefCell<canoe::Seat>>,
+    qh: &QueueHandle<AppState>,
+) {
+    let (px, py) = {
+        let seat = seat.borrow();
+        (seat.pointer_x, seat.pointer_y)
+    };
+    let changed = {
+        let mut context = state.context.borrow_mut();
+        let hovered = context.share_candidate_at(px, py);
+        match context.share_picker.as_mut() {
+            Some(picker) if picker.hovered != hovered => {
+                picker.hovered = hovered;
+                true
+            }
+            _ => false,
+        }
+    };
+    if changed {
+        render_share_picker(state, qh);
+    }
+}
+
+/// Close the picker. With `confirm`, share the highlighted target, if any;
+/// otherwise tell the portal the user declined. `restore_mode` switches the
+/// seat back to the default binding mode.
+fn finish_share_picker(state: &mut AppState, confirm: bool, restore_mode: bool) {
+    let picker = {
+        let mut context = state.context.borrow_mut();
+        let Some(picker) = context.share_picker.take() else {
+            return;
+        };
+        let choice = picker
+            .hovered
+            .and_then(|idx| picker.candidates.get(idx))
+            .map(|candidate| candidate.reply.clone());
+        if confirm && choice.is_none() {
+            // Nothing highlighted yet: keep asking.
+            context.share_picker = Some(picker);
+            return;
+        }
+        (picker, if confirm { choice } else { None })
+    };
+    let (picker, choice) = picker;
+    {
+        let mut context = state.context.borrow_mut();
+        match picker.hovered.and_then(|idx| picker.candidates.get(idx)) {
+            Some(candidate) if choice.is_some() => context.record_share_choice(candidate.target),
+            _ => context.share_last_choice = None,
+        }
+    }
+    if let Some(server) = state.share_server.as_mut() {
+        server.reply(picker.request, choice.as_deref());
+    }
+    let seat_id = picker.seat_id;
+    // Destroys the overlay surfaces.
+    drop(picker);
+
+    let context = state.context.borrow();
+    for seat in context.seats.values() {
+        let mut seat = seat.borrow_mut();
+        if matches!(seat.pointer_target, canoe::PointerTarget::SharePicker(_)) {
+            seat.pointer_target = canoe::PointerTarget::None;
+        }
+    }
+    if restore_mode {
+        if let Some(seat) = context.seats.get(&seat_id) {
+            seat.borrow_mut().queue_action(binding::Action::SwitchMode {
+                mode: config::Mode::Default,
+            });
+        }
+        if let Some(ref rwm) = context.rwm {
+            rwm.manage_dirty();
+        }
     }
 }
 
@@ -1056,7 +1398,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                     }
                 }
                 "river_window_manager_v1" => {
-                    let rwm: RiverWindowManagerV1 = registry.bind(name, version.min(3), qh, ());
+                    let rwm: RiverWindowManagerV1 = registry.bind(name, version.min(4), qh, ());
                     state.globals.rwm = Some(rwm.clone());
                     state.context.borrow_mut().rwm = Some(rwm);
                 }
@@ -1087,6 +1429,15 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                     let lc: RiverLibinputConfigV1 = registry.bind(name, version.min(1), qh, ());
                     state.globals.rwm_libinput_config = Some(lc.clone());
                     state.context.borrow_mut().rwm_libinput_config = Some(lc);
+                }
+                "wp_viewporter" => {
+                    let viewporter: WpViewporter = registry.bind(name, version.min(1), qh, ());
+                    state.globals.viewporter = Some(viewporter);
+                }
+                "wp_fractional_scale_manager_v1" => {
+                    let manager: WpFractionalScaleManagerV1 =
+                        registry.bind(name, version.min(1), qh, ());
+                    state.globals.fractional_scale_manager = Some(manager);
                 }
                 "wp_cursor_shape_manager_v1" => {
                     let manager: WpCursorShapeManagerV1 =
@@ -1263,32 +1614,40 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         let frame_width = (width + border_width * 2).max(1);
                         let frame_height =
                             (content_height + titlebar_height + border_width * 2).max(1);
-                        let shadow_frame_height = (frame_height - (shadow_size / 2)).max(1);
+                        let fit = w.frame_fit();
 
-                        let output_scale = w
-                            .output
-                            .as_ref()
-                            .and_then(|o| o.upgrade())
-                            .map(|o| o.borrow().scale);
-                        let shadow_output_names = w
-                            .shadow
-                            .as_ref()
-                            .map(|s| s.output_names.clone())
-                            .unwrap_or_default();
-                        let shadow_surface_scale = if shadow_output_names.is_empty() {
-                            None
+                        let window_output = w.output.as_ref().and_then(|o| o.upgrade());
+                        let window_output = window_output.as_ref().map(|o| o.borrow());
+                        let (window_x, window_y) = window_origin(&w, window_output.as_deref());
+
+                        // The rect sits `buffer_shadow_size` in from the
+                        // buffer edges, so position the surface by that inset
+                        // (constant across focus). The drop-shadow shift still
+                        // tracks the actual band size.
+                        let offset_x = if use_ssd {
+                            -border_width - buffer_shadow_size
                         } else {
-                            let mut max_scale = 1;
-                            for name in &shadow_output_names {
-                                if let Some(scale) = state.globals.wl_output_scales.get(name) {
-                                    max_scale = max_scale.max(*scale);
-                                }
-                            }
-                            Some(max_scale)
+                            -buffer_shadow_size
                         };
-                        let scale = shadow_surface_scale.or(output_scale).unwrap_or(1);
+                        let shadow_shift = shadow_size / 2;
+                        let offset_y = if use_ssd {
+                            -border_width - titlebar_height + swallow_top - buffer_shadow_size
+                                + shadow_shift
+                        } else {
+                            -buffer_shadow_size + shadow_shift
+                        };
 
                         if let Some(ref mut shadow) = w.shadow {
+                            let integer = integer_surface_scale(
+                                &state.globals,
+                                &shadow.output_names,
+                                window_output.as_deref(),
+                            );
+                            let device = shadow.fractional.device_scale(
+                                window_output.as_ref().and_then(|o| o.preferred_scale),
+                                integer,
+                            );
+                            let scale = canoe::scale::Scale::new(device);
                             shadow.ensure_buffer(
                                 frame_width,
                                 frame_height,
@@ -1296,6 +1655,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                 shm,
                                 qh,
                                 scale,
+                                canoe::scale::Origin::new(window_x + offset_x, window_y + offset_y),
                             );
                             if let Some(ref compositor) = state.globals.compositor {
                                 #[cfg(feature = "debug-logging")]
@@ -1308,35 +1668,32 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                             }
                             #[cfg(feature = "debug-logging")]
                             let sh_t0 = Instant::now();
-                            let did_render = shadow.render(
-                                frame_width,
-                                shadow_frame_height,
-                                shadow_size,
-                                shadow_color,
-                                scale,
-                                shm,
-                                qh,
+                            // Cast the shadow from the device pixels the frame
+                            // actually covers, its top dropped by the shift.
+                            let frame = canoe::titlebar::DeviceFrame::new(
+                                &scale,
+                                fit,
+                                canoe::scale::Origin::new(
+                                    window_x - border_width,
+                                    window_y - border_width - titlebar_height + swallow_top,
+                                ),
+                                border_width,
+                                titlebar_height,
+                                width,
+                                content_height,
                             );
+                            let drop = scale.px(shadow_shift).min(frame.outer.height - 1).max(0);
+                            let cast = canoe::titlebar::Rect {
+                                y: frame.outer.y + drop,
+                                height: frame.outer.height - drop,
+                                ..frame.outer
+                            };
+                            let did_render =
+                                shadow.render(cast, shadow_size, shadow_color, shm, qh);
                             #[cfg(feature = "debug-logging")]
                             {
                                 shadow_render_us += sh_t0.elapsed().as_micros();
                             }
-                            // The rect sits `buffer_shadow_size` in from the
-                            // buffer edges, so position the surface by that inset
-                            // (constant across focus). The drop-shadow shift still
-                            // tracks the actual band size.
-                            let offset_x = if use_ssd {
-                                -border_width - buffer_shadow_size
-                            } else {
-                                -buffer_shadow_size
-                            };
-                            let shadow_shift = shadow_size / 2;
-                            let offset_y = if use_ssd {
-                                -border_width - titlebar_height + swallow_top - buffer_shadow_size
-                                    + shadow_shift
-                            } else {
-                                -buffer_shadow_size + shadow_shift
-                            };
                             shadow.set_offset(offset_x, offset_y);
                             if did_render && shadow.is_ready() {
                                 shadow.sync_next_commit();
@@ -1376,32 +1733,28 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         let hovered_button = w.titlebar_hovered;
                         let titlebar_left_down = w.titlebar_left_down;
                         let swallow_top = w.swallow_top;
+                        let frame_fit = w.frame_fit();
 
                         // Update titlebar if it exists and window has valid dimensions
-                        let output_scale = w
-                            .output
-                            .as_ref()
-                            .and_then(|o| o.upgrade())
-                            .map(|o| o.borrow().scale);
-                        let titlebar_output_names = w
-                            .titlebar
-                            .as_ref()
-                            .map(|t| t.output_names.clone())
-                            .unwrap_or_default();
-                        let titlebar_surface_scale = if titlebar_output_names.is_empty() {
-                            None
-                        } else {
-                            let mut max_scale = 1;
-                            for name in &titlebar_output_names {
-                                if let Some(scale) = state.globals.wl_output_scales.get(name) {
-                                    max_scale = max_scale.max(*scale);
-                                }
-                            }
-                            Some(max_scale)
-                        };
-                        let scale = titlebar_surface_scale.or(output_scale).unwrap_or(1);
+                        let window_output = w.output.as_ref().and_then(|o| o.upgrade());
+                        let window_output = window_output.as_ref().map(|o| o.borrow());
+                        let (window_x, window_y) = window_origin(&w, window_output.as_deref());
+                        let border_width = canoe::titlebar::border_width(ui, frame_style);
+                        let titlebar_height = canoe::titlebar::titlebar_height(ui);
+                        let (offset_x, offset_y) =
+                            (-border_width, -border_width - titlebar_height + swallow_top);
                         if let Some(ref mut titlebar) = w.titlebar {
                             if width > 0 && height > 0 {
+                                let integer = integer_surface_scale(
+                                    &state.globals,
+                                    &titlebar.output_names,
+                                    window_output.as_deref(),
+                                );
+                                let device = titlebar.fractional.device_scale(
+                                    window_output.as_ref().and_then(|o| o.preferred_scale),
+                                    integer,
+                                );
+                                let scale = canoe::scale::Scale::new(device);
                                 let content_height = (height - swallow_top).max(1);
                                 // Ensure buffer is allocated
                                 titlebar.ensure_buffer(
@@ -1410,6 +1763,11 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                     shm,
                                     qh,
                                     scale,
+                                    canoe::scale::Origin::new(
+                                        window_x + offset_x,
+                                        window_y + offset_y,
+                                    ),
+                                    frame_fit,
                                     ui,
                                     frame_style,
                                 );
@@ -1445,12 +1803,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                 }
 
                                 // Position decoration so it sits above content with borders
-                                let border_width = canoe::titlebar::border_width(ui, frame_style);
-                                let titlebar_height = canoe::titlebar::titlebar_height(ui);
-                                titlebar.set_offset(
-                                    -border_width,
-                                    -border_width - titlebar_height + swallow_top,
-                                );
+                                titlebar.set_offset(offset_x, offset_y);
 
                                 // Sync and commit (only if we have a buffer)
                                 if did_render && titlebar.is_ready() {
@@ -1522,7 +1875,14 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         id.get_decoration_below(&shadow_surface, qh, window_id);
 
                     // Create shadow surface
-                    let shadow = canoe::WindowShadow::new(shadow_surface, shadow_decoration);
+                    let fractional = fractional_surface(
+                        &state.globals,
+                        &shadow_surface,
+                        ScaleTarget::Shadow(window_id),
+                        qh,
+                    );
+                    let shadow =
+                        canoe::WindowShadow::new(shadow_surface, shadow_decoration, fractional);
                     window.borrow_mut().shadow = Some(shadow);
 
                     // Create surface for titlebar
@@ -1533,7 +1893,13 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         id.get_decoration_above(&surface, qh, window_id);
 
                     // Create titlebar
-                    let titlebar = canoe::Titlebar::new(surface, decoration);
+                    let fractional = fractional_surface(
+                        &state.globals,
+                        &surface,
+                        ScaleTarget::Titlebar(window_id),
+                        qh,
+                    );
+                    let titlebar = canoe::Titlebar::new(surface, decoration, fractional);
                     window.borrow_mut().titlebar = Some(titlebar);
                 }
 
@@ -1617,6 +1983,19 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                 }
             }
             Event::SessionLocked => {
+                // Nothing gets shared from behind the lock screen. The lock
+                // binding mode below replaces the picker's.
+                finish_share_picker(state, false, false);
+                for seat in state.context.borrow().seats.values() {
+                    seat.borrow_mut().unhandled_actions.retain(|action| {
+                        !matches!(
+                            action,
+                            binding::Action::SwitchMode {
+                                mode: config::Mode::SharePicker
+                            }
+                        )
+                    });
+                }
                 state.context.borrow_mut().session_locked = true;
                 // Switch to lock mode
                 if let Some(seat_id) = state.context.borrow().current_seat {
@@ -1688,6 +2067,9 @@ impl Dispatch<RiverWindowV1, canoe::WindowId> for AppState {
         match event {
             Event::Closed => {
                 state.context.borrow_mut().destroy_window(window_id);
+                if state.context.borrow().share_picker.is_some() {
+                    render_share_picker(state, _qh);
+                }
             }
             Event::DimensionsHint {
                 min_width,
@@ -1751,6 +2133,9 @@ impl Dispatch<RiverWindowV1, canoe::WindowId> for AppState {
             Event::UnreliablePid { unreliable_pid } => {
                 let mut w = window.borrow_mut();
                 w.pid = unreliable_pid;
+            }
+            Event::Identifier { identifier } => {
+                window.borrow_mut().identifier = Some(identifier);
             }
             Event::PointerMoveRequested { seat } => {
                 // Find the seat and queue move action
@@ -1889,6 +2274,7 @@ impl Dispatch<RiverOutputV1, canoe::OutputId> for AppState {
                 let mut out = output.borrow_mut();
                 out.wl_output_name = name;
                 out.wl_output = state.globals.wl_outputs.get(&name).cloned();
+                out.name = state.globals.wl_output_names.get(&name).cloned();
                 out.scale = state
                     .globals
                     .wl_output_scales
@@ -2118,6 +2504,20 @@ impl Dispatch<ZwlrLayerSurfaceV1, canoe::LayerSurfaceKind> for AppState {
                         drop(context);
                         render_window_menu(state, qh);
                     }
+                    canoe::LayerSurfaceKind::SharePicker(output_id) => {
+                        {
+                            let mut context = state.context.borrow_mut();
+                            let Some(surface) = context
+                                .share_picker
+                                .as_mut()
+                                .and_then(|picker| picker.surface_mut(*output_id))
+                            else {
+                                return;
+                            };
+                            surface.configure(width as i32, height as i32);
+                        }
+                        render_share_picker(state, qh);
+                    }
                     canoe::LayerSurfaceKind::MenuShield(output_id) => {
                         let mut context = state.context.borrow_mut();
                         let Some(shield) = context.window_menu_shield.as_mut() else {
@@ -2155,6 +2555,11 @@ impl Dispatch<ZwlrLayerSurfaceV1, canoe::LayerSurfaceKind> for AppState {
                 }
                 canoe::LayerSurfaceKind::Menu => {
                     state.context.borrow_mut().close_window_menu();
+                }
+                canoe::LayerSurfaceKind::SharePicker(output_id) => {
+                    if let Some(picker) = state.context.borrow_mut().share_picker.as_mut() {
+                        picker.surfaces.retain(|s| s.output_id != *output_id);
+                    }
                 }
                 canoe::LayerSurfaceKind::MenuShield(output_id) => {
                     if let Some(shield) = state.context.borrow().window_menu_shield.as_ref() {
@@ -2330,6 +2735,23 @@ impl Dispatch<RiverXkbBindingV1, (canoe::SeatId, usize)> for AppState {
                     binding::Action::IconCancel => {
                         state.context.borrow_mut().execute_action(action, *seat_id);
                         render_all_desktop_surfaces(state, qh);
+                    }
+                    binding::Action::SharePickerConfirm => {
+                        finish_share_picker(state, true, true);
+                    }
+                    binding::Action::SharePickerCancel => {
+                        finish_share_picker(state, false, true);
+                    }
+                    binding::Action::SharePickerNext | binding::Action::SharePickerPrev => {
+                        let step = if matches!(action, binding::Action::SharePickerNext) {
+                            1
+                        } else {
+                            -1
+                        };
+                        if let Some(picker) = state.context.borrow_mut().share_picker.as_mut() {
+                            picker.cycle(step);
+                        }
+                        render_share_picker(state, qh);
                     }
                     _ => {
                         seat.borrow_mut().queue_action(action);
@@ -2660,6 +3082,15 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                     let mut titlebar_window = None;
 
                     let surface_pos = (surface_x.round() as i32, surface_y.round() as i32);
+                    if let Some(output_id) = state
+                        .context
+                        .borrow()
+                        .share_picker
+                        .as_ref()
+                        .and_then(|picker| picker.owns_surface(&surface))
+                    {
+                        target = canoe::PointerTarget::SharePicker(output_id);
+                    }
                     {
                         let mut context = state.context.borrow_mut();
                         if let Some(shield) = context.window_menu_shield.as_ref() {
@@ -2713,11 +3144,15 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                         seat_ref.last_surface_y = surface_pos.1;
                     }
                     if let canoe::PointerTarget::Desktop(output_id)
-                    | canoe::PointerTarget::MenuShield(output_id) = target
+                    | canoe::PointerTarget::MenuShield(output_id)
+                    | canoe::PointerTarget::SharePicker(output_id) = target
                     {
                         update_pointer_position_from_output(
                             state, &seat, output_id, surface_x, surface_y,
                         );
+                    }
+                    if matches!(target, canoe::PointerTarget::SharePicker(_)) {
+                        update_share_picker_hover(state, &seat, _qh);
                     }
                     if matches!(target, canoe::PointerTarget::MenuShield(_)) {
                         if let Some(pointer) = wl_pointer.as_ref() {
@@ -2758,7 +3193,12 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                         seat_ref.last_surface_y = surface_y.round() as i32;
                     }
                     let target = seat.borrow().pointer_target;
-                    if target == canoe::PointerTarget::Menu {
+                    if let canoe::PointerTarget::SharePicker(output_id) = target {
+                        update_pointer_position_from_output(
+                            state, &seat, output_id, surface_x, surface_y,
+                        );
+                        update_share_picker_hover(state, &seat, _qh);
+                    } else if target == canoe::PointerTarget::Menu {
                         let changed = state
                             .context
                             .borrow_mut()
@@ -2794,6 +3234,20 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                     if matches!(target, canoe::PointerTarget::MenuShield(_)) {
                         return;
                     }
+                    // The picker overlay takes the whole click, so act on the
+                    // release: a left click shares, a right click declines.
+                    if matches!(target, canoe::PointerTarget::SharePicker(_)) {
+                        if btn_state
+                            == wayland_client::WEnum::Value(wl_pointer::ButtonState::Released)
+                        {
+                            if button == crate::config::button::LEFT {
+                                finish_share_picker(state, true, true);
+                            } else if button == crate::config::button::RIGHT {
+                                finish_share_picker(state, false, true);
+                            }
+                        }
+                        return;
+                    }
                     match btn_state {
                         wayland_client::WEnum::Value(wl_pointer::ButtonState::Pressed) => {
                             if target != canoe::PointerTarget::Menu {
@@ -2825,16 +3279,11 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                                         // Hit-test desktop icons
                                         let hit = {
                                             let context = state.context.borrow();
-                                            let scale = context
-                                                .outputs
-                                                .get(&output_id)
-                                                .map(|o| o.borrow().scale)
-                                                .unwrap_or(1);
                                             context.outputs.get(&output_id).and_then(|o| {
                                                 o.borrow()
                                                     .desktop_surface
                                                     .as_ref()
-                                                    .and_then(|d| d.icon_at(px, py, scale))
+                                                    .and_then(|d| d.icon_at(px, py))
                                             })
                                         };
                                         if let Some(icon_window_id) = hit {
@@ -2916,16 +3365,11 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                                     } else if button == crate::config::button::RIGHT {
                                         let icon_hit = {
                                             let context = state.context.borrow();
-                                            let scale = context
-                                                .outputs
-                                                .get(&output_id)
-                                                .map(|o| o.borrow().scale)
-                                                .unwrap_or(1);
                                             context.outputs.get(&output_id).and_then(|o| {
                                                 o.borrow()
                                                     .desktop_surface
                                                     .as_ref()
-                                                    .and_then(|d| d.icon_at(px, py, scale))
+                                                    .and_then(|d| d.icon_at(px, py))
                                             })
                                         };
                                         if let Some(icon_window_id) = icon_hit {
@@ -2969,7 +3413,8 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                                 canoe::PointerTarget::Menu => {
                                     seat.borrow_mut().menu_click_button = Some(button);
                                 }
-                                canoe::PointerTarget::MenuShield(_) => {}
+                                canoe::PointerTarget::MenuShield(_)
+                                | canoe::PointerTarget::SharePicker(_) => {}
                                 canoe::PointerTarget::Titlebar(window_id) => {
                                     if button == crate::config::button::LEFT {
                                         let (px, py) = {
@@ -3328,6 +3773,28 @@ impl Dispatch<wl_output::WlOutput, ()> for AppState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        if let wl_output::Event::Name { name: connector } = _event {
+            let output_name = _state.globals.wl_outputs.iter().find_map(|(name, output)| {
+                if output == _proxy {
+                    Some(*name)
+                } else {
+                    None
+                }
+            });
+            if let Some(global) = output_name {
+                _state
+                    .globals
+                    .wl_output_names
+                    .insert(global, connector.clone());
+                for output in _state.context.borrow().outputs.values() {
+                    let mut out = output.borrow_mut();
+                    if out.wl_output_name == global {
+                        out.name = Some(connector.clone());
+                    }
+                }
+            }
+            return;
+        }
         if let wl_output::Event::Scale { factor } = _event {
             let scale = factor.max(1);
             let output_name = _state.globals.wl_outputs.iter().find_map(|(name, output)| {
@@ -3363,6 +3830,154 @@ impl Dispatch<wl_output::WlOutput, ()> for AppState {
     }
 }
 
+impl Dispatch<WpViewporter, ()> for AppState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WpViewporter,
+        _event: wayland_protocols::wp::viewporter::client::wp_viewporter::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // wp_viewporter has no events
+    }
+}
+
+impl Dispatch<WpViewport, ()> for AppState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WpViewport,
+        _event: wayland_protocols::wp::viewporter::client::wp_viewport::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // wp_viewport has no events
+    }
+}
+
+impl Dispatch<WpFractionalScaleManagerV1, ()> for AppState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &WpFractionalScaleManagerV1,
+        _event: wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_manager_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        // wp_fractional_scale_manager_v1 has no events
+    }
+}
+
+impl Dispatch<WpFractionalScaleV1, ScaleTarget> for AppState {
+    fn event(
+        state: &mut Self,
+        _proxy: &WpFractionalScaleV1,
+        event: wp_fractional_scale_v1::Event,
+        target: &ScaleTarget,
+        _conn: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        let wp_fractional_scale_v1::Event::PreferredScale { scale } = event else {
+            return;
+        };
+        match *target {
+            ScaleTarget::Titlebar(window_id) | ScaleTarget::Shadow(window_id) => {
+                let changed = {
+                    let context = state.context.borrow();
+                    let Some(window) = context.windows.get(&window_id) else {
+                        return;
+                    };
+                    let mut w = window.borrow_mut();
+                    let changed = match *target {
+                        ScaleTarget::Titlebar(_) => w
+                            .titlebar
+                            .as_mut()
+                            .is_some_and(|t| t.fractional.set_preferred(scale)),
+                        _ => w
+                            .shadow
+                            .as_mut()
+                            .is_some_and(|s| s.fractional.set_preferred(scale)),
+                    };
+                    if let Some(output) = w.output.as_ref().and_then(|o| o.upgrade()) {
+                        output.borrow_mut().preferred_scale = Some(scale);
+                    }
+                    changed
+                };
+                // Decorations are redrawn in the next render sequence, which
+                // picks the new scale up and reallocates the buffer.
+                if changed {
+                    request_manage_dirty(state);
+                }
+            }
+            ScaleTarget::Menu => {
+                let changed = {
+                    let context = state.context.borrow();
+                    match context.window_menu.as_ref() {
+                        Some(menu) => {
+                            if let Some(output) = context.outputs.get(&menu.output_id) {
+                                output.borrow_mut().preferred_scale = Some(scale);
+                            }
+                            true
+                        }
+                        None => false,
+                    }
+                };
+                if changed {
+                    let changed = state
+                        .context
+                        .borrow_mut()
+                        .window_menu
+                        .as_mut()
+                        .is_some_and(|menu| menu.fractional.set_preferred(scale));
+                    if changed {
+                        render_window_menu(state, qh);
+                    }
+                }
+            }
+            ScaleTarget::SharePicker(output_id) => {
+                let changed = {
+                    let mut context = state.context.borrow_mut();
+                    if let Some(output) = context.outputs.get(&output_id) {
+                        output.borrow_mut().preferred_scale = Some(scale);
+                    }
+                    context
+                        .share_picker
+                        .as_mut()
+                        .and_then(|picker| picker.surface_mut(output_id))
+                        .is_some_and(|surface| surface.fractional.set_preferred(scale))
+                };
+                if changed {
+                    render_share_picker(state, qh);
+                }
+            }
+            ScaleTarget::Desktop(output_id) => {
+                let changed = {
+                    let context = state.context.borrow();
+                    let Some(output) = context.outputs.get(&output_id) else {
+                        return;
+                    };
+                    let mut out = output.borrow_mut();
+                    out.preferred_scale = Some(scale);
+                    match out.desktop_surface.as_mut() {
+                        Some(desktop) => {
+                            let changed = desktop.fractional.set_preferred(scale);
+                            if changed {
+                                desktop.dirty = true;
+                            }
+                            changed
+                        }
+                        None => false,
+                    }
+                };
+                if changed {
+                    render_desktop_surface(state, output_id, qh);
+                }
+            }
+        }
+    }
+}
+
 impl Dispatch<RiverDecorationV1, canoe::WindowId> for AppState {
     fn event(
         _state: &mut Self,
@@ -3376,6 +3991,45 @@ impl Dispatch<RiverDecorationV1, canoe::WindowId> for AppState {
     }
 }
 
+/// Export `WAYLAND_DISPLAY` and `XDG_CURRENT_DESKTOP` to the systemd user
+/// manager and the D-Bus activation environment, so services started on demand
+/// (xdg-desktop-portal and its backends) connect to this session.
+fn update_activation_environment(context: &Context) {
+    let argv = activation_environment_argv(&context.config.env, |name| std::env::var(name).ok());
+    if let Some(argv) = argv {
+        context.spawn(&argv);
+    }
+}
+
+/// Build the `dbus-update-activation-environment` command line.
+///
+/// Each variable gets the value programs launched by canoe see: the `[env]`
+/// table (`config_env`) overrides canoe's own environment (`lookup`). Values
+/// are always passed explicitly as `VAR=VAL`, so the result does not depend on
+/// which variables canoe itself inherited. Returns `None` without a display to
+/// export.
+fn activation_environment_argv(
+    config_env: &HashMap<String, String>,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Option<Vec<String>> {
+    let effective = |name: &str| {
+        config_env
+            .get(name)
+            .cloned()
+            .or_else(|| lookup(name))
+            .filter(|value| !value.is_empty())
+    };
+    let display = effective("WAYLAND_DISPLAY")?;
+    // xdg-desktop-portal picks its backends by desktop name.
+    let desktop = effective("XDG_CURRENT_DESKTOP").unwrap_or_else(|| "river".to_string());
+    Some(vec![
+        "dbus-update-activation-environment".to_string(),
+        "--systemd".to_string(),
+        format!("WAYLAND_DISPLAY={display}"),
+        format!("XDG_CURRENT_DESKTOP={desktop}"),
+    ])
+}
+
 const USAGE: &str = "\
 canoe - River window manager
 
@@ -3383,6 +4037,9 @@ Usage: canoe [OPTIONS]
 
 Options:
   -n, --no-config   Ignore ~/.config/canoe/canoe.toml and use built-in defaults
+      --share-picker
+                    Act as the screen-sharing chooser of xdg-desktop-portal-wlr:
+                    let the running canoe ask what to share, print the answer
   -h, --help        Print this help and exit
   -V, --version     Print version and exit
 
@@ -3400,6 +4057,7 @@ fn parse_args() -> CliArgs {
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "-n" | "--no-config" => args.skip_config = true,
+            "--share-picker" => std::process::exit(ipc::run_share_picker()),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -3433,6 +4091,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut state = AppState {
         context: context.clone(),
         globals: Globals::default(),
+        share_server: None,
     };
 
     // Get registry and collect globals
@@ -3468,6 +4127,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         unsafe { sigaction(sig, &action)? };
     }
 
+    // Answer screen-sharing requests from `canoe --share-picker`.
+    match ipc::ShareServer::bind() {
+        Ok(server) => state.share_server = Some(server),
+        Err(e) => eprintln!("canoe: screen-sharing picker unavailable: {e}"),
+    }
+
+    // Let D-Bus activated services (the screencast portal, above all) find
+    // this session's display.
+    if state.context.borrow().config.update_activation_environment {
+        update_activation_environment(&state.context.borrow());
+    }
+
     // Run startup commands
     for cmd in &state.context.borrow().config.startup_cmds.clone() {
         state.context.borrow().spawn(cmd);
@@ -3481,24 +4152,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Prepare poll file descriptors
         let wayland_fd = conn.as_fd();
 
-        let mut poll_fds = [
+        let mut poll_fds = vec![
             PollFd::new(wayland_fd, PollFlags::POLLIN),
             PollFd::new(signal_read_fd.as_fd(), PollFlags::POLLIN),
         ];
+        // The share server's listener, then its connections.
+        let mut share_ids = Vec::new();
+        if let Some(server) = state.share_server.as_ref() {
+            for (fd, input, id) in server.poll_fds() {
+                let flags = if input {
+                    PollFlags::POLLIN
+                } else {
+                    PollFlags::empty()
+                };
+                poll_fds.push(PollFd::new(fd, flags));
+                share_ids.push(id);
+            }
+        }
+
+        // Wake up for the next nudge of a shared window.
+        let next_nudge = state.context.borrow().next_share_nudge();
+        let timeout = next_nudge.map(|due| {
+            let ms = due
+                .saturating_duration_since(std::time::Instant::now())
+                .as_millis();
+            ms.min(u16::MAX as u128) as u16
+        });
 
         // Poll for events (None = infinite timeout)
-        match poll(&mut poll_fds, None::<u16>) {
+        match poll(&mut poll_fds, timeout) {
             Ok(_) => {}
             Err(nix::errno::Errno::EINTR) => continue,
             Err(e) => return Err(e.into()),
         }
 
-        // Handle Wayland events
-        if poll_fds[0]
+        // Whether any share server fd is ready, and which connections hung up.
+        let share_ready = poll_fds[2..]
+            .iter()
+            .any(|fd| fd.revents().is_some_and(|r| !r.is_empty()));
+        let share_hung_up: Vec<canoe::share_picker::ShareRequestId> = poll_fds[2..]
+            .iter()
+            .zip(&share_ids)
+            .filter(|(fd, _)| {
+                fd.revents()
+                    .is_some_and(|r| r.intersects(PollFlags::POLLHUP | PollFlags::POLLERR))
+            })
+            .filter_map(|(_, id)| *id)
+            .collect();
+        let wayland_ready = poll_fds[0]
             .revents()
             .map(|r| r.contains(PollFlags::POLLIN))
-            .unwrap_or(false)
-        {
+            .unwrap_or(false);
+        let signal_ready = poll_fds[1]
+            .revents()
+            .map(|r| r.contains(PollFlags::POLLIN))
+            .unwrap_or(false);
+        drop(poll_fds);
+
+        if next_nudge.is_some_and(|due| due <= std::time::Instant::now()) {
+            let mut context = state.context.borrow_mut();
+            context.share_nudge_requested = true;
+            if let Some(ref rwm) = context.rwm {
+                rwm.manage_dirty();
+            }
+        }
+
+        // Handle Wayland events
+        if wayland_ready {
             event_queue.dispatch_pending(&mut state)?;
 
             // Read and dispatch new events
@@ -3513,12 +4233,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             event_queue.dispatch_pending(&mut state)?;
         }
 
+        // Handle screen-sharing requests
+        if share_ready {
+            let (requests, gone) = match state.share_server.as_mut() {
+                Some(server) => server.dispatch(&share_hung_up),
+                None => (Vec::new(), Vec::new()),
+            };
+            // The portal gave up on the question (the app cancelled, say).
+            let open_request = state
+                .context
+                .borrow()
+                .share_picker
+                .as_ref()
+                .map(|picker| picker.request);
+            if open_request.is_some_and(|id| gone.contains(&id)) {
+                finish_share_picker(&mut state, false, true);
+            }
+            for request in requests {
+                start_share_picker(&mut state, request, &qh);
+            }
+        }
+
         // Handle signals
-        if poll_fds[1]
-            .revents()
-            .map(|r| r.contains(PollFlags::POLLIN))
-            .unwrap_or(false)
-        {
+        if signal_ready {
             let mut buf = [0u8; 32];
             loop {
                 match nix::unistd::read(signal_read_fd.as_raw_fd(), &mut buf) {
@@ -3557,4 +4294,69 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lookup_from(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let vars: HashMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |name| vars.get(name).cloned()
+    }
+
+    fn config_env(vars: &[(&str, &str)]) -> HashMap<String, String> {
+        vars.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn test_activation_environment_uses_own_environment() {
+        let argv = activation_environment_argv(
+            &HashMap::new(),
+            lookup_from(&[
+                ("WAYLAND_DISPLAY", "wayland-1"),
+                ("XDG_CURRENT_DESKTOP", "foo"),
+            ]),
+        )
+        .expect("argv");
+        assert_eq!(
+            argv[2..],
+            ["WAYLAND_DISPLAY=wayland-1", "XDG_CURRENT_DESKTOP=foo"]
+        );
+    }
+
+    #[test]
+    fn test_activation_environment_defaults_desktop_to_river() {
+        let argv =
+            activation_environment_argv(&HashMap::new(), lookup_from(&[("WAYLAND_DISPLAY", "w")]))
+                .expect("argv");
+        assert_eq!(argv[3], "XDG_CURRENT_DESKTOP=river");
+    }
+
+    #[test]
+    fn test_activation_environment_prefers_config_env() {
+        // [env] wins whether or not canoe inherited the variable itself.
+        let env = config_env(&[("XDG_CURRENT_DESKTOP", "river:wlroots")]);
+        for own in [
+            lookup_from(&[("WAYLAND_DISPLAY", "w"), ("XDG_CURRENT_DESKTOP", "river")]),
+            lookup_from(&[("WAYLAND_DISPLAY", "w")]),
+        ] {
+            let argv = activation_environment_argv(&env, own).expect("argv");
+            assert_eq!(argv[3], "XDG_CURRENT_DESKTOP=river:wlroots");
+        }
+    }
+
+    #[test]
+    fn test_activation_environment_needs_a_display() {
+        assert!(activation_environment_argv(&HashMap::new(), lookup_from(&[])).is_none());
+        let env = config_env(&[("WAYLAND_DISPLAY", "")]);
+        assert!(
+            activation_environment_argv(&env, lookup_from(&[("WAYLAND_DISPLAY", "w")])).is_none()
+        );
+    }
 }
