@@ -84,6 +84,13 @@ pub struct Context {
     window_menu_alt_tab_focused: Option<WindowId>,
     window_menu_alt_tab_preview: Option<WindowId>,
     window_menu_alt_tab_preview_was_hidden: bool,
+
+    /// The open screen-sharing picker, if any
+    pub share_picker: Option<super::share_picker::SharePicker>,
+    /// Shared windows to make repaint, see [`super::share_picker::Nudge`]
+    pub share_nudges: Vec<super::share_picker::Nudge>,
+    /// A manage sequence was requested to run due nudges
+    pub share_nudge_requested: bool,
 }
 
 impl Context {
@@ -132,6 +139,10 @@ impl Context {
             window_menu_alt_tab_focused: None,
             window_menu_alt_tab_preview: None,
             window_menu_alt_tab_preview_was_hidden: false,
+
+            share_picker: None,
+            share_nudges: Vec::new(),
+            share_nudge_requested: false,
         }
     }
 
@@ -215,6 +226,11 @@ impl Context {
         }
 
         self.windows.remove(&window_id);
+
+        if let Some(picker) = self.share_picker.as_mut() {
+            picker.remove_target(super::share_picker::ShareTarget::Window(window_id));
+        }
+        self.share_nudges.retain(|n| n.window != window_id);
     }
 
     /// Create a new output and add to context
@@ -247,6 +263,11 @@ impl Context {
         }
 
         self.outputs.remove(&output_id);
+
+        if let Some(picker) = self.share_picker.as_mut() {
+            picker.remove_target(super::share_picker::ShareTarget::Output(output_id));
+            picker.surfaces.retain(|s| s.output_id != output_id);
+        }
     }
 
     /// Create a new seat and add to context
@@ -695,6 +716,12 @@ impl Context {
             Action::IconCancel => {
                 self.exit_icon_focus(seat_id);
             }
+            // The picker answers over IPC and redraws its overlay, both of
+            // which happen in the dispatch layer as soon as the key is pressed.
+            Action::SharePickerConfirm
+            | Action::SharePickerCancel
+            | Action::SharePickerNext
+            | Action::SharePickerPrev => {}
             Action::CustomFn { func, ref arg } => {
                 let state = self.get_state();
                 func(&state, arg);
@@ -1743,6 +1770,75 @@ impl Context {
         }
     }
 
+    /// Make a window that was just picked for sharing repaint, see
+    /// [`super::share_picker::Nudge`].
+    pub fn schedule_share_nudge(&mut self, window: WindowId) {
+        use super::share_picker::{Nudge, NudgeStep, NUDGE_DELAYS};
+        let now = std::time::Instant::now();
+        self.share_nudges.retain(|n| n.window != window);
+        for delay in NUDGE_DELAYS {
+            self.share_nudges.push(Nudge {
+                window,
+                due: now + delay,
+                step: NudgeStep::Start,
+            });
+        }
+    }
+
+    /// When the next nudge is due, unless a manage sequence to run it was
+    /// already requested.
+    pub fn next_share_nudge(&self) -> Option<std::time::Instant> {
+        if self.share_nudge_requested {
+            return None;
+        }
+        self.share_nudges.iter().map(|n| n.due).min()
+    }
+
+    /// Run the nudges that are due. Must be called in a manage sequence.
+    fn run_share_nudges(&mut self) {
+        use super::share_picker::{Nudge, NudgeStep, NUDGE_LENGTH};
+        self.share_nudge_requested = false;
+        let now = std::time::Instant::now();
+        let (due, rest): (Vec<Nudge>, Vec<Nudge>) =
+            self.share_nudges.drain(..).partition(|n| n.due <= now);
+        self.share_nudges = rest;
+        for nudge in due {
+            let Some(window) = self.windows.get(&nudge.window) else {
+                continue;
+            };
+            let w = window.borrow();
+            let Some(rwm_window) = w.rwm_window.as_ref() else {
+                continue;
+            };
+            match nudge.step {
+                NudgeStep::Start => {
+                    // Leave a window the user is resizing alone, and don't
+                    // overlap with a nudge still in progress.
+                    let busy = matches!(w.operator, super::window::Operator::Resize { .. })
+                        || self
+                            .share_nudges
+                            .iter()
+                            .any(|n| n.window == nudge.window && n.step == NudgeStep::End);
+                    if busy {
+                        continue;
+                    }
+                    rwm_window.inform_resize_start();
+                    rwm_window.set_tiled(Edges::Top | Edges::Bottom | Edges::Left | Edges::Right);
+                    self.share_nudges.push(Nudge {
+                        window: nudge.window,
+                        due: now + NUDGE_LENGTH,
+                        step: NudgeStep::End,
+                    });
+                }
+                NudgeStep::End => {
+                    rwm_window.inform_resize_end();
+                    // Canoe never marks windows tiled.
+                    rwm_window.set_tiled(Edges::empty());
+                }
+            }
+        }
+    }
+
     /// Handle manage_start event - process pending window events and arrange windows
     pub fn handle_manage_start(&mut self) {
         // Re-apply window rules deferred from a config reload (SIGHUP). This is
@@ -1783,6 +1879,8 @@ impl Context {
                 w.pending_unfullscreen_restore = false;
             }
         }
+
+        self.run_share_nudges();
 
         // Process seat actions
         let seat_ids: Vec<SeatId> = self.seats.keys().copied().collect();
@@ -2098,6 +2196,132 @@ impl Context {
             current = parent;
         }
         depth
+    }
+
+    /// Visible windows in stacking order, topmost first.
+    ///
+    /// Mirrors what `handle_render_start` asks River for: fullscreen windows
+    /// cover everything, the most recently focused window's parent chain is
+    /// raised, and dialogs sit directly above their parents.
+    pub fn stacking_order(&self) -> Vec<WindowId> {
+        let focus_index = |id: WindowId| {
+            self.focus_stack
+                .iter()
+                .position(|&f| f == id)
+                .unwrap_or(usize::MAX)
+        };
+        let mut ids: Vec<WindowId> = self
+            .windows
+            .iter()
+            .filter(|(_, w)| {
+                let w = w.borrow();
+                !w.hidden && w.width > 0 && w.height > 0
+            })
+            .map(|(&id, _)| id)
+            .collect();
+        ids.sort_by_key(|&id| {
+            let fullscreen = self.windows.get(&id).is_some_and(|w| {
+                !matches!(w.borrow().fullscreen, super::window::FullscreenState::None)
+            });
+            (
+                !fullscreen,
+                focus_index(self.root_ancestor(id)),
+                std::cmp::Reverse(self.parent_chain_depth(id)),
+                focus_index(id),
+                id,
+            )
+        });
+        ids
+    }
+
+    /// Match the portal's offer (see [`super::share_picker::resolve_candidates`])
+    /// against the outputs and windows we manage.
+    pub fn share_candidates(&self, lines: &[String]) -> Vec<super::share_picker::ShareCandidate> {
+        // Outputs left to right, top to bottom.
+        let mut outputs: Vec<(i32, i32, OutputId, String)> = self
+            .outputs
+            .iter()
+            .filter_map(|(&id, o)| {
+                let o = o.borrow();
+                o.name.clone().map(|name| (o.x, o.y, id, name))
+            })
+            .collect();
+        outputs.sort();
+        let outputs: Vec<(OutputId, String)> = outputs
+            .into_iter()
+            .map(|(_, _, id, name)| (id, name))
+            .collect();
+        let windows: Vec<super::share_picker::WindowInfo> = self
+            .stacking_order()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(stack_index, id)| {
+                let w = self.windows.get(&id)?.borrow();
+                Some(super::share_picker::WindowInfo {
+                    id,
+                    identifier: w.identifier.clone(),
+                    title: w.title.clone(),
+                    stack_index,
+                })
+            })
+            .collect();
+        super::share_picker::resolve_candidates(lines, &outputs, &windows)
+    }
+
+    /// The picker candidate at global point `(x, y)`: the topmost window there
+    /// if it may be shared, else the output there if that may be.
+    pub fn share_candidate_at(&self, x: i32, y: i32) -> Option<usize> {
+        use super::share_picker::ShareTarget;
+        let picker = self.share_picker.as_ref()?;
+        let ui = &self.config.ui;
+        for id in self.stacking_order() {
+            let Some(window) = self.windows.get(&id) else {
+                continue;
+            };
+            let (wx, wy, ww, wh) = window.borrow().frame_rect(ui);
+            if x >= wx && x < wx + ww && y >= wy && y < wy + wh {
+                if let Some(idx) = picker.index_of(ShareTarget::Window(id)) {
+                    return Some(idx);
+                }
+                break;
+            }
+        }
+        let output_id = self.output_at_point(x, y)?;
+        picker.index_of(ShareTarget::Output(output_id))
+    }
+
+    /// The highlighted picker target's rectangle in global logical
+    /// coordinates, and the text naming it.
+    pub fn share_highlight(&self) -> Option<((i32, i32, i32, i32), String)> {
+        use super::share_picker::ShareTarget;
+        let picker = self.share_picker.as_ref()?;
+        let candidate = picker.candidates.get(picker.hovered?)?;
+        match candidate.target {
+            ShareTarget::Window(id) => {
+                let w = self.windows.get(&id)?.borrow();
+                if w.hidden {
+                    return None;
+                }
+                let name = w
+                    .title
+                    .clone()
+                    .filter(|t| !t.is_empty())
+                    .or_else(|| w.app_id.clone())
+                    .unwrap_or_else(|| "this window".to_string());
+                Some((
+                    w.frame_rect(&self.config.ui),
+                    format!("Share \u{201c}{name}\u{201d}"),
+                ))
+            }
+            ShareTarget::Output(id) => {
+                let o = self.outputs.get(&id)?.borrow();
+                let name = o.name.clone().unwrap_or_else(|| "this screen".to_string());
+                Some((
+                    (o.x, o.y, o.width, o.height),
+                    format!("Share screen {name} ({}\u{d7}{})", o.width, o.height),
+                ))
+            }
+        }
     }
 
     /// The topmost ancestor reachable via the parent chain, or the window
@@ -2680,6 +2904,16 @@ impl Context {
             None => return,
         };
 
+        // The picker overlay covers every window; their borders don't apply.
+        if matches!(
+            seat.borrow().pointer_target,
+            super::PointerTarget::SharePicker(_)
+        ) {
+            seat.borrow_mut()
+                .set_cursor_shape(Some(CursorShape::Crosshair));
+            return;
+        }
+
         let mut edges = 0u32;
 
         if let Some(window_id) = self.focused_window {
@@ -2769,6 +3003,7 @@ impl Context {
             super::PointerTarget::Menu | super::PointerTarget::Titlebar(_) => {
                 Some(CursorShape::Default)
             }
+            super::PointerTarget::SharePicker(_) => Some(CursorShape::Crosshair),
             // MenuShield hides the cursor via wl_pointer.set_cursor directly,
             // so don't touch it here.
             super::PointerTarget::MenuShield(_) | super::PointerTarget::None => None,

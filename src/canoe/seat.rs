@@ -261,6 +261,7 @@ pub enum PointerTarget {
     Desktop(OutputId),
     Menu,
     MenuShield(OutputId),
+    SharePicker(OutputId),
     Titlebar(WindowId),
 }
 

@@ -5,6 +5,7 @@
 mod binding;
 mod canoe;
 mod config;
+mod ipc;
 mod protocol;
 mod rule;
 
@@ -57,6 +58,8 @@ use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrL
 struct AppState {
     context: Rc<RefCell<Context>>,
     globals: Globals,
+    /// Where `canoe --share-picker` requests arrive.
+    share_server: Option<ipc::ShareServer>,
 }
 
 /// Collected Wayland globals
@@ -77,6 +80,8 @@ struct Globals {
     wl_seat_has_pointer: HashMap<u32, bool>,
     wl_outputs: HashMap<u32, wl_output::WlOutput>,
     wl_output_scales: HashMap<u32, i32>,
+    /// `wl_output.name` (e.g. "DP-1") per wl_output global name.
+    wl_output_names: HashMap<u32, String>,
 }
 
 const CLOSE_DOUBLE_CLICK: Duration = Duration::from_millis(400);
@@ -88,6 +93,7 @@ enum ScaleTarget {
     Shadow(canoe::WindowId),
     Menu,
     Desktop(canoe::OutputId),
+    SharePicker(canoe::OutputId),
 }
 
 /// Give `surface` a viewport and subscribe it to fractional-scale updates,
@@ -1064,6 +1070,259 @@ fn render_all_desktop_surfaces(state: &mut AppState, qh: &QueueHandle<AppState>)
     }
 }
 
+/// Answer a `canoe --share-picker` request without asking the user.
+fn decline_share_request(state: &mut AppState, request: canoe::share_picker::ShareRequestId) {
+    if let Some(server) = state.share_server.as_mut() {
+        server.reply(request, None);
+    }
+}
+
+/// Open the screen-sharing picker for a `canoe --share-picker` request: an
+/// overlay on every output that highlights the window or screen under the
+/// pointer.
+fn start_share_picker(
+    state: &mut AppState,
+    request: ipc::ShareRequest,
+    qh: &QueueHandle<AppState>,
+) {
+    use wayland_protocols_wlr::layer_shell::v1::client::{
+        zwlr_layer_shell_v1, zwlr_layer_surface_v1,
+    };
+
+    let (Some(compositor), Some(layer_shell)) = (
+        state.globals.compositor.clone(),
+        state.globals.wlr_layer_shell.clone(),
+    ) else {
+        decline_share_request(state, request.id);
+        return;
+    };
+
+    let (seat_id, candidates) = {
+        let context = state.context.borrow();
+        // One question at a time; and nothing is shared from a locked screen.
+        if context.share_picker.is_some() || context.session_locked {
+            drop(context);
+            decline_share_request(state, request.id);
+            return;
+        }
+        let Some(seat_id) = context.current_seat else {
+            drop(context);
+            decline_share_request(state, request.id);
+            return;
+        };
+        (seat_id, context.share_candidates(&request.lines))
+    };
+    if candidates.is_empty() {
+        decline_share_request(state, request.id);
+        return;
+    }
+
+    let outputs: Vec<(canoe::OutputId, wl_output::WlOutput)> = {
+        let mut context = state.context.borrow_mut();
+        if context.window_menu.is_some() {
+            context.close_window_menu();
+        }
+        // Leave desktop icon selection; the picker takes the keyboard.
+        if let Some(output_id) = context.icon_focus_output.take() {
+            if let Some(output) = context.outputs.get(&output_id) {
+                if let Some(desktop) = output.borrow_mut().desktop_surface.as_mut() {
+                    desktop.selected_icon = None;
+                    desktop.dirty = true;
+                }
+            }
+        }
+        context
+            .outputs
+            .iter()
+            .filter_map(|(&id, o)| o.borrow().wl_output.clone().map(|wl| (id, wl)))
+            .collect()
+    };
+
+    let theme = {
+        let context = state.context.borrow();
+        canoe::share_picker::PickerTheme::from_ui(&context.config.ui)
+    };
+    let mut picker = canoe::share_picker::SharePicker::new(request.id, seat_id, candidates, theme);
+    for (output_id, wl_output) in outputs {
+        let surface = compositor.create_surface(qh, ());
+        let layer_surface = layer_shell.get_layer_surface(
+            &surface,
+            Some(&wl_output),
+            zwlr_layer_shell_v1::Layer::Overlay,
+            "canoe-share-picker".to_string(),
+            qh,
+            canoe::LayerSurfaceKind::SharePicker(output_id),
+        );
+        layer_surface.set_anchor(
+            zwlr_layer_surface_v1::Anchor::Top
+                | zwlr_layer_surface_v1::Anchor::Bottom
+                | zwlr_layer_surface_v1::Anchor::Left
+                | zwlr_layer_surface_v1::Anchor::Right,
+        );
+        layer_surface.set_exclusive_zone(-1);
+        layer_surface
+            .set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
+        layer_surface.set_size(0, 0);
+        surface.commit();
+        let fractional = fractional_surface(
+            &state.globals,
+            &surface,
+            ScaleTarget::SharePicker(output_id),
+            qh,
+        );
+        picker
+            .surfaces
+            .push(canoe::share_picker::PickerSurface::new(
+                surface,
+                layer_surface,
+                fractional,
+                output_id,
+            ));
+    }
+
+    let mut context = state.context.borrow_mut();
+    context.share_picker = Some(picker);
+    if let Some(seat) = context.seats.get(&seat_id).cloned() {
+        let (px, py) = {
+            let seat = seat.borrow();
+            (seat.pointer_x, seat.pointer_y)
+        };
+        let hovered = context.share_candidate_at(px, py);
+        if let Some(picker) = context.share_picker.as_mut() {
+            picker.hovered = hovered;
+        }
+        // Binding modes may only change in a manage sequence.
+        seat.borrow_mut().queue_action(binding::Action::SwitchMode {
+            mode: config::Mode::SharePicker,
+        });
+    }
+    if let Some(ref rwm) = context.rwm {
+        rwm.manage_dirty();
+    }
+}
+
+/// Redraw the picker overlay on every output.
+fn render_share_picker(state: &mut AppState, qh: &QueueHandle<AppState>) {
+    let (Some(shm), Some(compositor)) = (
+        state.globals.shm.as_ref(),
+        state.globals.compositor.as_ref(),
+    ) else {
+        return;
+    };
+    let mut context = state.context.borrow_mut();
+    let highlight = context.share_highlight();
+    let context = &mut *context;
+    let Some(picker) = context.share_picker.as_mut() else {
+        return;
+    };
+    let banner = picker.banner();
+    let canoe::share_picker::SharePicker {
+        surfaces, theme, ..
+    } = picker;
+    for surface in surfaces.iter_mut() {
+        let Some(output) = context.outputs.get(&surface.output_id) else {
+            continue;
+        };
+        let out = output.borrow();
+        let scale = canoe::scale::Scale::new(
+            surface
+                .fractional
+                .device_scale(out.preferred_scale, out.scale),
+        );
+        let scene = canoe::share_picker::PickerScene {
+            highlight: highlight
+                .as_ref()
+                .map(|&((x, y, w, h), _)| (x - out.x, y - out.y, w, h)),
+            label: highlight.as_ref().map(|(_, label)| label.as_str()),
+            banner,
+            theme,
+        };
+        surface.render(&scene, scale, shm, compositor, qh);
+    }
+}
+
+/// Highlight the picker target under the seat's pointer.
+fn update_share_picker_hover(
+    state: &mut AppState,
+    seat: &Rc<RefCell<canoe::Seat>>,
+    qh: &QueueHandle<AppState>,
+) {
+    let (px, py) = {
+        let seat = seat.borrow();
+        (seat.pointer_x, seat.pointer_y)
+    };
+    let changed = {
+        let mut context = state.context.borrow_mut();
+        let hovered = context.share_candidate_at(px, py);
+        match context.share_picker.as_mut() {
+            Some(picker) if picker.hovered != hovered => {
+                picker.hovered = hovered;
+                true
+            }
+            _ => false,
+        }
+    };
+    if changed {
+        render_share_picker(state, qh);
+    }
+}
+
+/// Close the picker. With `confirm`, share the highlighted target, if any;
+/// otherwise tell the portal the user declined. `restore_mode` switches the
+/// seat back to the default binding mode.
+fn finish_share_picker(state: &mut AppState, confirm: bool, restore_mode: bool) {
+    let picker = {
+        let mut context = state.context.borrow_mut();
+        let Some(picker) = context.share_picker.take() else {
+            return;
+        };
+        let choice = picker
+            .hovered
+            .and_then(|idx| picker.candidates.get(idx))
+            .map(|candidate| candidate.reply.clone());
+        if confirm && choice.is_none() {
+            // Nothing highlighted yet: keep asking.
+            context.share_picker = Some(picker);
+            return;
+        }
+        (picker, if confirm { choice } else { None })
+    };
+    let (picker, choice) = picker;
+    if choice.is_some() {
+        if let Some(canoe::share_picker::ShareTarget::Window(window)) = picker
+            .hovered
+            .and_then(|idx| picker.candidates.get(idx))
+            .map(|c| c.target)
+        {
+            state.context.borrow_mut().schedule_share_nudge(window);
+        }
+    }
+    if let Some(server) = state.share_server.as_mut() {
+        server.reply(picker.request, choice.as_deref());
+    }
+    let seat_id = picker.seat_id;
+    // Destroys the overlay surfaces.
+    drop(picker);
+
+    let context = state.context.borrow();
+    for seat in context.seats.values() {
+        let mut seat = seat.borrow_mut();
+        if matches!(seat.pointer_target, canoe::PointerTarget::SharePicker(_)) {
+            seat.pointer_target = canoe::PointerTarget::None;
+        }
+    }
+    if restore_mode {
+        if let Some(seat) = context.seats.get(&seat_id) {
+            seat.borrow_mut().queue_action(binding::Action::SwitchMode {
+                mode: config::Mode::Default,
+            });
+        }
+        if let Some(ref rwm) = context.rwm {
+            rwm.manage_dirty();
+        }
+    }
+}
+
 impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
     fn event(
         state: &mut Self,
@@ -1132,7 +1391,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                     }
                 }
                 "river_window_manager_v1" => {
-                    let rwm: RiverWindowManagerV1 = registry.bind(name, version.min(3), qh, ());
+                    let rwm: RiverWindowManagerV1 = registry.bind(name, version.min(4), qh, ());
                     state.globals.rwm = Some(rwm.clone());
                     state.context.borrow_mut().rwm = Some(rwm);
                 }
@@ -1717,6 +1976,19 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                 }
             }
             Event::SessionLocked => {
+                // Nothing gets shared from behind the lock screen. The lock
+                // binding mode below replaces the picker's.
+                finish_share_picker(state, false, false);
+                for seat in state.context.borrow().seats.values() {
+                    seat.borrow_mut().unhandled_actions.retain(|action| {
+                        !matches!(
+                            action,
+                            binding::Action::SwitchMode {
+                                mode: config::Mode::SharePicker
+                            }
+                        )
+                    });
+                }
                 state.context.borrow_mut().session_locked = true;
                 // Switch to lock mode
                 if let Some(seat_id) = state.context.borrow().current_seat {
@@ -1788,6 +2060,9 @@ impl Dispatch<RiverWindowV1, canoe::WindowId> for AppState {
         match event {
             Event::Closed => {
                 state.context.borrow_mut().destroy_window(window_id);
+                if state.context.borrow().share_picker.is_some() {
+                    render_share_picker(state, _qh);
+                }
             }
             Event::DimensionsHint {
                 min_width,
@@ -1851,6 +2126,9 @@ impl Dispatch<RiverWindowV1, canoe::WindowId> for AppState {
             Event::UnreliablePid { unreliable_pid } => {
                 let mut w = window.borrow_mut();
                 w.pid = unreliable_pid;
+            }
+            Event::Identifier { identifier } => {
+                window.borrow_mut().identifier = Some(identifier);
             }
             Event::PointerMoveRequested { seat } => {
                 // Find the seat and queue move action
@@ -1989,6 +2267,7 @@ impl Dispatch<RiverOutputV1, canoe::OutputId> for AppState {
                 let mut out = output.borrow_mut();
                 out.wl_output_name = name;
                 out.wl_output = state.globals.wl_outputs.get(&name).cloned();
+                out.name = state.globals.wl_output_names.get(&name).cloned();
                 out.scale = state
                     .globals
                     .wl_output_scales
@@ -2218,6 +2497,20 @@ impl Dispatch<ZwlrLayerSurfaceV1, canoe::LayerSurfaceKind> for AppState {
                         drop(context);
                         render_window_menu(state, qh);
                     }
+                    canoe::LayerSurfaceKind::SharePicker(output_id) => {
+                        {
+                            let mut context = state.context.borrow_mut();
+                            let Some(surface) = context
+                                .share_picker
+                                .as_mut()
+                                .and_then(|picker| picker.surface_mut(*output_id))
+                            else {
+                                return;
+                            };
+                            surface.configure(width as i32, height as i32);
+                        }
+                        render_share_picker(state, qh);
+                    }
                     canoe::LayerSurfaceKind::MenuShield(output_id) => {
                         let mut context = state.context.borrow_mut();
                         let Some(shield) = context.window_menu_shield.as_mut() else {
@@ -2255,6 +2548,11 @@ impl Dispatch<ZwlrLayerSurfaceV1, canoe::LayerSurfaceKind> for AppState {
                 }
                 canoe::LayerSurfaceKind::Menu => {
                     state.context.borrow_mut().close_window_menu();
+                }
+                canoe::LayerSurfaceKind::SharePicker(output_id) => {
+                    if let Some(picker) = state.context.borrow_mut().share_picker.as_mut() {
+                        picker.surfaces.retain(|s| s.output_id != *output_id);
+                    }
                 }
                 canoe::LayerSurfaceKind::MenuShield(output_id) => {
                     if let Some(shield) = state.context.borrow().window_menu_shield.as_ref() {
@@ -2430,6 +2728,23 @@ impl Dispatch<RiverXkbBindingV1, (canoe::SeatId, usize)> for AppState {
                     binding::Action::IconCancel => {
                         state.context.borrow_mut().execute_action(action, *seat_id);
                         render_all_desktop_surfaces(state, qh);
+                    }
+                    binding::Action::SharePickerConfirm => {
+                        finish_share_picker(state, true, true);
+                    }
+                    binding::Action::SharePickerCancel => {
+                        finish_share_picker(state, false, true);
+                    }
+                    binding::Action::SharePickerNext | binding::Action::SharePickerPrev => {
+                        let step = if matches!(action, binding::Action::SharePickerNext) {
+                            1
+                        } else {
+                            -1
+                        };
+                        if let Some(picker) = state.context.borrow_mut().share_picker.as_mut() {
+                            picker.cycle(step);
+                        }
+                        render_share_picker(state, qh);
                     }
                     _ => {
                         seat.borrow_mut().queue_action(action);
@@ -2760,6 +3075,15 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                     let mut titlebar_window = None;
 
                     let surface_pos = (surface_x.round() as i32, surface_y.round() as i32);
+                    if let Some(output_id) = state
+                        .context
+                        .borrow()
+                        .share_picker
+                        .as_ref()
+                        .and_then(|picker| picker.owns_surface(&surface))
+                    {
+                        target = canoe::PointerTarget::SharePicker(output_id);
+                    }
                     {
                         let mut context = state.context.borrow_mut();
                         if let Some(shield) = context.window_menu_shield.as_ref() {
@@ -2813,11 +3137,15 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                         seat_ref.last_surface_y = surface_pos.1;
                     }
                     if let canoe::PointerTarget::Desktop(output_id)
-                    | canoe::PointerTarget::MenuShield(output_id) = target
+                    | canoe::PointerTarget::MenuShield(output_id)
+                    | canoe::PointerTarget::SharePicker(output_id) = target
                     {
                         update_pointer_position_from_output(
                             state, &seat, output_id, surface_x, surface_y,
                         );
+                    }
+                    if matches!(target, canoe::PointerTarget::SharePicker(_)) {
+                        update_share_picker_hover(state, &seat, _qh);
                     }
                     if matches!(target, canoe::PointerTarget::MenuShield(_)) {
                         if let Some(pointer) = wl_pointer.as_ref() {
@@ -2858,7 +3186,12 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                         seat_ref.last_surface_y = surface_y.round() as i32;
                     }
                     let target = seat.borrow().pointer_target;
-                    if target == canoe::PointerTarget::Menu {
+                    if let canoe::PointerTarget::SharePicker(output_id) = target {
+                        update_pointer_position_from_output(
+                            state, &seat, output_id, surface_x, surface_y,
+                        );
+                        update_share_picker_hover(state, &seat, _qh);
+                    } else if target == canoe::PointerTarget::Menu {
                         let changed = state
                             .context
                             .borrow_mut()
@@ -2892,6 +3225,20 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                 } => {
                     let target = seat.borrow().pointer_target;
                     if matches!(target, canoe::PointerTarget::MenuShield(_)) {
+                        return;
+                    }
+                    // The picker overlay takes the whole click, so act on the
+                    // release: a left click shares, a right click declines.
+                    if matches!(target, canoe::PointerTarget::SharePicker(_)) {
+                        if btn_state
+                            == wayland_client::WEnum::Value(wl_pointer::ButtonState::Released)
+                        {
+                            if button == crate::config::button::LEFT {
+                                finish_share_picker(state, true, true);
+                            } else if button == crate::config::button::RIGHT {
+                                finish_share_picker(state, false, true);
+                            }
+                        }
                         return;
                     }
                     match btn_state {
@@ -3059,7 +3406,8 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                                 canoe::PointerTarget::Menu => {
                                     seat.borrow_mut().menu_click_button = Some(button);
                                 }
-                                canoe::PointerTarget::MenuShield(_) => {}
+                                canoe::PointerTarget::MenuShield(_)
+                                | canoe::PointerTarget::SharePicker(_) => {}
                                 canoe::PointerTarget::Titlebar(window_id) => {
                                     if button == crate::config::button::LEFT {
                                         let (px, py) = {
@@ -3418,6 +3766,28 @@ impl Dispatch<wl_output::WlOutput, ()> for AppState {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        if let wl_output::Event::Name { name: connector } = _event {
+            let output_name = _state.globals.wl_outputs.iter().find_map(|(name, output)| {
+                if output == _proxy {
+                    Some(*name)
+                } else {
+                    None
+                }
+            });
+            if let Some(global) = output_name {
+                _state
+                    .globals
+                    .wl_output_names
+                    .insert(global, connector.clone());
+                for output in _state.context.borrow().outputs.values() {
+                    let mut out = output.borrow_mut();
+                    if out.wl_output_name == global {
+                        out.name = Some(connector.clone());
+                    }
+                }
+            }
+            return;
+        }
         if let wl_output::Event::Scale { factor } = _event {
             let scale = factor.max(1);
             let output_name = _state.globals.wl_outputs.iter().find_map(|(name, output)| {
@@ -3558,6 +3928,22 @@ impl Dispatch<WpFractionalScaleV1, ScaleTarget> for AppState {
                     }
                 }
             }
+            ScaleTarget::SharePicker(output_id) => {
+                let changed = {
+                    let mut context = state.context.borrow_mut();
+                    if let Some(output) = context.outputs.get(&output_id) {
+                        output.borrow_mut().preferred_scale = Some(scale);
+                    }
+                    context
+                        .share_picker
+                        .as_mut()
+                        .and_then(|picker| picker.surface_mut(output_id))
+                        .is_some_and(|surface| surface.fractional.set_preferred(scale))
+                };
+                if changed {
+                    render_share_picker(state, qh);
+                }
+            }
             ScaleTarget::Desktop(output_id) => {
                 let changed = {
                     let context = state.context.borrow();
@@ -3598,6 +3984,26 @@ impl Dispatch<RiverDecorationV1, canoe::WindowId> for AppState {
     }
 }
 
+/// Export `WAYLAND_DISPLAY` and `XDG_CURRENT_DESKTOP` to the systemd user
+/// manager and the D-Bus activation environment, so services started on demand
+/// (xdg-desktop-portal and its backends) connect to this session.
+fn update_activation_environment(context: &Context) {
+    if std::env::var_os("WAYLAND_DISPLAY").is_none() {
+        return;
+    }
+    let mut argv = vec![
+        "dbus-update-activation-environment".to_string(),
+        "--systemd".to_string(),
+        "WAYLAND_DISPLAY".to_string(),
+    ];
+    // xdg-desktop-portal picks its backends by desktop name.
+    argv.push(match std::env::var("XDG_CURRENT_DESKTOP") {
+        Ok(desktop) if !desktop.is_empty() => "XDG_CURRENT_DESKTOP".to_string(),
+        _ => "XDG_CURRENT_DESKTOP=river".to_string(),
+    });
+    context.spawn(&argv);
+}
+
 const USAGE: &str = "\
 canoe - River window manager
 
@@ -3605,6 +4011,9 @@ Usage: canoe [OPTIONS]
 
 Options:
   -n, --no-config   Ignore ~/.config/canoe/canoe.toml and use built-in defaults
+      --share-picker
+                    Act as the screen-sharing chooser of xdg-desktop-portal-wlr:
+                    let the running canoe ask what to share, print the answer
   -h, --help        Print this help and exit
   -V, --version     Print version and exit
 
@@ -3622,6 +4031,7 @@ fn parse_args() -> CliArgs {
     for arg in std::env::args().skip(1) {
         match arg.as_str() {
             "-n" | "--no-config" => args.skip_config = true,
+            "--share-picker" => std::process::exit(ipc::run_share_picker()),
             "-h" | "--help" => {
                 println!("{USAGE}");
                 std::process::exit(0);
@@ -3655,6 +4065,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut state = AppState {
         context: context.clone(),
         globals: Globals::default(),
+        share_server: None,
     };
 
     // Get registry and collect globals
@@ -3690,6 +4101,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         unsafe { sigaction(sig, &action)? };
     }
 
+    // Answer screen-sharing requests from `canoe --share-picker`.
+    match ipc::ShareServer::bind() {
+        Ok(server) => state.share_server = Some(server),
+        Err(e) => eprintln!("canoe: screen-sharing picker unavailable: {e}"),
+    }
+
+    // Let D-Bus activated services (the screencast portal, above all) find
+    // this session's display.
+    if state.context.borrow().config.update_activation_environment {
+        update_activation_environment(&state.context.borrow());
+    }
+
     // Run startup commands
     for cmd in &state.context.borrow().config.startup_cmds.clone() {
         state.context.borrow().spawn(cmd);
@@ -3703,24 +4126,73 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Prepare poll file descriptors
         let wayland_fd = conn.as_fd();
 
-        let mut poll_fds = [
+        let mut poll_fds = vec![
             PollFd::new(wayland_fd, PollFlags::POLLIN),
             PollFd::new(signal_read_fd.as_fd(), PollFlags::POLLIN),
         ];
+        // The share server's listener, then its connections.
+        let mut share_ids = Vec::new();
+        if let Some(server) = state.share_server.as_ref() {
+            for (fd, input, id) in server.poll_fds() {
+                let flags = if input {
+                    PollFlags::POLLIN
+                } else {
+                    PollFlags::empty()
+                };
+                poll_fds.push(PollFd::new(fd, flags));
+                share_ids.push(id);
+            }
+        }
+
+        // Wake up for the next nudge of a shared window.
+        let next_nudge = state.context.borrow().next_share_nudge();
+        let timeout = next_nudge.map(|due| {
+            let ms = due
+                .saturating_duration_since(std::time::Instant::now())
+                .as_millis();
+            ms.min(u16::MAX as u128) as u16
+        });
 
         // Poll for events (None = infinite timeout)
-        match poll(&mut poll_fds, None::<u16>) {
+        match poll(&mut poll_fds, timeout) {
             Ok(_) => {}
             Err(nix::errno::Errno::EINTR) => continue,
             Err(e) => return Err(e.into()),
         }
 
-        // Handle Wayland events
-        if poll_fds[0]
+        // Whether any share server fd is ready, and which connections hung up.
+        let share_ready = poll_fds[2..]
+            .iter()
+            .any(|fd| fd.revents().is_some_and(|r| !r.is_empty()));
+        let share_hung_up: Vec<canoe::share_picker::ShareRequestId> = poll_fds[2..]
+            .iter()
+            .zip(&share_ids)
+            .filter(|(fd, _)| {
+                fd.revents()
+                    .is_some_and(|r| r.intersects(PollFlags::POLLHUP | PollFlags::POLLERR))
+            })
+            .filter_map(|(_, id)| *id)
+            .collect();
+        let wayland_ready = poll_fds[0]
             .revents()
             .map(|r| r.contains(PollFlags::POLLIN))
-            .unwrap_or(false)
-        {
+            .unwrap_or(false);
+        let signal_ready = poll_fds[1]
+            .revents()
+            .map(|r| r.contains(PollFlags::POLLIN))
+            .unwrap_or(false);
+        drop(poll_fds);
+
+        if next_nudge.is_some_and(|due| due <= std::time::Instant::now()) {
+            let mut context = state.context.borrow_mut();
+            context.share_nudge_requested = true;
+            if let Some(ref rwm) = context.rwm {
+                rwm.manage_dirty();
+            }
+        }
+
+        // Handle Wayland events
+        if wayland_ready {
             event_queue.dispatch_pending(&mut state)?;
 
             // Read and dispatch new events
@@ -3735,12 +4207,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             event_queue.dispatch_pending(&mut state)?;
         }
 
+        // Handle screen-sharing requests
+        if share_ready {
+            let (requests, gone) = match state.share_server.as_mut() {
+                Some(server) => server.dispatch(&share_hung_up),
+                None => (Vec::new(), Vec::new()),
+            };
+            // The portal gave up on the question (the app cancelled, say).
+            let open_request = state
+                .context
+                .borrow()
+                .share_picker
+                .as_ref()
+                .map(|picker| picker.request);
+            if open_request.is_some_and(|id| gone.contains(&id)) {
+                finish_share_picker(&mut state, false, true);
+            }
+            for request in requests {
+                start_share_picker(&mut state, request, &qh);
+            }
+        }
+
         // Handle signals
-        if poll_fds[1]
-            .revents()
-            .map(|r| r.contains(PollFlags::POLLIN))
-            .unwrap_or(false)
-        {
+        if signal_ready {
             let mut buf = [0u8; 32];
             loop {
                 match nix::unistd::read(signal_read_fd.as_raw_fd(), &mut buf) {

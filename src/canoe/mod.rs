@@ -9,6 +9,7 @@ mod render;
 pub mod scale;
 mod seat;
 mod shadow;
+pub mod share_picker;
 mod shield;
 pub mod shmfile;
 pub mod titlebar;
@@ -37,4 +38,5 @@ pub enum LayerSurfaceKind {
     Desktop(OutputId),
     Menu,
     MenuShield(OutputId),
+    SharePicker(OutputId),
 }
