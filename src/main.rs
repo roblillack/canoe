@@ -918,17 +918,18 @@ fn ensure_desktop_surfaces(
     ensure_desktop_surface(state, output_id, qh);
 }
 
-/// Solid-fill surface on the background layer, *below* wallpaper daemons
-/// (river stacks same-layer surfaces in creation order and canoe starts
-/// first). Skipped entirely when the configured fill is fully transparent.
+/// Solid-fill surface on the background layer, *below* wallpaper clients:
+/// River stacks same-layer surfaces in creation order, and the startup
+/// commands are launched only after this exists.
+///
+/// The surface is kept even when the fill is fully transparent. Creating it
+/// later, say after a reload that makes the fill visible, would put it on
+/// top of a wallpaper that is already running.
 fn ensure_desktop_background(
     state: &mut AppState,
     output_id: canoe::OutputId,
     qh: &QueueHandle<AppState>,
 ) {
-    if state.context.borrow().config.ui.desktop_background & 0xFF == 0 {
-        return;
-    }
     let (Some(compositor), Some(layer_shell)) = (
         state.globals.compositor.as_ref(),
         state.globals.wlr_layer_shell.as_ref(),
@@ -1483,23 +1484,6 @@ fn finish_share_picker(state: &mut AppState, confirm: bool, restore_mode: bool) 
     }
 }
 
-/// Create/destroy fill surfaces to match the current config (the alpha
-/// channel may have changed on SIGHUP reload).
-fn sync_desktop_backgrounds(state: &mut AppState, qh: &QueueHandle<AppState>) {
-    let wanted = state.context.borrow().config.ui.desktop_background & 0xFF != 0;
-    let output_ids: Vec<canoe::OutputId> = state.context.borrow().outputs.keys().copied().collect();
-    for output_id in output_ids {
-        let output = { state.context.borrow().outputs.get(&output_id).cloned() };
-        let Some(output) = output else { continue };
-        let has = output.borrow().desktop_background.is_some();
-        if wanted && !has {
-            ensure_desktop_background(state, output_id, qh);
-        } else if !wanted && has {
-            output.borrow_mut().desktop_background = None; // Drop destroys it
-        }
-    }
-}
-
 impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
     fn event(
         state: &mut Self,
@@ -1693,7 +1677,6 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                     }
                 }
                 state.context.borrow().finish_manage();
-                sync_desktop_backgrounds(state, qh);
                 render_all_desktop_surfaces(state, qh);
             }
             Event::RenderStart => {

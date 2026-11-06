@@ -283,7 +283,7 @@ Canoe draws the desktop on two layer-shell surfaces per output:
   surfaces on the same layer in the order they are created, so a wallpaper
   client such as `swaybg` started after Canoe is drawn on top of it, and the
   fill shows through wherever the wallpaper is transparent. Set an alpha of
-  `00` (e.g. `"#00000000"`) to skip the fill surface entirely.
+  `00` (e.g. `"#00000000"`) to draw no fill at all.
 - Minimized-window icons are drawn on a transparent surface on the `bottom`
   layer, above any wallpaper.
 

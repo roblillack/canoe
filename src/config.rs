@@ -139,8 +139,7 @@ pub struct UiConfig {
     pub font_size: f32,
     /// Fill color for the desktop background surface (0xRRGGBBAA), drawn on
     /// the background layer *below* wallpaper daemons (swaybg/shaderbg) so it
-    /// shows through their transparent regions. When fully transparent
-    /// (alpha = 0) no background surface is created at all.
+    /// shows through their transparent regions. Alpha 0 draws no fill.
     pub desktop_background: u32,
     /// Whether right-clicking empty desktop opens the window menu. When
     /// `false`, the desktop icon surface only captures input on minimized-

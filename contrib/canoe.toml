@@ -66,7 +66,7 @@
 #shadows_color = "#00000033"
 #font_name = "sans"             # fontconfig pattern
 #font_size = 15.0
-#desktop_background = "#008080" # drawn below wallpaper clients; alpha 00 disables it
+#desktop_background = "#008080" # drawn below wallpaper clients; alpha 00 for none
 #desktop_menu = true            # false: only icons take clicks, the rest go to the wallpaper
 #icons_enabled = true           # show minimized windows as desktop icons
 # Desktop icon labels default to values derived from the settings above:
