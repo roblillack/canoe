@@ -208,9 +208,10 @@ impl DesktopSurface {
         self.buf_height = buf_h;
     }
 
+    /// Fill the whole buffer with `rgba` (0xRRGGBBAA, straight alpha).
     pub fn render(&mut self, rgba: u32) {
         if let Some(ref mut mmap) = self.mmap {
-            let argb = rgba_to_argb(rgba);
+            let argb = rgba_to_premultiplied_argb(rgba);
             let color_bytes = argb.to_ne_bytes();
             for pixel in mmap.as_mut().as_chunks_mut::<4>().0 {
                 *pixel = color_bytes;
@@ -587,6 +588,17 @@ fn rgba_to_argb(rgba: u32) -> u32 {
     (a << 24) | (r << 16) | (g << 8) | b
 }
 
+/// Convert straight-alpha 0xRRGGBBAA to the premultiplied ARGB that
+/// `wl_shm` buffers hold.
+fn rgba_to_premultiplied_argb(rgba: u32) -> u32 {
+    let a = rgba & 0xff;
+    let premul = |c: u32| (c * a + 127) / 255;
+    let r = premul((rgba >> 24) & 0xff);
+    let g = premul((rgba >> 16) & 0xff);
+    let b = premul((rgba >> 8) & 0xff);
+    (a << 24) | (r << 16) | (g << 8) | b
+}
+
 /// Load an icon for the given app_id.
 ///
 /// Priority: user override (`~/.config/canoe/icons/`) > XDG desktop icon > None (first-char).
@@ -827,5 +839,17 @@ impl Drop for DesktopSurface {
         self.fractional.destroy();
         self.layer_surface.destroy();
         self.surface.destroy();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rgba_to_premultiplied_argb;
+
+    #[test]
+    fn premultiplies_fill_color() {
+        assert_eq!(rgba_to_premultiplied_argb(0x008080FF), 0xFF008080);
+        assert_eq!(rgba_to_premultiplied_argb(0xFFFFFF80), 0x80808080);
+        assert_eq!(rgba_to_premultiplied_argb(0x12345600), 0x00000000);
     }
 }
