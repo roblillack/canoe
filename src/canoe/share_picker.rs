@@ -22,6 +22,23 @@ use super::{font, shmfile, OutputId, SeatId, WindowId};
 /// Identifies one pending `canoe --share-picker` request.
 pub type ShareRequestId = u64;
 
+/// How long after the user picked something a new request gets the same
+/// answer without asking again.
+///
+/// Chrome asks twice for every share: first for the preview in its own
+/// dialog, then, once the user confirms there, for the real share.
+/// xdg-desktop-portal-wlr can't carry a window choice from one request to the
+/// next, so without this the user would pick twice. A repeated answer is given
+/// only once, and only if the new request offers the same target.
+pub const REPEAT_CHOICE_WINDOW: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// What the user last picked, and when.
+#[derive(Debug, Clone, Copy)]
+pub struct LastChoice {
+    pub target: ShareTarget,
+    pub at: std::time::Instant,
+}
+
 /// When to nudge a window after it was picked for sharing.
 ///
 /// wlroots (0.20.2 and earlier) captures a window only when it changes. A

@@ -78,6 +78,10 @@ share, and Canoe is one: when an app wants to share, Canoe dims all screens and
 highlights the window or screen under the pointer. Click to share it, or use
 `Tab`/arrow keys and `Return`; `Esc` or a right click cancels.
 
+Chrome asks twice per share: once for the preview in its own dialog, and again
+when you confirm there. A request within 10 seconds of your pick that offers the
+same window or screen gets the same answer without asking, once.
+
 1. Install `xdg-desktop-portal-wlr` (e.g. `apt install xdg-desktop-portal-wlr`).
 
 2. Route screen sharing to it in `~/.config/xdg-desktop-portal/river-portals.conf`:

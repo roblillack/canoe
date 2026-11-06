@@ -1112,6 +1112,15 @@ fn start_share_picker(
         };
         (seat_id, context.share_candidates(&request.lines))
     };
+    // Chrome asks again right after the user picked something; give it the
+    // same answer.
+    let repeated = state.context.borrow_mut().repeat_share_choice(&candidates);
+    if let Some(candidate) = repeated {
+        if let Some(server) = state.share_server.as_mut() {
+            server.reply(request.id, Some(&candidate.reply));
+        }
+        return;
+    }
     if candidates.is_empty() {
         decline_share_request(state, request.id);
         return;
@@ -1288,13 +1297,11 @@ fn finish_share_picker(state: &mut AppState, confirm: bool, restore_mode: bool) 
         (picker, if confirm { choice } else { None })
     };
     let (picker, choice) = picker;
-    if choice.is_some() {
-        if let Some(canoe::share_picker::ShareTarget::Window(window)) = picker
-            .hovered
-            .and_then(|idx| picker.candidates.get(idx))
-            .map(|c| c.target)
-        {
-            state.context.borrow_mut().schedule_share_nudge(window);
+    {
+        let mut context = state.context.borrow_mut();
+        match picker.hovered.and_then(|idx| picker.candidates.get(idx)) {
+            Some(candidate) if choice.is_some() => context.record_share_choice(candidate.target),
+            _ => context.share_last_choice = None,
         }
     }
     if let Some(server) = state.share_server.as_mut() {

@@ -91,6 +91,9 @@ pub struct Context {
     pub share_nudges: Vec<super::share_picker::Nudge>,
     /// A manage sequence was requested to run due nudges
     pub share_nudge_requested: bool,
+    /// The last thing picked for sharing, see
+    /// [`super::share_picker::REPEAT_CHOICE_WINDOW`]
+    pub share_last_choice: Option<super::share_picker::LastChoice>,
 }
 
 impl Context {
@@ -143,6 +146,7 @@ impl Context {
             share_picker: None,
             share_nudges: Vec::new(),
             share_nudge_requested: false,
+            share_last_choice: None,
         }
     }
 
@@ -231,6 +235,7 @@ impl Context {
             picker.remove_target(super::share_picker::ShareTarget::Window(window_id));
         }
         self.share_nudges.retain(|n| n.window != window_id);
+        self.forget_share_choice(super::share_picker::ShareTarget::Window(window_id));
     }
 
     /// Create a new output and add to context
@@ -268,6 +273,7 @@ impl Context {
             picker.remove_target(super::share_picker::ShareTarget::Output(output_id));
             picker.surfaces.retain(|s| s.output_id != output_id);
         }
+        self.forget_share_choice(super::share_picker::ShareTarget::Output(output_id));
     }
 
     /// Create a new seat and add to context
@@ -1767,6 +1773,44 @@ impl Context {
 
         if let Some(output_id) = self.current_output {
             self.arrange_output(output_id);
+        }
+    }
+
+    /// Remember that the user picked `target` for sharing, and make it
+    /// repaint if it's a window.
+    pub fn record_share_choice(&mut self, target: super::share_picker::ShareTarget) {
+        self.share_last_choice = Some(super::share_picker::LastChoice {
+            target,
+            at: std::time::Instant::now(),
+        });
+        if let super::share_picker::ShareTarget::Window(window) = target {
+            self.schedule_share_nudge(window);
+        }
+    }
+
+    /// The candidate to answer a new request with without asking: the one the
+    /// user picked moments ago, if it's offered again. See
+    /// [`super::share_picker::REPEAT_CHOICE_WINDOW`]. Each pick is repeated at
+    /// most once.
+    pub fn repeat_share_choice(
+        &mut self,
+        candidates: &[super::share_picker::ShareCandidate],
+    ) -> Option<super::share_picker::ShareCandidate> {
+        let last = self.share_last_choice.take()?;
+        if last.at.elapsed() > super::share_picker::REPEAT_CHOICE_WINDOW {
+            return None;
+        }
+        let candidate = candidates.iter().find(|c| c.target == last.target)?.clone();
+        if let super::share_picker::ShareTarget::Window(window) = candidate.target {
+            self.schedule_share_nudge(window);
+        }
+        Some(candidate)
+    }
+
+    /// Don't repeat a choice of `target`, which went away.
+    fn forget_share_choice(&mut self, target: super::share_picker::ShareTarget) {
+        if self.share_last_choice.is_some_and(|c| c.target == target) {
+            self.share_last_choice = None;
         }
     }
 
