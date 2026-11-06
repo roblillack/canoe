@@ -170,8 +170,8 @@ impl DesktopSurface {
         if let Some(ref mut mmap) = self.mmap {
             let argb = rgba_to_argb(rgba);
             let color_bytes = argb.to_ne_bytes();
-            for chunk in mmap.as_mut().chunks_exact_mut(4) {
-                chunk.copy_from_slice(&color_bytes);
+            for pixel in mmap.as_mut().as_chunks_mut::<4>().0 {
+                *pixel = color_bytes;
             }
         }
     }
