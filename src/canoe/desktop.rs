@@ -438,8 +438,16 @@ impl DesktopSurface {
         if full {
             region.add(0, 0, self.width, self.height);
         } else {
+            // Layouts are in buffer pixels; the input region is in
+            // surface-local logical pixels. Round outwards so the region
+            // covers every device pixel of the cell.
+            let device = self.scale.device();
             for layout in &self.icons {
-                region.add(layout.x, layout.y, ICON_CELL_WIDTH, ICON_CELL_HEIGHT);
+                let x0 = (layout.x as f64 / device).floor() as i32;
+                let y0 = (layout.y as f64 / device).floor() as i32;
+                let x1 = ((layout.x + layout.width) as f64 / device).ceil() as i32;
+                let y1 = ((layout.y + layout.height) as f64 / device).ceil() as i32;
+                region.add(x0, y0, x1 - x0, y1 - y0);
             }
         }
         self.surface.set_input_region(Some(&region));
