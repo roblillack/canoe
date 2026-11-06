@@ -3,7 +3,7 @@
 use fontconfig_sys as fc;
 use freetype::freetype as ft;
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::path::{Path, PathBuf};
@@ -11,6 +11,11 @@ use std::ptr;
 use std::sync::OnceLock;
 
 const DEFAULT_FONT_QUERY: &str = "sans";
+
+/// Upper bound for the number of cached font queries. In practice only a
+/// couple are in use (titlebar font, icon label font); the limit just keeps
+/// stale entries from piling up across config reloads.
+const MAX_FONT_SETS: usize = 8;
 
 struct FontMatch {
     path: PathBuf,
@@ -140,7 +145,7 @@ impl FontSet {
 
 struct FontCache {
     library: ft::FT_Library,
-    current: Option<FontSet>,
+    sets: HashMap<String, FontSet>,
 }
 
 impl FontCache {
@@ -152,21 +157,21 @@ impl FontCache {
         }
         Some(Self {
             library,
-            current: None,
+            sets: HashMap::new(),
         })
     }
 
     fn font_set(&mut self, query: Option<&str>, size_px: u32) -> Option<&mut FontSet> {
         let query = query.unwrap_or(DEFAULT_FONT_QUERY);
         let size_px = size_px.max(1);
-        let needs_reload = match &self.current {
-            Some(set) => set.query != query,
-            None => true,
-        };
-        if needs_reload {
-            self.current = Some(FontSet::load(self.library, query, size_px)?);
+        if !self.sets.contains_key(query) {
+            let set = FontSet::load(self.library, query, size_px)?;
+            if self.sets.len() >= MAX_FONT_SETS {
+                self.sets.clear();
+            }
+            self.sets.insert(query.to_string(), set);
         }
-        let set = self.current.as_mut()?;
+        let set = self.sets.get_mut(query)?;
         set.set_size(size_px).then_some(set)
     }
 }
@@ -174,7 +179,7 @@ impl FontCache {
 impl Drop for FontCache {
     fn drop(&mut self) {
         // All faces must be released before the library.
-        self.current = None;
+        self.sets.clear();
         if !self.library.is_null() {
             unsafe {
                 ft::FT_Done_FreeType(self.library);
