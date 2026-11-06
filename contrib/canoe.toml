@@ -1,0 +1,95 @@
+# Sample configuration for Canoe.
+#
+# Copy this file to ~/.config/canoe/canoe.toml and uncomment the settings you
+# want to change. Every setting is optional; a commented-out setting shows the
+# built-in default. Tables that are empty by default ([env], [hotkeys] and
+# [[rules]]) show examples instead.
+#
+# After editing, send SIGHUP to reload (e.g. `pkill -HUP canoe`). If the file
+# cannot be parsed, Canoe ignores all of it and uses the built-in defaults.
+#
+# See the Configuration section of the README for details.
+
+# Modifier for the built-in shortcuts: "super" or "alt".
+#main_modifier = "super"
+
+# Programs Canoe launches. Each is a program name or an argv array. A plain
+# string is not run through a shell, so pass arguments as an array, e.g.
+# lock_cmd = ["swaylock", "-f", "-c", "000000"].
+#launcher_cmd = "fuzzel"
+#terminal_cmd = "foot"
+#lock_cmd = "swaylock"
+
+# Programs launched once when Canoe starts (not on reload). Empty by default.
+#startup_cmds = ["kanshi", "mako", ["swaybg", "-i", "/home/me/bg.png"]]
+
+# Export WAYLAND_DISPLAY and XDG_CURRENT_DESKTOP to the systemd user manager
+# and D-Bus activation environment on startup (needed for screen sharing).
+#update_activation_environment = true
+
+# Environment variables for every program Canoe launches. Values must be
+# strings: MOZ_ENABLE_WAYLAND = 1 (without quotes) is an error.
+[env]
+# Prefer Wayland, falling back to X11 if the Qt Wayland plugin is missing.
+#QT_QPA_PLATFORM = "wayland;xcb"
+# Let Electron apps run natively on Wayland.
+#ELECTRON_OZONE_PLATFORM_HINT = "auto"
+# Fix blank windows in Java apps running under Xwayland.
+#_JAVA_AWT_WM_NONREPARENTING = "1"
+
+# Key chords that spawn commands. A string value is split on whitespace; use
+# an array if an argument contains spaces. A chord that matches a built-in
+# shortcut overrides it.
+[hotkeys]
+#"Super+I" = "control-panel"
+#"Super+E" = ["sh", "-c", "notify-send 'hi there' && foot"]
+
+# Colors accept #RGB, #RRGGBB or #RRGGBBAA. Sizes are in logical pixels.
+[ui]
+#border_width = 5
+#border_active = { outer = "#000000", mid = "#C0C0C0", inner = "#000000" }
+#border_inactive = { outer = "#000000", mid = "#C0C0C0", inner = "#000000" }
+#titlebar_text_active = "#FFFFFF"
+#titlebar_text_inactive = "#000000"
+#titlebar_bg_active = "#000080"
+#titlebar_bg_inactive = "#FFFFFF"
+#menu_bg = "#C0C0C0"
+#menu_text = "#000000"
+#menu_highlight_bg = "#000080"
+#menu_highlight_text = "#FFFFFF"
+#button_bg = "#C0C0C0"
+#button_highlight = "#FFFFFF"
+#button_shadow = "#808080"
+#shadows_enabled = true         # when false, menus use a flat L-shaped shadow
+#shadows_active_size = 25       # focused window and menus
+#shadows_inactive_size = 12     # all other windows
+#shadows_color = "#00000033"
+#font_name = "sans"             # fontconfig pattern
+#font_size = 15.0
+#desktop_background = "#008080"
+#icons_enabled = true           # show minimized windows as desktop icons
+# Desktop icon labels default to values derived from the settings above:
+#icons_font_name = "sans"       # default: font_name, at regular weight
+#icons_font_size = 12.0         # default: font_size * 0.8
+#icons_text = "#000000"         # default: menu_text
+#icons_highlight_bg = "#000080" # default: menu_highlight_bg
+#icons_highlight_text = "#FFFFFF" # default: menu_highlight_text
+
+# Window rules. There are none by default. A window matches a rule if its app
+# ID matches any of match_app_id, match_app_id_prefix or app_id_regex, and it
+# has all properties listed in match_props:
+#   toplevel  - the window has no parent
+#   csd_only  - the client does not support server-side decorations
+# Rules can also match on title (exact) or title_regex.
+#
+# force_ssd = true makes Canoe draw its own decorations even for windows that
+# ask to draw theirs.
+#
+# swallow_top hides the given number of pixels at the top of the window, e.g.
+# to remove an app's own title bar. The right value depends on the app, its
+# theme and font, so check it for each app before using it.
+#[[rules]]
+#match_app_id = ["firefox", "firefox-esr"]
+#match_props = "toplevel"
+#force_ssd = true
+#swallow_top = 48
