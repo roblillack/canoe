@@ -17,20 +17,130 @@ struct FontMatch {
     index: i32,
 }
 
+/// A FreeType face set to a specific pixel size. Must be dropped before the
+/// `FT_Library` it was created from.
 struct LoadedFont {
-    query: String,
     face: ft::FT_Face,
     size_px: u32,
 }
 
-struct FontCache {
-    library: ft::FT_Library,
-    loaded: Option<LoadedFont>,
+impl LoadedFont {
+    fn open(library: ft::FT_Library, matched: FontMatch, size_px: u32) -> Option<Self> {
+        let c_path = CString::new(matched.path.to_string_lossy().as_bytes()).ok()?;
+        let mut face: ft::FT_Face = ptr::null_mut();
+        let ok = unsafe {
+            freetype::succeeded(ft::FT_New_Face(
+                library,
+                c_path.as_ptr(),
+                matched.index as ft::FT_Long,
+                &mut face,
+            ))
+        };
+        if !ok || face.is_null() {
+            return None;
+        }
+        let mut font = LoadedFont { face, size_px: 0 };
+        font.set_size(size_px).then_some(font)
+    }
+
+    fn set_size(&mut self, size_px: u32) -> bool {
+        if self.size_px == size_px {
+            return true;
+        }
+        let ok = unsafe { freetype::succeeded(ft::FT_Set_Pixel_Sizes(self.face, 0, size_px)) };
+        if ok {
+            self.size_px = size_px;
+        }
+        ok
+    }
+
+    fn has_glyph(&self, ch: char) -> bool {
+        unsafe { ft::FT_Get_Char_Index(self.face, ch as ft::FT_ULong) != 0 }
+    }
+}
+
+impl Drop for LoadedFont {
+    fn drop(&mut self) {
+        unsafe {
+            ft::FT_Done_Face(self.face);
+        }
+    }
+}
+
+/// The primary font for a fontconfig query plus the fallback fonts that were
+/// discovered for glyphs it lacks.
+struct FontSet {
+    query: String,
+    primary: LoadedFont,
     fallbacks: Vec<LoadedFont>,
     /// Characters for which no fallback font could be found. Remembered so
     /// that unrenderable characters don't trigger a fontconfig match on
     /// every draw; they are rendered with the primary face instead.
     missing: HashSet<char>,
+}
+
+impl FontSet {
+    fn load(library: ft::FT_Library, query: &str, size_px: u32) -> Option<Self> {
+        let primary = LoadedFont::open(library, match_font(query, None)?, size_px)?;
+        Some(Self {
+            query: query.to_string(),
+            primary,
+            fallbacks: Vec::new(),
+            missing: HashSet::new(),
+        })
+    }
+
+    fn set_size(&mut self, size_px: u32) -> bool {
+        if !self.primary.set_size(size_px) {
+            return false;
+        }
+        // Fallback faces that cannot be resized (e.g. bitmap-only fonts
+        // without a matching strike) are dropped and will be looked up again
+        // on demand.
+        self.fallbacks
+            .retain_mut(|fallback| fallback.set_size(size_px));
+        true
+    }
+
+    fn face_for_char(&mut self, library: ft::FT_Library, ch: char) -> ft::FT_Face {
+        if self.primary.has_glyph(ch) {
+            return self.primary.face;
+        }
+        if let Some(fallback) = self.fallbacks.iter().find(|f| f.has_glyph(ch)) {
+            return fallback.face;
+        }
+
+        // Characters no font can provide are drawn with the primary face,
+        // which renders its .notdef glyph ("tofu") so they remain visible.
+        // Control characters never go through fallback matching: fontconfig
+        // would happily pick some random font that maps them.
+        if ch.is_control() || self.missing.contains(&ch) {
+            return self.primary.face;
+        }
+        match self.load_fallback(library, ch) {
+            Some(face) => face,
+            None => {
+                self.missing.insert(ch);
+                self.primary.face
+            }
+        }
+    }
+
+    fn load_fallback(&mut self, library: ft::FT_Library, ch: char) -> Option<ft::FT_Face> {
+        let matched = match_font(&self.query, Some(ch))?;
+        let fallback = LoadedFont::open(library, matched, self.primary.size_px)?;
+        if !fallback.has_glyph(ch) {
+            return None;
+        }
+        let face = fallback.face;
+        self.fallbacks.push(fallback);
+        Some(face)
+    }
+}
+
+struct FontCache {
+    library: ft::FT_Library,
+    current: Option<FontSet>,
 }
 
 impl FontCache {
@@ -42,162 +152,29 @@ impl FontCache {
         }
         Some(Self {
             library,
-            loaded: None,
-            fallbacks: Vec::new(),
-            missing: HashSet::new(),
+            current: None,
         })
     }
 
-    fn load_primary(&mut self, query: Option<&str>, size_px: u32) -> Option<()> {
+    fn font_set(&mut self, query: Option<&str>, size_px: u32) -> Option<&mut FontSet> {
         let query = query.unwrap_or(DEFAULT_FONT_QUERY);
         let size_px = size_px.max(1);
-        let needs_reload = match &self.loaded {
-            Some(loaded) => loaded.query != query,
+        let needs_reload = match &self.current {
+            Some(set) => set.query != query,
             None => true,
         };
-
         if needs_reload {
-            let matched = match_font(query, None)?;
-            let loaded = self.load_font(matched, query, size_px)?;
-            self.clear_fallbacks();
-            self.clear_loaded();
-            self.missing.clear();
-            self.loaded = Some(loaded);
-        } else {
-            let loaded = self.loaded.as_ref()?;
-            if loaded.size_px != size_px {
-                if unsafe { !freetype::succeeded(ft::FT_Set_Pixel_Sizes(loaded.face, 0, size_px)) }
-                {
-                    return None;
-                }
-                self.loaded.as_mut()?.size_px = size_px;
-                self.resize_fallbacks(size_px);
-            }
+            self.current = Some(FontSet::load(self.library, query, size_px)?);
         }
-
-        Some(())
-    }
-
-    /// Bring all fallback faces to `size_px`. Faces that cannot be resized
-    /// (e.g. bitmap-only fonts without a matching strike) are dropped and
-    /// will be looked up again on demand.
-    fn resize_fallbacks(&mut self, size_px: u32) {
-        self.fallbacks.retain_mut(|fallback| {
-            if fallback.size_px == size_px {
-                return true;
-            }
-            let ok =
-                unsafe { freetype::succeeded(ft::FT_Set_Pixel_Sizes(fallback.face, 0, size_px)) };
-            if ok {
-                fallback.size_px = size_px;
-            } else {
-                unsafe {
-                    ft::FT_Done_Face(fallback.face);
-                }
-            }
-            ok
-        });
-    }
-
-    fn load_font(&self, matched: FontMatch, query: &str, size_px: u32) -> Option<LoadedFont> {
-        let c_path = CString::new(matched.path.to_string_lossy().as_bytes()).ok()?;
-        let mut face: ft::FT_Face = ptr::null_mut();
-        let ok = unsafe {
-            freetype::succeeded(ft::FT_New_Face(
-                self.library,
-                c_path.as_ptr(),
-                matched.index as ft::FT_Long,
-                &mut face,
-            ))
-        };
-        if !ok || face.is_null() {
-            return None;
-        }
-        let ok = unsafe { freetype::succeeded(ft::FT_Set_Pixel_Sizes(face, 0, size_px)) };
-        if !ok {
-            unsafe {
-                ft::FT_Done_Face(face);
-            }
-            return None;
-        }
-        Some(LoadedFont {
-            query: query.to_string(),
-            face,
-            size_px,
-        })
-    }
-
-    fn clear_loaded(&mut self) {
-        if let Some(loaded) = self.loaded.take() {
-            unsafe {
-                ft::FT_Done_Face(loaded.face);
-            }
-        }
-    }
-
-    fn clear_fallbacks(&mut self) {
-        for fallback in self.fallbacks.drain(..) {
-            unsafe {
-                ft::FT_Done_Face(fallback.face);
-            }
-        }
-    }
-
-    fn face_for_char(&mut self, ch: char) -> Option<ft::FT_Face> {
-        let has_glyph = |face: ft::FT_Face| {
-            !face.is_null() && unsafe { ft::FT_Get_Char_Index(face, ch as ft::FT_ULong) != 0 }
-        };
-        let (primary, query, size_px) = {
-            let loaded = self.loaded.as_ref()?;
-            (loaded.face, loaded.query.clone(), loaded.size_px)
-        };
-        if has_glyph(primary) {
-            return Some(primary);
-        }
-
-        for fallback in &self.fallbacks {
-            if has_glyph(fallback.face) {
-                return Some(fallback.face);
-            }
-        }
-
-        // Characters no font can provide are drawn with the primary face,
-        // which renders its .notdef glyph ("tofu") so they remain visible.
-        // Control characters never go through fallback matching: fontconfig
-        // would happily pick some random font that maps them.
-        if ch.is_control() || self.missing.contains(&ch) {
-            return Some(primary);
-        }
-        match self.load_fallback(ch, &query, size_px) {
-            Some(face) => Some(face),
-            None => {
-                self.missing.insert(ch);
-                Some(primary)
-            }
-        }
-    }
-
-    fn load_fallback(&mut self, ch: char, query: &str, size_px: u32) -> Option<ft::FT_Face> {
-        let matched = match_font(query, Some(ch))?;
-        let fallback = self.load_font(matched, query, size_px)?;
-        let has_glyph = unsafe { ft::FT_Get_Char_Index(fallback.face, ch as ft::FT_ULong) != 0 };
-        if !has_glyph {
-            unsafe {
-                ft::FT_Done_Face(fallback.face);
-            }
-            return None;
-        }
-
-        let face = fallback.face;
-        self.fallbacks.push(fallback);
-        Some(face)
+        let set = self.current.as_mut()?;
+        set.set_size(size_px).then_some(set)
     }
 }
 
 impl Drop for FontCache {
     fn drop(&mut self) {
-        self.clear_fallbacks();
-        self.clear_loaded();
+        // All faces must be released before the library.
+        self.current = None;
         if !self.library.is_null() {
             unsafe {
                 ft::FT_Done_FreeType(self.library);
@@ -218,20 +195,22 @@ pub fn with_face<R>(
     FONT_CACHE.with(|cache| {
         let mut cache = cache.borrow_mut();
         let cache = cache.as_mut()?;
-        cache.load_primary(query, size_px)?;
-        Some(f(&mut FaceHandle { cache }))
+        let library = cache.library;
+        let set = cache.font_set(query, size_px)?;
+        Some(f(&mut FaceHandle { library, set }))
     })
 }
 
 /// The primary face for one font query and size, falling back to other
 /// fonts for glyphs it doesn't provide.
 pub struct FaceHandle<'a> {
-    cache: &'a mut FontCache,
+    library: ft::FT_Library,
+    set: &'a mut FontSet,
 }
 
 impl FaceHandle<'_> {
     pub fn line_metrics(&self) -> Option<LineMetrics> {
-        let face = self.cache.loaded.as_ref()?.face;
+        let face = self.set.primary.face;
         unsafe {
             let size = (*face).size;
             if size.is_null() {
@@ -246,7 +225,7 @@ impl FaceHandle<'_> {
     }
 
     pub fn load_char(&mut self, ch: char) -> Option<GlyphBitmap<'_>> {
-        let face = self.cache.face_for_char(ch)?;
+        let face = self.set.face_for_char(self.library, ch);
         let ok = unsafe {
             freetype::succeeded(ft::FT_Load_Char(
                 face,
