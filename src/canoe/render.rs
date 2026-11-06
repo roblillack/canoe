@@ -238,6 +238,8 @@ impl<'a> Renderer<'a> {
     }
 }
 
+/// Blend a straight-alpha ARGB color, at `alpha` coverage, over a
+/// premultiplied ARGB destination pixel.
 fn blend_pixel(bg: &mut [u8], fg_argb: u32, alpha: u8) {
     let fg_a = ((fg_argb >> 24) & 0xff) as u16;
     let fg_r = ((fg_argb >> 16) & 0xff) as u16;
@@ -245,35 +247,72 @@ fn blend_pixel(bg: &mut [u8], fg_argb: u32, alpha: u8) {
     let fg_b = (fg_argb & 0xff) as u16;
 
     let a = (alpha as u16 * fg_a) / 255;
-    let inv_a = 255 - a;
-
-    let bg_val = u32::from_ne_bytes([bg[0], bg[1], bg[2], bg[3]]);
-    let bg_r = ((bg_val >> 16) & 0xff) as u16;
-    let bg_g = ((bg_val >> 8) & 0xff) as u16;
-    let bg_b = (bg_val & 0xff) as u16;
-
-    let out_r = ((fg_r * a + bg_r * inv_a) / 255) as u8;
-    let out_g = ((fg_g * a + bg_g * inv_a) / 255) as u8;
-    let out_b = ((fg_b * a + bg_b * inv_a) / 255) as u8;
-
-    let out_argb = 0xFF000000 | ((out_r as u32) << 16) | ((out_g as u32) << 8) | (out_b as u32);
-    bg.copy_from_slice(&out_argb.to_ne_bytes());
+    blend_pixel_premul(
+        bg,
+        ((fg_r * a) / 255) as u8,
+        ((fg_g * a) / 255) as u8,
+        ((fg_b * a) / 255) as u8,
+        a as u8,
+    );
 }
 
-/// Alpha blend a premultiplied RGBA source over an ARGB destination.
+/// Composite a premultiplied RGBA source over a premultiplied ARGB
+/// destination ("over" operator). The destination's alpha is kept, so
+/// drawing onto a transparent buffer leaves partially covered pixels
+/// partially transparent instead of darkening them to opaque.
 fn blend_pixel_premul(bg: &mut [u8], src_r: u8, src_g: u8, src_b: u8, src_a: u8) {
     let inv_a = 255u16.saturating_sub(src_a as u16);
 
     // Read background (native endian ARGB)
     let bg_val = u32::from_ne_bytes([bg[0], bg[1], bg[2], bg[3]]);
+    let bg_a = ((bg_val >> 24) & 0xff) as u16;
     let bg_r = ((bg_val >> 16) & 0xff) as u16;
     let bg_g = ((bg_val >> 8) & 0xff) as u16;
     let bg_b = (bg_val & 0xff) as u16;
 
-    let out_r = (src_r as u16 + (bg_r * inv_a) / 255) as u8;
-    let out_g = (src_g as u16 + (bg_g * inv_a) / 255) as u8;
-    let out_b = (src_b as u16 + (bg_b * inv_a) / 255) as u8;
-
-    let out_argb = 0xFF000000 | ((out_r as u32) << 16) | ((out_g as u32) << 8) | (out_b as u32);
+    let over = |src: u8, dst: u16| (src as u16 + (dst * inv_a) / 255).min(255) as u32;
+    let out_argb = (over(src_a, bg_a) << 24)
+        | (over(src_r, bg_r) << 16)
+        | (over(src_g, bg_g) << 8)
+        | over(src_b, bg_b);
     bg.copy_from_slice(&out_argb.to_ne_bytes());
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn px(argb: u32) -> [u8; 4] {
+        argb.to_ne_bytes()
+    }
+
+    fn val(p: [u8; 4]) -> u32 {
+        u32::from_ne_bytes(p)
+    }
+
+    #[test]
+    fn blend_over_opaque_stays_opaque() {
+        let mut p = px(0xFF000000);
+        blend_pixel(&mut p, 0xFFFFFFFF, 128);
+        assert_eq!(val(p), 0xFF808080);
+    }
+
+    #[test]
+    fn blend_over_transparent_keeps_partial_coverage_transparent() {
+        let mut p = px(0x00000000);
+        blend_pixel(&mut p, 0xFFFFFFFF, 128);
+        // Premultiplied half-covered white, not opaque grey.
+        assert_eq!(val(p), 0x80808080);
+
+        let mut p = px(0x00000000);
+        blend_pixel(&mut p, 0xFFFFFFFF, 255);
+        assert_eq!(val(p), 0xFFFFFFFF);
+    }
+
+    #[test]
+    fn premul_blend_over_transparent_copies_source() {
+        let mut p = px(0x00000000);
+        blend_pixel_premul(&mut p, 0x20, 0x40, 0x60, 0x80);
+        assert_eq!(val(p), 0x80204060);
+    }
 }
