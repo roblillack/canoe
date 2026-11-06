@@ -225,6 +225,8 @@ fn render_window_menu(state: &mut AppState, qh: &QueueHandle<AppState>) {
     }
 }
 
+/// For `AltTab` menus, the focused window is preselected and then moved by
+/// `initial_step`, if given. Other modes ignore `initial_step`.
 #[allow(clippy::too_many_arguments)]
 fn open_window_menu_with_items(
     state: &mut AppState,
@@ -234,6 +236,7 @@ fn open_window_menu_with_items(
     mode: canoe::WindowMenuMode,
     items: Vec<canoe::MenuItem>,
     header_title: Option<String>,
+    initial_step: Option<binding::Direction>,
     qh: &QueueHandle<AppState>,
 ) {
     let (Some(compositor), Some(layer_shell)) = (
@@ -293,7 +296,9 @@ fn open_window_menu_with_items(
     let mut initial_preview = None;
     if mode == canoe::WindowMenuMode::AltTab {
         menu.select_window(focused_window);
-        menu.select_next();
+        if let Some(direction) = initial_step {
+            menu.select_step(direction);
+        }
         initial_preview = menu
             .hovered
             .and_then(|idx| menu.items.get(idx).map(|item| item.window_id));
@@ -353,6 +358,7 @@ fn open_window_menu(
     centered: bool,
     mode: canoe::WindowMenuMode,
     header_title: Option<String>,
+    initial_step: Option<binding::Direction>,
     qh: &QueueHandle<AppState>,
 ) {
     let items = {
@@ -367,6 +373,7 @@ fn open_window_menu(
         mode,
         items,
         header_title,
+        initial_step,
         qh,
     );
 }
@@ -691,7 +698,11 @@ fn menu_matches_app_id(context: &canoe::Context, menu: &canoe::WindowMenu, app_i
     })
 }
 
-fn handle_window_menu_cycle(state: &mut AppState, qh: &QueueHandle<AppState>) {
+fn handle_window_menu_cycle(
+    state: &mut AppState,
+    direction: binding::Direction,
+    qh: &QueueHandle<AppState>,
+) {
     let mut should_render = false;
     let mut open_new = false;
     let mut ensure_shield = None;
@@ -702,7 +713,7 @@ fn handle_window_menu_cycle(state: &mut AppState, qh: &QueueHandle<AppState>) {
         let is_alt_tab = context.window_menu_mode == Some(canoe::WindowMenuMode::AltTab);
         if let Some(menu) = context.window_menu.as_mut() {
             if is_alt_tab {
-                if menu.select_next() {
+                if menu.select_step(direction) {
                     should_render = true;
                     preview_window = menu
                         .hovered
@@ -770,6 +781,7 @@ fn handle_window_menu_cycle(state: &mut AppState, qh: &QueueHandle<AppState>) {
         true,
         canoe::WindowMenuMode::AltTab,
         Some("Windows".to_string()),
+        Some(direction),
         qh,
     );
     ensure_window_menu_shield(state, output_id, qh);
@@ -878,6 +890,7 @@ fn handle_window_menu_cycle_app(state: &mut AppState, qh: &QueueHandle<AppState>
         canoe::WindowMenuMode::AltTab,
         items,
         Some(app_id),
+        Some(binding::Direction::Forward),
         qh,
     );
     ensure_window_menu_shield(state, output_id, qh);
@@ -2706,7 +2719,7 @@ impl Dispatch<RiverXkbBindingV1, (canoe::SeatId, usize)> for AppState {
                 if alt_tab_active
                     && !matches!(
                         action,
-                        binding::Action::WindowMenuCycle
+                        binding::Action::WindowMenuCycle { .. }
                             | binding::Action::WindowMenuCycleApp
                             | binding::Action::WindowMenuCancel
                     )
@@ -2714,8 +2727,8 @@ impl Dispatch<RiverXkbBindingV1, (canoe::SeatId, usize)> for AppState {
                     return;
                 }
                 match action {
-                    binding::Action::WindowMenuCycle => {
-                        handle_window_menu_cycle(state, qh);
+                    binding::Action::WindowMenuCycle { direction } => {
+                        handle_window_menu_cycle(state, direction, qh);
                     }
                     binding::Action::WindowMenuCycleApp => {
                         handle_window_menu_cycle_app(state, qh);
@@ -3397,6 +3410,7 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                                                 false,
                                                 canoe::WindowMenuMode::Pointer,
                                                 Some("Windows".to_string()),
+                                                None,
                                                 _qh,
                                             );
                                             update_menu_hover_from_global(state, *seat_id, _qh);

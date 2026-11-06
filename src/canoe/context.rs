@@ -672,13 +672,9 @@ impl Context {
                     self.activate_menu_hovered();
                 }
             }
-            Action::WindowMenuCycle | Action::WindowMenuCycleApp => {
-                if self.window_menu_mode == Some(WindowMenuMode::AltTab) {
-                    if let Some(menu) = self.window_menu.as_mut() {
-                        menu.select_next();
-                    }
-                }
-            }
+            // Cycling opens, re-renders and previews the switcher, all of which
+            // happens in the dispatch layer as soon as the key is pressed.
+            Action::WindowMenuCycle { .. } | Action::WindowMenuCycleApp => {}
             Action::WindowMenuCommit => {
                 if self.window_menu_mode == Some(WindowMenuMode::AltTab) {
                     if self

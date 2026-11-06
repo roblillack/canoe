@@ -1,5 +1,6 @@
 //! Window menu rendering and interaction.
 
+use crate::binding::Direction;
 use crate::config::UiConfig;
 use memmap2::MmapMut;
 use std::fs::File;
@@ -280,15 +281,14 @@ impl WindowMenu {
     }
 
     pub fn select_next(&mut self) -> bool {
-        if self.items.is_empty() {
-            return false;
-        }
-        let next = match self.hovered {
-            Some(idx) => (idx + 1) % self.items.len(),
-            None => 0,
-        };
-        if self.hovered != Some(next) {
-            self.hovered = Some(next);
+        self.select_step(Direction::Forward)
+    }
+
+    /// Move the selection one step in `direction`, wrapping around.
+    pub fn select_step(&mut self, direction: Direction) -> bool {
+        let next = step_index(self.hovered, self.items.len(), direction);
+        if next.is_some() && self.hovered != next {
+            self.hovered = next;
             return true;
         }
         false
@@ -502,6 +502,21 @@ impl Drop for WindowMenu {
 }
 
 /// Height of a row, in logical pixels.
+/// Index one step from `current` in `direction` among `len` items, wrapping
+/// around. With nothing selected, forward starts at the first item and reverse
+/// at the last.
+fn step_index(current: Option<usize>, len: usize, direction: Direction) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    Some(match (direction, current) {
+        (Direction::Forward, Some(idx)) => (idx + 1) % len,
+        (Direction::Forward, None) => 0,
+        (Direction::Reverse, Some(0) | None) => len - 1,
+        (Direction::Reverse, Some(idx)) => idx - 1,
+    })
+}
+
 fn item_height(theme: &MenuTheme) -> i32 {
     let font_h = theme.font_size.ceil() as i32;
     (font_h + ITEM_PADDING_Y * 2).max(1)
@@ -860,5 +875,40 @@ fn draw_diamond(renderer: &mut Renderer, x: i32, y: i32, size: i32, color_argb: 
         let span = size - dist * 2;
         let draw_x = x + dist;
         renderer.fill_rect(draw_x, y + row, span.max(1), 1, color_argb);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn step_forward_advances_and_wraps() {
+        assert_eq!(step_index(Some(0), 3, Direction::Forward), Some(1));
+        assert_eq!(step_index(Some(2), 3, Direction::Forward), Some(0));
+    }
+
+    #[test]
+    fn step_reverse_retreats_and_wraps() {
+        assert_eq!(step_index(Some(2), 3, Direction::Reverse), Some(1));
+        assert_eq!(step_index(Some(0), 3, Direction::Reverse), Some(2));
+    }
+
+    #[test]
+    fn step_without_selection_starts_at_the_matching_end() {
+        assert_eq!(step_index(None, 3, Direction::Forward), Some(0));
+        assert_eq!(step_index(None, 3, Direction::Reverse), Some(2));
+    }
+
+    #[test]
+    fn step_with_single_item_stays_put() {
+        assert_eq!(step_index(Some(0), 1, Direction::Forward), Some(0));
+        assert_eq!(step_index(Some(0), 1, Direction::Reverse), Some(0));
+    }
+
+    #[test]
+    fn step_without_items_selects_nothing() {
+        assert_eq!(step_index(None, 0, Direction::Forward), None);
+        assert_eq!(step_index(None, 0, Direction::Reverse), None);
     }
 }
