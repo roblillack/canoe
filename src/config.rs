@@ -696,52 +696,59 @@ pub fn load_config(skip_config: bool) -> Config {
     if let Some(path) = config_path() {
         if let Ok(contents) = std::fs::read_to_string(&path) {
             if let Ok(file_config) = toml::from_str::<FileConfig>(&contents) {
-                if let Some(env) = file_config.env {
-                    if !env.is_empty() {
-                        config.env = env
-                    }
-                }
-                if let Some(main_modifier) = file_config.main_modifier {
-                    config.main_modifier = main_modifier;
-                }
-                if let Some(launcher_cmd) = string_or_vec(file_config.launcher_cmd) {
-                    let launcher_cmd = clean_cmd_args(launcher_cmd);
-                    if !launcher_cmd.is_empty() {
-                        config.launcher_cmd = launcher_cmd;
-                    }
-                }
-                if let Some(terminal_cmd) = string_or_vec(file_config.terminal_cmd) {
-                    let terminal_cmd = clean_cmd_args(terminal_cmd);
-                    if !terminal_cmd.is_empty() {
-                        config.terminal_cmd = terminal_cmd;
-                    }
-                }
-                if let Some(lock_cmd) = string_or_vec(file_config.lock_cmd) {
-                    let lock_cmd = clean_cmd_args(lock_cmd);
-                    if !lock_cmd.is_empty() {
-                        config.lock_cmd = lock_cmd;
-                    }
-                }
-                if let Some(startup_cmds) = file_config.startup_cmds {
-                    config.startup_cmds = startup_cmds_from_file(startup_cmds);
-                }
-                if let Some(update) = file_config.update_activation_environment {
-                    config.update_activation_environment = update;
-                }
-                if let Some(ui) = file_config.ui {
-                    config.ui.apply(ui);
-                }
-                if let Some(rules) = file_config.rules {
-                    config.rules = rules_from_file(rules);
-                }
-                if let Some(hotkeys) = file_config.hotkeys {
-                    config.hotkeys = hotkeys_from_file(hotkeys);
-                }
+                config.apply(file_config);
             }
         }
     }
 
     config
+}
+
+impl Config {
+    /// Apply the settings present in a parsed config file.
+    fn apply(&mut self, file: FileConfig) {
+        if let Some(env) = file.env {
+            if !env.is_empty() {
+                self.env = env
+            }
+        }
+        if let Some(main_modifier) = file.main_modifier {
+            self.main_modifier = main_modifier;
+        }
+        if let Some(launcher_cmd) = string_or_vec(file.launcher_cmd) {
+            let launcher_cmd = clean_cmd_args(launcher_cmd);
+            if !launcher_cmd.is_empty() {
+                self.launcher_cmd = launcher_cmd;
+            }
+        }
+        if let Some(terminal_cmd) = string_or_vec(file.terminal_cmd) {
+            let terminal_cmd = clean_cmd_args(terminal_cmd);
+            if !terminal_cmd.is_empty() {
+                self.terminal_cmd = terminal_cmd;
+            }
+        }
+        if let Some(lock_cmd) = string_or_vec(file.lock_cmd) {
+            let lock_cmd = clean_cmd_args(lock_cmd);
+            if !lock_cmd.is_empty() {
+                self.lock_cmd = lock_cmd;
+            }
+        }
+        if let Some(startup_cmds) = file.startup_cmds {
+            self.startup_cmds = startup_cmds_from_file(startup_cmds);
+        }
+        if let Some(update) = file.update_activation_environment {
+            self.update_activation_environment = update;
+        }
+        if let Some(ui) = file.ui {
+            self.ui.apply(ui);
+        }
+        if let Some(rules) = file.rules {
+            self.rules = rules_from_file(rules);
+        }
+        if let Some(hotkeys) = file.hotkeys {
+            self.hotkeys = hotkeys_from_file(hotkeys);
+        }
+    }
 }
 
 /// Get default window rules
