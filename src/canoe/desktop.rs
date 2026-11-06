@@ -132,7 +132,50 @@ impl DesktopSurface {
             Origin::default(),
         );
         self.scale = scale;
+        self.allocate_buffer(shm, qh, buf_w, buf_h);
+    }
 
+    /// Ensure a buffer for a surface drawn in a single color: one pixel
+    /// stretched over the surface when it has a viewport, else a full-size
+    /// buffer at scale 1.
+    pub fn ensure_solid_buffer<D>(&mut self, shm: &wl_shm::WlShm, qh: &QueueHandle<D>)
+    where
+        D: 'static
+            + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
+            + wayland_client::Dispatch<wl_buffer::WlBuffer, ()>,
+    {
+        if self.width <= 0 || self.height <= 0 {
+            return;
+        }
+
+        let scale = Scale::default();
+        let (buf_w, buf_h) = self.fractional.apply(
+            &self.surface,
+            self.width,
+            self.height,
+            &scale,
+            Origin::default(),
+        );
+        self.scale = scale;
+        if self.fractional.has_viewport() {
+            self.allocate_buffer(shm, qh, 1, 1);
+        } else {
+            self.allocate_buffer(shm, qh, buf_w, buf_h);
+        }
+    }
+
+    /// (Re)allocate the shm buffer unless one of this size already exists.
+    fn allocate_buffer<D>(
+        &mut self,
+        shm: &wl_shm::WlShm,
+        qh: &QueueHandle<D>,
+        buf_w: i32,
+        buf_h: i32,
+    ) where
+        D: 'static
+            + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
+            + wayland_client::Dispatch<wl_buffer::WlBuffer, ()>,
+    {
         if self.buffer.is_some() && self.buf_width == buf_w && self.buf_height == buf_h {
             return;
         }

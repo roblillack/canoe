@@ -976,10 +976,17 @@ fn ensure_desktop_background(
     layer_surface.set_size(0, 0);
     surface.commit();
 
+    // A viewport lets a single pixel cover the whole output; no fractional
+    // scale is needed for a solid color.
+    let viewport = state
+        .globals
+        .viewporter
+        .as_ref()
+        .map(|viewporter| viewporter.get_viewport(&surface, qh, ()));
     output.borrow_mut().desktop_background = Some(canoe::DesktopSurface::new(
         surface,
         layer_surface,
-        canoe::scale::FractionalSurface::default(),
+        canoe::scale::FractionalSurface::new(viewport, None),
         output_id,
     ));
 }
@@ -1091,8 +1098,7 @@ fn render_desktop_background(
         return;
     }
 
-    // Solid color: no need for HiDPI buffer scaling.
-    background.ensure_buffer(shm, qh, canoe::scale::Scale::default());
+    background.ensure_solid_buffer(shm, qh);
     background.render(bg_color);
     background.update_input_region(compositor, qh, false);
     background.commit();
