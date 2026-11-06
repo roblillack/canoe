@@ -3995,20 +3995,39 @@ impl Dispatch<RiverDecorationV1, canoe::WindowId> for AppState {
 /// manager and the D-Bus activation environment, so services started on demand
 /// (xdg-desktop-portal and its backends) connect to this session.
 fn update_activation_environment(context: &Context) {
-    if std::env::var_os("WAYLAND_DISPLAY").is_none() {
-        return;
+    let argv = activation_environment_argv(&context.config.env, |name| std::env::var(name).ok());
+    if let Some(argv) = argv {
+        context.spawn(&argv);
     }
-    let mut argv = vec![
+}
+
+/// Build the `dbus-update-activation-environment` command line.
+///
+/// Each variable gets the value programs launched by canoe see: the `[env]`
+/// table (`config_env`) overrides canoe's own environment (`lookup`). Values
+/// are always passed explicitly as `VAR=VAL`, so the result does not depend on
+/// which variables canoe itself inherited. Returns `None` without a display to
+/// export.
+fn activation_environment_argv(
+    config_env: &HashMap<String, String>,
+    lookup: impl Fn(&str) -> Option<String>,
+) -> Option<Vec<String>> {
+    let effective = |name: &str| {
+        config_env
+            .get(name)
+            .cloned()
+            .or_else(|| lookup(name))
+            .filter(|value| !value.is_empty())
+    };
+    let display = effective("WAYLAND_DISPLAY")?;
+    // xdg-desktop-portal picks its backends by desktop name.
+    let desktop = effective("XDG_CURRENT_DESKTOP").unwrap_or_else(|| "river".to_string());
+    Some(vec![
         "dbus-update-activation-environment".to_string(),
         "--systemd".to_string(),
-        "WAYLAND_DISPLAY".to_string(),
-    ];
-    // xdg-desktop-portal picks its backends by desktop name.
-    argv.push(match std::env::var("XDG_CURRENT_DESKTOP") {
-        Ok(desktop) if !desktop.is_empty() => "XDG_CURRENT_DESKTOP".to_string(),
-        _ => "XDG_CURRENT_DESKTOP=river".to_string(),
-    });
-    context.spawn(&argv);
+        format!("WAYLAND_DISPLAY={display}"),
+        format!("XDG_CURRENT_DESKTOP={desktop}"),
+    ])
 }
 
 const USAGE: &str = "\
@@ -4275,4 +4294,69 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn lookup_from(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
+        let vars: HashMap<String, String> = vars
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        move |name| vars.get(name).cloned()
+    }
+
+    fn config_env(vars: &[(&str, &str)]) -> HashMap<String, String> {
+        vars.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn test_activation_environment_uses_own_environment() {
+        let argv = activation_environment_argv(
+            &HashMap::new(),
+            lookup_from(&[
+                ("WAYLAND_DISPLAY", "wayland-1"),
+                ("XDG_CURRENT_DESKTOP", "foo"),
+            ]),
+        )
+        .expect("argv");
+        assert_eq!(
+            argv[2..],
+            ["WAYLAND_DISPLAY=wayland-1", "XDG_CURRENT_DESKTOP=foo"]
+        );
+    }
+
+    #[test]
+    fn test_activation_environment_defaults_desktop_to_river() {
+        let argv =
+            activation_environment_argv(&HashMap::new(), lookup_from(&[("WAYLAND_DISPLAY", "w")]))
+                .expect("argv");
+        assert_eq!(argv[3], "XDG_CURRENT_DESKTOP=river");
+    }
+
+    #[test]
+    fn test_activation_environment_prefers_config_env() {
+        // [env] wins whether or not canoe inherited the variable itself.
+        let env = config_env(&[("XDG_CURRENT_DESKTOP", "river:wlroots")]);
+        for own in [
+            lookup_from(&[("WAYLAND_DISPLAY", "w"), ("XDG_CURRENT_DESKTOP", "river")]),
+            lookup_from(&[("WAYLAND_DISPLAY", "w")]),
+        ] {
+            let argv = activation_environment_argv(&env, own).expect("argv");
+            assert_eq!(argv[3], "XDG_CURRENT_DESKTOP=river:wlroots");
+        }
+    }
+
+    #[test]
+    fn test_activation_environment_needs_a_display() {
+        assert!(activation_environment_argv(&HashMap::new(), lookup_from(&[])).is_none());
+        let env = config_env(&[("WAYLAND_DISPLAY", "")]);
+        assert!(
+            activation_environment_argv(&env, lookup_from(&[("WAYLAND_DISPLAY", "w")])).is_none()
+        );
+    }
 }

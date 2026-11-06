@@ -258,10 +258,12 @@ impl Default for Config {
 
 #[derive(Debug, Deserialize)]
 struct FileConfig {
+    env: Option<HashMap<String, String>>,
     main_modifier: Option<MainModifier>,
     launcher_cmd: Option<StringOrVec>,
     terminal_cmd: Option<StringOrVec>,
     lock_cmd: Option<StringOrVec>,
+    startup_cmds: Option<Vec<StringOrVec>>,
     update_activation_environment: Option<bool>,
     ui: Option<UiConfigFile>,
     rules: Option<Vec<RuleFile>>,
@@ -652,6 +654,15 @@ fn config_path() -> Option<PathBuf> {
     Some(home.join(".config").join("canoe").join("canoe.toml"))
 }
 
+/// Turn the configured startup commands into argv vectors, dropping empty ones.
+fn startup_cmds_from_file(cmds: Vec<StringOrVec>) -> Vec<Vec<String>> {
+    cmds.into_iter()
+        .filter_map(|cmd| string_or_vec(Some(cmd)))
+        .map(clean_cmd_args)
+        .filter(|cmd| !cmd.is_empty())
+        .collect()
+}
+
 fn rules_from_file(rules: Vec<RuleFile>) -> Vec<Rule> {
     rules
         .into_iter()
@@ -685,6 +696,11 @@ pub fn load_config(skip_config: bool) -> Config {
     if let Some(path) = config_path() {
         if let Ok(contents) = std::fs::read_to_string(&path) {
             if let Ok(file_config) = toml::from_str::<FileConfig>(&contents) {
+                if let Some(env) = file_config.env {
+                    if !env.is_empty() {
+                        config.env = env
+                    }
+                }
                 if let Some(main_modifier) = file_config.main_modifier {
                     config.main_modifier = main_modifier;
                 }
@@ -705,6 +721,9 @@ pub fn load_config(skip_config: bool) -> Config {
                     if !lock_cmd.is_empty() {
                         config.lock_cmd = lock_cmd;
                     }
+                }
+                if let Some(startup_cmds) = file_config.startup_cmds {
+                    config.startup_cmds = startup_cmds_from_file(startup_cmds);
                 }
                 if let Some(update) = file_config.update_activation_environment {
                     config.update_activation_environment = update;
@@ -775,6 +794,56 @@ mod tests {
         assert_eq!(prefixes, &vec!["mate-".to_string()]);
         assert_eq!(rule.require_csd_only, None);
         assert_eq!(rule.require_no_parent, None);
+    }
+
+    #[test]
+    fn test_startup_cmds_and_env_parsing() {
+        let contents = r#"
+            startup_cmds = [
+                "kanshi",
+                ["swaybg", " -i ", "/tmp/wall.png", ""],
+                "",
+                [],
+            ]
+
+            [env]
+            MOZ_ENABLE_WAYLAND = "1"
+            QT_QPA_PLATFORM = "wayland"
+        "#;
+
+        let file_config = toml::from_str::<FileConfig>(contents).expect("parse config");
+
+        let startup_cmds =
+            startup_cmds_from_file(file_config.startup_cmds.expect("startup_cmds present"));
+        assert_eq!(
+            startup_cmds,
+            vec![
+                vec!["kanshi".to_string()],
+                vec![
+                    "swaybg".to_string(),
+                    "-i".to_string(),
+                    "/tmp/wall.png".to_string()
+                ],
+            ]
+        );
+
+        let env = file_config.env.expect("env present");
+        assert_eq!(env.len(), 2);
+        assert_eq!(env.get("MOZ_ENABLE_WAYLAND").map(String::as_str), Some("1"));
+        assert_eq!(
+            env.get("QT_QPA_PLATFORM").map(String::as_str),
+            Some("wayland")
+        );
+    }
+
+    #[test]
+    fn test_env_rejects_non_string_values() {
+        let contents = r#"
+            [env]
+            MOZ_ENABLE_WAYLAND = 1
+        "#;
+
+        assert!(toml::from_str::<FileConfig>(contents).is_err());
     }
 
     #[test]
