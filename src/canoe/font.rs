@@ -3,6 +3,7 @@
 use fontconfig_sys as fc;
 use freetype::freetype as ft;
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::ffi::{CStr, CString};
 use std::os::raw::{c_char, c_int};
 use std::path::{Path, PathBuf};
@@ -26,6 +27,10 @@ pub(super) struct FontCache {
     library: ft::FT_Library,
     loaded: Option<LoadedFont>,
     fallbacks: Vec<LoadedFont>,
+    /// Characters for which no fallback font could be found. Remembered so
+    /// that unrenderable characters don't trigger a fontconfig match on
+    /// every draw.
+    missing: HashSet<char>,
 }
 
 impl FontCache {
@@ -39,6 +44,7 @@ impl FontCache {
             library,
             loaded: None,
             fallbacks: Vec::new(),
+            missing: HashSet::new(),
         })
     }
 
@@ -55,6 +61,7 @@ impl FontCache {
             let loaded = self.load_font(matched, query, size_px)?;
             self.clear_fallbacks();
             self.clear_loaded();
+            self.missing.clear();
             self.loaded = Some(loaded);
         } else {
             let loaded = self.loaded.as_ref()?;
@@ -255,9 +262,21 @@ impl FontCache {
             }
         }
 
-        let matched = match_font(&query, Some(ch))?;
-        let fallback = self.load_font(matched, &query, size_px)?;
-        if !has_glyph(fallback.face) {
+        if self.missing.contains(&ch) {
+            return None;
+        }
+        let face = self.load_fallback(ch, &query, size_px);
+        if face.is_none() {
+            self.missing.insert(ch);
+        }
+        face
+    }
+
+    fn load_fallback(&mut self, ch: char, query: &str, size_px: u32) -> Option<ft::FT_Face> {
+        let matched = match_font(query, Some(ch))?;
+        let fallback = self.load_font(matched, query, size_px)?;
+        let has_glyph = unsafe { ft::FT_Get_Char_Index(fallback.face, ch as ft::FT_ULong) != 0 };
+        if !has_glyph {
             unsafe {
                 ft::FT_Done_Face(fallback.face);
             }
