@@ -182,7 +182,9 @@ startup_cmds = [
 ```
 
 The commands are launched in order, but Canoe does not wait for one to finish
-before starting the next. They run only at startup: a `SIGHUP` reload does not
+before starting the next. They start once Canoe has set up the desktop on every
+output, so a wallpaper client launched here is drawn above
+[`desktop_background`](#desktop-and-wallpapers). They run only at startup: a `SIGHUP` reload does not
 run them again, so changes take effect the next time Canoe starts.
 
 ### Environment variables

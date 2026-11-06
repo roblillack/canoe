@@ -60,6 +60,11 @@ struct AppState {
     globals: Globals,
     /// Where `canoe --share-picker` requests arrive.
     share_server: Option<ipc::ShareServer>,
+    /// Whether the configured startup commands are still to be launched.
+    startup_pending: bool,
+    /// Whether the first manage sequence has started, i.e. River has
+    /// announced the initial outputs and the desktop surfaces exist.
+    manage_seen: bool,
 }
 
 /// Collected Wayland globals
@@ -1646,6 +1651,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                 state.context.borrow_mut().running = false;
             }
             Event::ManageStart => {
+                state.manage_seen = true;
                 state.context.borrow_mut().handle_manage_start();
                 // After a config reload, rebuild key bindings within this manage
                 // sequence (enable/disable are only valid here).
@@ -4289,6 +4295,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         context: context.clone(),
         globals: Globals::default(),
         share_server: None,
+        startup_pending: true,
+        manage_seen: false,
     };
 
     // Get registry and collect globals
@@ -4334,11 +4342,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // this session's display.
     if state.context.borrow().config.update_activation_environment {
         update_activation_environment(&state.context.borrow());
-    }
-
-    // Run startup commands
-    for cmd in &state.context.borrow().config.startup_cmds.clone() {
-        state.context.borrow().spawn(cmd);
     }
 
     // Main event loop
@@ -4428,6 +4431,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             event_queue.dispatch_pending(&mut state)?;
+        }
+
+        // Launch the startup commands once River has announced the outputs
+        // and the desktop surfaces have been created, and only after those
+        // requests reached the compositor: River stacks layer surfaces in
+        // creation order, so a wallpaper client started here lands above the
+        // background fill instead of racing it.
+        if state.startup_pending && state.manage_seen {
+            state.startup_pending = false;
+            conn.flush()?;
+            let cmds = state.context.borrow().config.startup_cmds.clone();
+            for cmd in &cmds {
+                state.context.borrow().spawn(cmd);
+            }
         }
 
         // Handle screen-sharing requests
