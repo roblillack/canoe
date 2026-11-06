@@ -29,7 +29,7 @@ pub(super) struct FontCache {
     fallbacks: Vec<LoadedFont>,
     /// Characters for which no fallback font could be found. Remembered so
     /// that unrenderable characters don't trigger a fontconfig match on
-    /// every draw.
+    /// every draw; they are rendered with the primary face instead.
     missing: HashSet<char>,
 }
 
@@ -262,14 +262,20 @@ impl FontCache {
             }
         }
 
-        if self.missing.contains(&ch) {
-            return None;
+        // Characters no font can provide are drawn with the primary face,
+        // which renders its .notdef glyph ("tofu") so they remain visible.
+        // Control characters never go through fallback matching: fontconfig
+        // would happily pick some random font that maps them.
+        if ch.is_control() || self.missing.contains(&ch) {
+            return Some(primary);
         }
-        let face = self.load_fallback(ch, &query, size_px);
-        if face.is_none() {
-            self.missing.insert(ch);
+        match self.load_fallback(ch, &query, size_px) {
+            Some(face) => Some(face),
+            None => {
+                self.missing.insert(ch);
+                Some(primary)
+            }
         }
-        face
     }
 
     fn load_fallback(&mut self, ch: char, query: &str, size_px: u32) -> Option<ft::FT_Face> {
