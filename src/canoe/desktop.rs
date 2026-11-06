@@ -14,14 +14,17 @@ use wayland_client::QueueHandle;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 
 use super::render::Renderer;
+use super::scale::{FractionalSurface, Origin, Scale};
 use super::{shmfile, OutputId, WindowId};
 
-// Icon layout constants (logical pixels, scaled by output scale)
-pub const ICON_SIZE: i32 = 32;
-const ICON_LABEL_HEIGHT: i32 = 14;
-const ICON_CELL_WIDTH: i32 = 64;
-const ICON_CELL_HEIGHT: i32 = 50;
-const ICON_MARGIN: i32 = 4;
+// Icon layout constants (logical pixels)
+pub const ICON_SIZE: i32 = 48;
+const ICON_LABEL_HEIGHT: i32 = 19;
+const ICON_CELL_WIDTH: i32 = 96;
+const ICON_CELL_HEIGHT: i32 = 72;
+const ICON_MARGIN: i32 = 5;
+/// How far the selected label's background reaches past the text.
+const LABEL_MARGIN: i32 = 3;
 
 /// Data for a minimized window icon.
 pub struct DesktopIcon {
@@ -31,17 +34,20 @@ pub struct DesktopIcon {
     pub icon: Option<Rc<tiny_skia::Pixmap>>,
 }
 
-/// Computed icon position on the desktop surface.
+/// Computed icon cell on the desktop surface, in buffer pixels.
 struct DesktopIconLayout {
     window_id: WindowId,
     x: i32,
     y: i32,
+    width: i32,
+    height: i32,
 }
 
 /// Desktop surface with minimized window icons.
 pub struct DesktopSurface {
     pub surface: wl_surface::WlSurface,
     pub layer_surface: ZwlrLayerSurfaceV1,
+    pub fractional: FractionalSurface,
     pub buffer: Option<wl_buffer::WlBuffer>,
     pub pool: Option<wl_shm_pool::WlShmPool>,
     pub memfile: Option<File>,
@@ -50,6 +56,8 @@ pub struct DesktopSurface {
     pub height: i32,
     buf_width: i32,
     buf_height: i32,
+    /// The scale the buffer is drawn at.
+    pub scale: Scale,
     pub configured: bool,
     pub output_id: OutputId,
     pub selected_icon: Option<WindowId>,
@@ -62,11 +70,13 @@ impl DesktopSurface {
     pub fn new(
         surface: wl_surface::WlSurface,
         layer_surface: ZwlrLayerSurfaceV1,
+        fractional: FractionalSurface,
         output_id: OutputId,
     ) -> Self {
         Self {
             surface,
             layer_surface,
+            fractional,
             buffer: None,
             pool: None,
             memfile: None,
@@ -75,6 +85,7 @@ impl DesktopSurface {
             height: 0,
             buf_width: 0,
             buf_height: 0,
+            scale: Scale::default(),
             configured: false,
             output_id,
             selected_icon: None,
@@ -103,19 +114,25 @@ impl DesktopSurface {
         self.dirty = true;
     }
 
-    pub fn ensure_buffer<D>(&mut self, shm: &wl_shm::WlShm, qh: &QueueHandle<D>, scale: i32)
+    pub fn ensure_buffer<D>(&mut self, shm: &wl_shm::WlShm, qh: &QueueHandle<D>, scale: Scale)
     where
         D: 'static
             + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
             + wayland_client::Dispatch<wl_buffer::WlBuffer, ()>,
     {
-        let scale = scale.max(1);
         if self.width <= 0 || self.height <= 0 {
             return;
         }
 
-        let buf_w = self.width * scale;
-        let buf_h = self.height * scale;
+        let (buf_w, buf_h) = self.fractional.apply(
+            &self.surface,
+            self.width,
+            self.height,
+            &scale,
+            // The desktop covers its output from the corner.
+            Origin::default(),
+        );
+        self.scale = scale;
 
         if self.buffer.is_some() && self.buf_width == buf_w && self.buf_height == buf_h {
             return;
@@ -147,15 +164,14 @@ impl DesktopSurface {
         self.buffer = Some(buffer);
         self.buf_width = buf_w;
         self.buf_height = buf_h;
-        self.surface.set_buffer_scale(scale);
     }
 
     pub fn render(&mut self, rgba: u32) {
         if let Some(ref mut mmap) = self.mmap {
             let argb = rgba_to_argb(rgba);
             let color_bytes = argb.to_ne_bytes();
-            for chunk in mmap.as_mut().chunks_exact_mut(4) {
-                chunk.copy_from_slice(&color_bytes);
+            for pixel in mmap.as_mut().as_chunks_mut::<4>().0 {
+                *pixel = color_bytes;
             }
         }
     }
@@ -173,7 +189,6 @@ impl DesktopSurface {
         bg_rgba: u32,
         desktop_icons: &[DesktopIcon],
         theme: &IconTheme,
-        scale: i32,
         font_name: Option<&str>,
         font_size: f32,
         label_font_name: Option<&str>,
@@ -187,30 +202,32 @@ impl DesktopSurface {
             return;
         }
 
-        let scale = scale.max(1);
+        let scale = self.scale;
         let buf_w = self.buf_width;
         let buf_h = self.buf_height;
         if buf_w <= 0 || buf_h <= 0 {
             return;
         }
 
-        // Compute icon grid layout (bottom-left, left-to-right, then bottom-to-top)
-        // All coordinates in logical pixels first, then multiply by scale for rendering
-        let logical_w = buf_w / scale;
-        let logical_h = buf_h / scale;
-        let cols = ((logical_w - ICON_MARGIN * 2) / ICON_CELL_WIDTH).max(1);
+        // Compute icon grid layout (bottom-left, left-to-right, then
+        // bottom-to-top), in logical pixels taken to buffer pixels.
+        let cell_w = scale.px(ICON_CELL_WIDTH);
+        let cell_h = scale.px(ICON_CELL_HEIGHT);
+        let cols = ((buf_w - scale.px(ICON_MARGIN * 2)) / cell_w.max(1)).max(1);
         self.icon_cols = cols;
 
         let mut layouts = Vec::with_capacity(desktop_icons.len());
         for (i, icon) in desktop_icons.iter().enumerate() {
             let col = i as i32 % cols;
             let row = i as i32 / cols;
-            let x = ICON_MARGIN + col * ICON_CELL_WIDTH;
-            let y = logical_h - ICON_MARGIN - ICON_CELL_HEIGHT - row * ICON_CELL_HEIGHT;
+            let x = scale.px(ICON_MARGIN + col * ICON_CELL_WIDTH);
+            let y = buf_h - scale.px(ICON_MARGIN + ICON_CELL_HEIGHT + row * ICON_CELL_HEIGHT);
             layouts.push(DesktopIconLayout {
                 window_id: icon.window_id,
                 x,
                 y,
+                width: cell_w,
+                height: cell_h,
             });
         }
         self.icons = layouts;
@@ -265,10 +282,9 @@ impl DesktopSurface {
                 rgba_to_argb(theme.text)
             };
 
-            let ix = layout.x * scale;
-            let iy = layout.y * scale;
-            let icon_px = ICON_SIZE * scale;
-            let cell_w = ICON_CELL_WIDTH * scale;
+            let ix = layout.x;
+            let iy = layout.y;
+            let icon_px = scale.px(ICON_SIZE);
 
             // Center the 32x32 icon square within the cell width
             let icon_offset_x = (cell_w - icon_px) / 2;
@@ -281,7 +297,7 @@ impl DesktopSurface {
 
                 // Draw 1px border around icon square
                 let border_color = rgba_to_argb(theme.border);
-                let b = scale.max(1);
+                let b = scale.line();
                 renderer.fill_rect(ix + icon_offset_x, iy, icon_px, b, border_color);
                 renderer.fill_rect(
                     ix + icon_offset_x,
@@ -313,7 +329,7 @@ impl DesktopSurface {
                     iy,
                     icon_px,
                     icon_px,
-                    scale,
+                    scale.factor(),
                     icon_text,
                     font_size,
                     font_name,
@@ -328,8 +344,8 @@ impl DesktopSurface {
             // don't overlap neighbours; the selected label is allowed to
             // overflow up to 5x the icon width before being truncated.
             let label_y = iy + icon_px;
-            let label_h = ICON_LABEL_HEIGHT * scale;
-            let scaled_label_size = label_font_size * scale as f32;
+            let label_h = scale.px(ICON_LABEL_HEIGHT);
+            let scaled_label_size = scale.px_f(label_font_size);
             let max_label_w = if is_selected { icon_px * 5 } else { cell_w };
             let display_title = truncate_with_ellipsis(
                 &icon.title,
@@ -345,7 +361,7 @@ impl DesktopSurface {
 
             // Draw label background if selected, sized to the text
             if is_selected {
-                let margin = 2 * scale;
+                let margin = scale.px(LABEL_MARGIN);
                 let bg_x = label_x - margin;
                 let bg_w = text_w + margin * 2;
                 renderer.fill_rect(bg_x, label_y, bg_w, label_h, label_bg);
@@ -357,7 +373,7 @@ impl DesktopSurface {
                 label_y,
                 text_w.max(1),
                 label_h,
-                scale,
+                scale.factor(),
                 label_text,
                 label_font_size,
                 label_font_name,
@@ -366,14 +382,16 @@ impl DesktopSurface {
         }
     }
 
-    /// Hit test: return the window id of the icon at the given surface-local coordinates.
-    /// Coordinates are in logical (surface-local) pixels; layouts are stored in logical pixels.
-    pub fn icon_at(&self, x: i32, y: i32, _scale: i32) -> Option<WindowId> {
+    /// Hit test: return the window id of the icon at the given surface-local
+    /// coordinates. Coordinates are in logical (surface-local) pixels;
+    /// layouts are stored in buffer pixels.
+    pub fn icon_at(&self, x: i32, y: i32) -> Option<WindowId> {
+        let (x, y) = (self.scale.px(x), self.scale.px(y));
         for layout in &self.icons {
             if x >= layout.x
-                && x < layout.x + ICON_CELL_WIDTH
+                && x < layout.x + layout.width
                 && y >= layout.y
-                && y < layout.y + ICON_CELL_HEIGHT
+                && y < layout.y + layout.height
             {
                 return Some(layout.window_id);
             }
@@ -741,6 +759,7 @@ impl Drop for DesktopSurface {
         if let Some(pool) = self.pool.take() {
             pool.destroy();
         }
+        self.fractional.destroy();
         self.layer_surface.destroy();
         self.surface.destroy();
     }
