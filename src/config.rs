@@ -54,6 +54,7 @@ pub enum Mode {
     Floating,
     Passthrough,
     DesktopIcons,
+    SharePicker,
 }
 
 /// Window decoration style
@@ -199,6 +200,9 @@ pub struct Config {
     pub launcher_cmd: Vec<String>,
     pub terminal_cmd: Vec<String>,
     pub lock_cmd: Vec<String>,
+    /// Export WAYLAND_DISPLAY and XDG_CURRENT_DESKTOP to systemd/D-Bus
+    /// activated services (e.g. the screencast portal) on startup.
+    pub update_activation_environment: bool,
     pub xcursor_theme: Option<XCursorTheme>,
     pub main_modifier: MainModifier,
 
@@ -234,6 +238,7 @@ impl Default for Config {
             launcher_cmd: vec!["fuzzel".to_string()],
             terminal_cmd: vec!["foot".to_string()],
             lock_cmd: vec!["swaylock".to_string()],
+            update_activation_environment: true,
             xcursor_theme: None,
             main_modifier: MainModifier::default(),
 
@@ -257,6 +262,7 @@ struct FileConfig {
     launcher_cmd: Option<StringOrVec>,
     terminal_cmd: Option<StringOrVec>,
     lock_cmd: Option<StringOrVec>,
+    update_activation_environment: Option<bool>,
     ui: Option<UiConfigFile>,
     rules: Option<Vec<RuleFile>>,
     /// Map of key chord (e.g. `"Super+I"`) to the command it spawns.
@@ -699,6 +705,9 @@ pub fn load_config(skip_config: bool) -> Config {
                     if !lock_cmd.is_empty() {
                         config.lock_cmd = lock_cmd;
                     }
+                }
+                if let Some(update) = file_config.update_activation_environment {
+                    config.update_activation_environment = update;
                 }
                 if let Some(ui) = file_config.ui {
                     config.ui.apply(ui);

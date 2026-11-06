@@ -120,6 +120,15 @@ pub enum Action {
     /// Cancel desktop icon selection and exit icon mode
     IconCancel,
 
+    /// Share the target highlighted in the screen-sharing picker
+    SharePickerConfirm,
+    /// Close the screen-sharing picker without sharing anything
+    SharePickerCancel,
+    /// Highlight the next target in the screen-sharing picker
+    SharePickerNext,
+    /// Highlight the previous target in the screen-sharing picker
+    SharePickerPrev,
+
     /// Custom function action
     CustomFn { func: CustomFn, arg: Arg },
 }
@@ -371,6 +380,77 @@ pub fn default_xkb_bindings(
             Keysym::Escape.raw(),
             NONE,
             Action::IconCancel,
+            super::BindingEvent::Pressed,
+        ),
+        // Screen-sharing picker (SharePicker mode)
+        (
+            Mode::SharePicker,
+            Keysym::Escape.raw(),
+            NONE,
+            Action::SharePickerCancel,
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::SharePicker,
+            Keysym::Return.raw(),
+            NONE,
+            Action::SharePickerConfirm,
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::SharePicker,
+            Keysym::KP_Enter.raw(),
+            NONE,
+            Action::SharePickerConfirm,
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::SharePicker,
+            Keysym::space.raw(),
+            NONE,
+            Action::SharePickerConfirm,
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::SharePicker,
+            Keysym::Tab.raw(),
+            NONE,
+            Action::SharePickerNext,
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::SharePicker,
+            Keysym::Right.raw(),
+            NONE,
+            Action::SharePickerNext,
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::SharePicker,
+            Keysym::Down.raw(),
+            NONE,
+            Action::SharePickerNext,
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::SharePicker,
+            Keysym::Tab.raw(),
+            shift,
+            Action::SharePickerPrev,
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::SharePicker,
+            Keysym::Left.raw(),
+            NONE,
+            Action::SharePickerPrev,
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::SharePicker,
+            Keysym::Up.raw(),
+            NONE,
+            Action::SharePickerPrev,
             super::BindingEvent::Pressed,
         ),
     ]
