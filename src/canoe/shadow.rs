@@ -3,6 +3,7 @@
 use super::render::Renderer;
 use super::scale::{FractionalSurface, Origin, Scale};
 use super::shmfile::ShmPool;
+use super::titlebar::Rect;
 use crate::protocol::RiverDecorationV1;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -13,16 +14,13 @@ use wayland_client::QueueHandle;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ShadowKey {
-    frame_width: i32,
-    frame_height: i32,
     shadow_size: i32,
     shadow_color: u32,
     buffer_width: i32,
     buffer_height: i32,
     scale: Scale,
-    /// The shadow-casting rect in buffer pixels; where it falls depends on
-    /// where the surface sits, not just on the sizes above.
-    rect: (i32, i32, i32, i32),
+    /// The shadow-casting rect in buffer pixels.
+    rect: SoftShadowRect,
 }
 
 /// Shadow surface for a window.
@@ -43,8 +41,6 @@ pub struct WindowShadow {
     pub buffer_width: i32,
     /// Current buffer height in pixels.
     pub buffer_height: i32,
-    /// How far in from the surface edges the frame sits (logical px).
-    inset: i32,
     /// Where the surface's corner sits on its output (logical px).
     origin: Origin,
     /// The scale the buffer is drawn at.
@@ -70,7 +66,6 @@ impl WindowShadow {
             height: 0,
             buffer_width: 0,
             buffer_height: 0,
-            inset: 0,
             origin: Origin::default(),
             scale: Scale::default(),
             output_names: Vec::new(),
@@ -87,9 +82,9 @@ impl WindowShadow {
     /// shm slot is rotated/allocated lazily inside `render()` so we don't
     /// burn a wl_buffer on a frame that turns out to be a no-op.
     ///
-    /// `origin` is where the surface's corner sits on its output, so the
-    /// shadow's inner edge meets the frame's outer edge on the same device
-    /// pixel (see [`Scale::edge`]).
+    /// `origin` is where the surface's corner sits on its output, so
+    /// [`render`](Self::render) can place the shadow by the device pixels
+    /// the frame covers.
     #[allow(clippy::too_many_arguments)]
     pub fn ensure_buffer<D>(
         &mut self,
@@ -123,7 +118,6 @@ impl WindowShadow {
         self.height = height;
         self.buffer_width = buffer_width;
         self.buffer_height = buffer_height;
-        self.inset = shadow_size;
         self.origin = origin;
         self.scale = scale;
     }
@@ -143,12 +137,17 @@ impl WindowShadow {
 
     /// Render the shadow directly into the next shm slot. The shm pool grows
     /// (with headroom) only when the requested slot size exceeds capacity;
-    /// otherwise rendering reuses the existing fd/mmap/pool. Sizes are in
+    /// otherwise rendering reuses the existing fd/mmap/pool.
+    ///
+    /// The shadow is cast by `cast`, in device pixels from the output's
+    /// origin — the frame's painted outline (a [`DeviceFrame`]'s `outer`), so
+    /// the shadow meets it wherever its edges land. `shadow_size` is in
     /// logical pixels; the scale is the one `ensure_buffer` was given.
+    ///
+    /// [`DeviceFrame`]: super::titlebar::DeviceFrame
     pub fn render<D>(
         &mut self,
-        frame_width: i32,
-        frame_height: i32,
+        cast: Rect,
         shadow_size: i32,
         shadow_color: u32,
         shm: &wl_shm::WlShm,
@@ -163,28 +162,20 @@ impl WindowShadow {
             || self.height <= 0
             || self.buffer_width <= 0
             || self.buffer_height <= 0
-            || frame_width <= 0
-            || frame_height <= 0
+            || cast.width <= 0
+            || cast.height <= 0
         {
             return false;
         }
 
-        let rect = shadow_rect(
-            &self.scale,
-            self.origin,
-            self.inset,
-            frame_width,
-            frame_height,
-        );
+        let rect = shadow_rect(&self.scale, self.origin, cast);
         let key = ShadowKey {
-            frame_width,
-            frame_height,
             shadow_size: shadow_size.max(0),
             shadow_color,
             buffer_width: self.buffer_width,
             buffer_height: self.buffer_height,
             scale: self.scale,
-            rect: (rect.x, rect.y, rect.width, rect.height),
+            rect,
         };
         // Same band geometry as the last render -> the surface still has the
         // right buffer attached. Skip the slot rotation entirely so we don't
@@ -393,24 +384,14 @@ fn fill_run(buf: &mut [u8], argb: [u8; 4]) {
     }
 }
 
-/// The rect a frame `frame_width`×`frame_height` logical pixels casts its
-/// shadow from, `inset` in from the corner of a shadow surface sitting at
-/// `origin`, in buffer pixels. Its edges are rounded from the output's
-/// origin, like the frame's own.
-fn shadow_rect(
-    scale: &Scale,
-    origin: Origin,
-    inset: i32,
-    frame_width: i32,
-    frame_height: i32,
-) -> SoftShadowRect {
-    let x = scale.edge(origin.x, inset);
-    let y = scale.edge(origin.y, inset);
+/// `cast`, in device pixels from the output's origin, in the buffer of a
+/// shadow surface whose corner sits at logical `origin`.
+fn shadow_rect(scale: &Scale, origin: Origin, cast: Rect) -> SoftShadowRect {
     SoftShadowRect {
-        x,
-        y,
-        width: scale.edge(origin.x, inset + frame_width) - x,
-        height: scale.edge(origin.y, inset + frame_height) - y,
+        x: cast.x - scale.position(origin.x),
+        y: cast.y - scale.position(origin.y),
+        width: cast.width,
+        height: cast.height,
     }
 }
 
@@ -537,29 +518,24 @@ pub(super) fn draw_shadow_soft(
 mod tests {
     use super::*;
 
-    /// The shadow is cast from exactly the device pixels the frame covers,
-    /// wherever the window sits, with the shadow surface `inset` further out.
+    /// The shadow lands on the device pixels it's cast from, wherever its
+    /// surface sits.
     #[test]
-    fn shadow_rect_matches_the_frame() {
-        let at = |scale: f64, v: i32| (v as f32 * scale as f32).round() as i32;
-        let (inset, frame_w, frame_h) = (25, 210, 160);
+    fn shadow_rect_lands_on_the_cast() {
         for device in [1.0, 1.25, 1.5, 1.75] {
             let scale = Scale::new(device);
-            for frame_x in -10..10 {
-                let frame_y = frame_x * 3 + 1;
-                let origin = Origin::new(frame_x - inset, frame_y - inset);
-                let rect = shadow_rect(&scale, origin, inset, frame_w, frame_h);
-                let (surface_x, surface_y) = (at(device, origin.x), at(device, origin.y));
-                assert_eq!(surface_x + rect.x, at(device, frame_x));
-                assert_eq!(surface_y + rect.y, at(device, frame_y));
-                assert_eq!(
-                    surface_x + rect.x + rect.width,
-                    at(device, frame_x + frame_w)
-                );
-                assert_eq!(
-                    surface_y + rect.y + rect.height,
-                    at(device, frame_y + frame_h)
-                );
+            for x in -10..10 {
+                let origin = Origin::new(x, x * 3 + 1);
+                let cast = Rect {
+                    x: 40,
+                    y: -7,
+                    width: 210,
+                    height: 160,
+                };
+                let rect = shadow_rect(&scale, origin, cast);
+                assert_eq!(scale.position(origin.x) + rect.x, cast.x);
+                assert_eq!(scale.position(origin.y) + rect.y, cast.y);
+                assert_eq!((rect.width, rect.height), (cast.width, cast.height));
             }
         }
     }

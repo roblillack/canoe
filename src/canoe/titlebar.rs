@@ -85,6 +85,25 @@ impl Rect {
         self.y + self.height
     }
 
+    /// The rect from (`x0`, `y0`) up to, not including, (`x1`, `y1`).
+    fn from_edges(x0: i32, y0: i32, x1: i32, y1: i32) -> Rect {
+        Rect {
+            x: x0,
+            y: y0,
+            width: (x1 - x0).max(0),
+            height: (y1 - y0).max(0),
+        }
+    }
+
+    /// Moved by `dx`, `dy`.
+    pub fn translate(&self, dx: i32, dy: i32) -> Rect {
+        Rect {
+            x: self.x + dx,
+            y: self.y + dy,
+            ..*self
+        }
+    }
+
     /// Shrunk by `n` on every side; grown for a negative `n`.
     fn inset(&self, n: i32) -> Rect {
         Rect {
@@ -96,13 +115,99 @@ impl Rect {
     }
 }
 
-/// Where the frame's parts land in the buffer, in device pixels. Each edge is
-/// rounded from the output's origin, as the compositor rounds the client's
-/// content (see [`Scale::edge`]), so the cut-out lines up with the content at
-/// any fractional scale wherever the window sits.
+/// How a frame's edges are rounded to device pixels.
+///
+/// At a fractional scale a frame can't have both a constant size in device
+/// pixels and every edge on its logical position: 30 logical pixels at 1.25
+/// are 37 or 38 device pixels, depending on where they start. Something has to
+/// give a pixel, and which is better depends on whether the window moves.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FrameFit {
+    /// Every edge on its logical position, so the frame meets the screen edges
+    /// and its tiled neighbours exactly. The border and titlebar take the odd
+    /// pixel, so they'd change size by one as the window moved — which a
+    /// tiled window doesn't.
+    Tiled,
+    /// The border and titlebar are a fixed number of device pixels, measured
+    /// out from the client's content, so nothing in the frame changes size as
+    /// the window moves. The rounding goes to the outer edge instead, which
+    /// sits up to one device pixel inside its logical position.
+    #[default]
+    Floating,
+}
+
+/// A frame's parts in device pixels, from the output's origin.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DeviceFrame {
+    /// The frame's painted outer edge.
+    pub outer: Rect,
+    /// Inside the border: titlebar and content.
+    pub inside: Rect,
+    /// The titlebar strip's height; the content is the rest of `inside`.
+    pub title_height: i32,
+}
+
+impl DeviceFrame {
+    /// The frame whose corner sits at logical `origin` on the output, around
+    /// content `content_width`×`content_height` logical pixels. The content
+    /// cut-out always covers exactly the device pixels the compositor draws
+    /// the client's content into (see [`Scale::edge`]), and the frame never
+    /// reaches outside its logical box, so it fits the decoration surface.
+    pub fn new(
+        scale: &Scale,
+        fit: FrameFit,
+        origin: Origin,
+        border_width: i32,
+        titlebar_height: i32,
+        content_width: i32,
+        content_height: i32,
+    ) -> Self {
+        let at = |logical: i32| scale.position(logical);
+        let content_x = origin.x + border_width;
+        let content_y = origin.y + border_width + titlebar_height;
+        let (left, right) = (at(content_x), at(content_x + content_width));
+        let content_bottom = at(content_y + content_height);
+        let (outer, inside_top, title_height) = match fit {
+            FrameFit::Tiled => {
+                let top = at(origin.y + border_width);
+                let outer = Rect::from_edges(
+                    at(origin.x),
+                    at(origin.y),
+                    at(content_x + content_width + border_width),
+                    at(content_y + content_height + border_width),
+                );
+                (outer, top, at(content_y) - top)
+            }
+            FrameFit::Floating => {
+                // Rounded down: the content edge lands at least this far in
+                // from the logical edge wherever the window sits, so the frame
+                // never pokes outside its surface.
+                let border = scale.px_floor(border_width);
+                let title_height = scale.px_floor(border_width + titlebar_height) - border;
+                let top = at(content_y) - title_height;
+                let outer = Rect::from_edges(
+                    left - border,
+                    top - border,
+                    right + border,
+                    content_bottom + border,
+                );
+                (outer, top, title_height)
+            }
+        };
+        let inside = Rect::from_edges(left, inside_top, right, content_bottom);
+        Self {
+            outer,
+            inside,
+            title_height: title_height.clamp(0, inside.height),
+        }
+    }
+}
+
+/// Where the frame's parts land in the buffer, in device pixels: a
+/// [`DeviceFrame`] seen from the decoration surface's corner.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct FrameRects {
-    /// The whole buffer.
+    /// The painted frame; transparent outside.
     outer: Rect,
     /// Inside the border: titlebar and content.
     inside: Rect,
@@ -116,49 +221,35 @@ impl FrameRects {
     /// The frame of a surface whose corner sits at `origin`.
     fn new(
         scale: &Scale,
+        fit: FrameFit,
         origin: Origin,
         border_width: i32,
         titlebar_height: i32,
         content_width: i32,
         content_height: i32,
     ) -> Self {
-        let width = content_width + border_width * 2;
-        let height = content_height + titlebar_height + border_width * 2;
-        let edge_x = |at: i32| scale.edge(origin.x, at);
-        let edge_y = |at: i32| scale.edge(origin.y, at);
-        let (x, w) = (
-            edge_x(border_width),
-            edge_x(border_width + content_width) - edge_x(border_width),
+        let frame = DeviceFrame::new(
+            scale,
+            fit,
+            origin,
+            border_width,
+            titlebar_height,
+            content_width,
+            content_height,
         );
-        let (y, h) = (
-            edge_y(border_width),
-            edge_y(height - border_width) - edge_y(border_width),
-        );
-        let title_h = edge_y(border_width + titlebar_height) - y;
+        let (dx, dy) = (scale.position(origin.x), scale.position(origin.y));
+        let inside = frame.inside.translate(-dx, -dy);
         Self {
-            outer: Rect {
-                x: 0,
-                y: 0,
-                width: edge_x(width),
-                height: edge_y(height),
-            },
-            inside: Rect {
-                x,
-                y,
-                width: w,
-                height: h,
-            },
+            outer: frame.outer.translate(-dx, -dy),
+            inside,
             titlebar: Rect {
-                x,
-                y,
-                width: w,
-                height: title_h.min(h),
+                height: frame.title_height,
+                ..inside
             },
             content: Rect {
-                x,
-                y: y + title_h,
-                width: w,
-                height: (h - title_h).max(0),
+                y: inside.y + frame.title_height,
+                height: inside.height - frame.title_height,
+                ..inside
             },
         }
     }
@@ -433,7 +524,8 @@ impl Titlebar {
     ///
     /// `origin` is where the surface's corner sits on its output: where the
     /// frame's edges fall in the buffer depends on it, so moving the window
-    /// redraws the frame whenever that shifts an edge.
+    /// redraws the frame whenever that shifts an edge. `fit` says how the
+    /// frame takes up the rounding (see [`FrameFit`]).
     #[allow(clippy::too_many_arguments)]
     pub fn ensure_buffer<D>(
         &mut self,
@@ -443,6 +535,7 @@ impl Titlebar {
         _qh: &QueueHandle<D>,
         scale: Scale,
         origin: Origin,
+        fit: FrameFit,
         ui: &UiConfig,
         frame_style: FrameStyle,
     ) where
@@ -470,6 +563,7 @@ impl Titlebar {
         }
         let rects = FrameRects::new(
             &scale,
+            fit,
             origin,
             border_width,
             titlebar_height,
@@ -1380,74 +1474,137 @@ impl Drop for Titlebar {
 mod tests {
     use super::*;
 
-    /// Where wlroots draws a box at logical `x`, `w` wide, on an output at
-    /// `scale`: device pixels `[round(x·s), round((x + w)·s))`.
-    fn device_span(scale: f64, x: i32, w: i32) -> (i32, i32) {
-        let at = |v: i32| (v as f32 * scale as f32).round() as i32;
-        (at(x), at(x + w))
+    const BORDER: i32 = 5;
+    const TITLE: i32 = 25;
+    const SCALES: [f64; 6] = [1.0, 1.15, 1.25, 1.5, 1.75, 2.0];
+
+    /// The device pixels wlroots draws a box at logical `x`, `w` wide into:
+    /// `[round(x·s), round((x + w)·s))`.
+    fn device_span(scale: &Scale, x: i32, w: i32) -> (i32, i32) {
+        (scale.position(x), scale.position(x + w))
     }
 
-    /// The frame's content cut-out, put where the compositor puts the frame,
-    /// covers exactly the device pixels the client's content does.
+    /// The frame around content `w`×`h` at logical (`x`, `y`) on the output.
+    fn frame(scale: &Scale, fit: FrameFit, x: i32, y: i32, w: i32, h: i32) -> DeviceFrame {
+        let origin = Origin::new(x - BORDER, y - BORDER - TITLE);
+        DeviceFrame::new(scale, fit, origin, BORDER, TITLE, w, h)
+    }
+
+    fn content(frame: &DeviceFrame) -> Rect {
+        Rect {
+            y: frame.inside.y + frame.title_height,
+            height: frame.inside.height - frame.title_height,
+            ..frame.inside
+        }
+    }
+
+    /// Either way, the cut-out covers exactly the device pixels the
+    /// compositor draws the client's content into.
     #[test]
     fn cut_out_matches_content_wherever_the_window_sits() {
-        let (border, title) = (5, 25);
-        let (content_w, content_h) = (200, 120);
-        for device in [1.0, 1.25, 1.5, 1.75, 2.0] {
+        for device in SCALES {
             let scale = Scale::new(device);
-            for window_x in -12..12 {
-                for window_y in [-7, 0, 3, 30] {
-                    let origin = Origin::new(window_x - border, window_y - border - title);
-                    let rects =
-                        FrameRects::new(&scale, origin, border, title, content_w, content_h);
-                    let (frame_x, frame_x1) = device_span(device, origin.x, content_w + 2 * border);
-                    let (frame_y, frame_y1) =
-                        device_span(device, origin.y, content_h + title + 2 * border);
-                    let (content_x, content_x1) = device_span(device, window_x, content_w);
-                    let (content_y, content_y1) = device_span(device, window_y, content_h);
+            for fit in [FrameFit::Tiled, FrameFit::Floating] {
+                for x in -12..12 {
+                    for y in [-7, 0, 3, 30] {
+                        let content = content(&frame(&scale, fit, x, y, 200, 120));
+                        let at = format!("{fit:?} at {device}, window at {x},{y}");
+                        let (x0, x1) = device_span(&scale, x, 200);
+                        let (y0, y1) = device_span(&scale, y, 120);
+                        assert_eq!((content.x, content.right()), (x0, x1), "{at}");
+                        assert_eq!((content.y, content.bottom()), (y0, y1), "{at}");
+                    }
+                }
+            }
+        }
+    }
 
-                    let at = format!("scale {device}, window at {window_x},{window_y}");
-                    let content = rects.content;
-                    assert_eq!(frame_x + content.x, content_x, "left edge, {at}");
-                    assert_eq!(frame_x + content.right(), content_x1, "right edge, {at}");
-                    assert_eq!(frame_y + content.y, content_y, "top edge, {at}");
-                    assert_eq!(frame_y + content.bottom(), content_y1, "bottom edge, {at}");
+    /// A tiled frame's outer edge is its logical edge, so it meets the screen
+    /// edges and its neighbours exactly.
+    #[test]
+    fn tiled_frames_fill_their_logical_box() {
+        for device in SCALES {
+            let scale = Scale::new(device);
+            for x in -12..12 {
+                let frame = frame(&scale, FrameFit::Tiled, x, x + 4, 200, 120);
+                let (x0, x1) = device_span(&scale, x - BORDER, 200 + 2 * BORDER);
+                let (y0, y1) =
+                    device_span(&scale, x + 4 - BORDER - TITLE, 120 + 2 * BORDER + TITLE);
+                assert_eq!(
+                    frame.outer,
+                    Rect::from_edges(x0, y0, x1, y1),
+                    "{device} at {x}"
+                );
+            }
+        }
+    }
 
-                    // The buffer fills the box it's drawn into: no resampling.
-                    assert_eq!(rects.outer.width, frame_x1 - frame_x, "buffer width, {at}");
-                    assert_eq!(
-                        rects.outer.height,
-                        frame_y1 - frame_y,
-                        "buffer height, {at}"
+    /// A floating frame's border and titlebar don't change size as the window
+    /// moves, and the frame never reaches outside its logical box (so it fits
+    /// its surface).
+    #[test]
+    fn floating_frames_keep_their_size() {
+        for device in SCALES {
+            let scale = Scale::new(device);
+            let reference = frame(&scale, FrameFit::Floating, 0, 0, 200, 120);
+            let left = reference.inside.x - reference.outer.x;
+            let top = reference.inside.y - reference.outer.y;
+            for x in -12..12 {
+                for y in -12..12 {
+                    let frame = frame(&scale, FrameFit::Floating, x, y, 200, 120);
+                    let at = format!("{device}, window at {x},{y}");
+                    assert_eq!(frame.title_height, reference.title_height, "{at}");
+                    assert_eq!(frame.inside.x - frame.outer.x, left, "{at}");
+                    assert_eq!(frame.outer.right() - frame.inside.right(), left, "{at}");
+                    assert_eq!(frame.inside.y - frame.outer.y, top, "{at}");
+                    assert_eq!(frame.outer.bottom() - frame.inside.bottom(), top, "{at}");
+
+                    let (x0, x1) = device_span(&scale, x - BORDER, 200 + 2 * BORDER);
+                    let (y0, y1) =
+                        device_span(&scale, y - BORDER - TITLE, 120 + 2 * BORDER + TITLE);
+                    assert!(frame.outer.x >= x0 && frame.outer.right() <= x1, "{at}");
+                    assert!(frame.outer.y >= y0 && frame.outer.bottom() <= y1, "{at}");
+                    // ...and at most a device pixel inside it.
+                    assert!(
+                        frame.outer.x - x0 <= 1 && x1 - frame.outer.right() <= 1,
+                        "{at}"
+                    );
+                    assert!(
+                        frame.outer.y - y0 <= 1 && y1 - frame.outer.bottom() <= 1,
+                        "{at}"
                     );
                 }
             }
         }
     }
 
+    /// At 1.25, a 5px border is 6 device pixels and a 25px titlebar 31.
     #[test]
-    fn titlebar_meets_the_content() {
-        let scale = Scale::new(1.25);
-        for y in -8..8 {
-            let rects = FrameRects::new(&scale, Origin::new(0, y), 5, 25, 100, 80);
-            assert_eq!(rects.titlebar.bottom(), rects.content.y);
-            assert_eq!(rects.titlebar.y, rects.inside.y);
-            assert_eq!(rects.content.bottom(), rects.inside.bottom());
-            // 25 logical pixels at 1.25 are 31 or 32 device pixels, depending
-            // on where the strip starts.
-            assert!((31..=32).contains(&rects.titlebar.height));
-        }
+    fn floating_sizes_at_one_and_a_quarter() {
+        let frame = frame(&Scale::new(1.25), FrameFit::Floating, 2, 0, 100, 80);
+        assert_eq!(frame.inside.x - frame.outer.x, 6);
+        assert_eq!(frame.title_height, 31);
+        // The case that used to leave a gap: content at x = 2 starts at
+        // device pixel round(2.5) = 3.
+        assert_eq!(frame.inside.x, 3);
     }
 
-    /// The case that used to leave a one-pixel gap: a 5px border at 1.25 with
-    /// the window at x = 2. The content starts at device pixel round(2.5) = 3,
-    /// and the frame at round(-3.75) = -4, so the cut-out must start 7 device
-    /// pixels in, not the 6 a 5px border rounds to on its own.
+    /// In the buffer, the frame sits where its surface puts it.
     #[test]
-    fn border_ends_where_content_starts() {
-        let rects = FrameRects::new(&Scale::new(1.25), Origin::new(-3, 0), 5, 25, 100, 80);
-        assert_eq!(rects.content.x, 7);
-        let rects = FrameRects::new(&Scale::new(1.25), Origin::new(0, 0), 5, 25, 100, 80);
-        assert_eq!(rects.content.x, 6);
+    fn rects_are_the_frame_seen_from_the_surface() {
+        let scale = Scale::new(1.25);
+        for fit in [FrameFit::Tiled, FrameFit::Floating] {
+            for x in -8..8 {
+                let origin = Origin::new(x - BORDER, 2 * x - BORDER - TITLE);
+                let device = DeviceFrame::new(&scale, fit, origin, BORDER, TITLE, 100, 80);
+                let rects = FrameRects::new(&scale, fit, origin, BORDER, TITLE, 100, 80);
+                let (dx, dy) = (scale.position(origin.x), scale.position(origin.y));
+                assert_eq!(rects.outer.translate(dx, dy), device.outer);
+                assert_eq!(rects.content.translate(dx, dy), content(&device));
+                assert_eq!(rects.titlebar.bottom(), rects.content.y);
+                assert_eq!(rects.titlebar.height, device.title_height);
+                assert!(rects.outer.x >= 0 && rects.outer.y >= 0);
+            }
+        }
     }
 }

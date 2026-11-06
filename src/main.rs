@@ -1348,7 +1348,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         let frame_width = (width + border_width * 2).max(1);
                         let frame_height =
                             (content_height + titlebar_height + border_width * 2).max(1);
-                        let shadow_frame_height = (frame_height - (shadow_size / 2)).max(1);
+                        let fit = w.frame_fit();
 
                         let window_output = w.output.as_ref().and_then(|o| o.upgrade());
                         let window_output = window_output.as_ref().map(|o| o.borrow());
@@ -1402,14 +1402,28 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                             }
                             #[cfg(feature = "debug-logging")]
                             let sh_t0 = Instant::now();
-                            let did_render = shadow.render(
-                                frame_width,
-                                shadow_frame_height,
-                                shadow_size,
-                                shadow_color,
-                                shm,
-                                qh,
+                            // Cast the shadow from the device pixels the frame
+                            // actually covers, its top dropped by the shift.
+                            let frame = canoe::titlebar::DeviceFrame::new(
+                                &scale,
+                                fit,
+                                canoe::scale::Origin::new(
+                                    window_x - border_width,
+                                    window_y - border_width - titlebar_height + swallow_top,
+                                ),
+                                border_width,
+                                titlebar_height,
+                                width,
+                                content_height,
                             );
+                            let drop = scale.px(shadow_shift).min(frame.outer.height - 1).max(0);
+                            let cast = canoe::titlebar::Rect {
+                                y: frame.outer.y + drop,
+                                height: frame.outer.height - drop,
+                                ..frame.outer
+                            };
+                            let did_render =
+                                shadow.render(cast, shadow_size, shadow_color, shm, qh);
                             #[cfg(feature = "debug-logging")]
                             {
                                 shadow_render_us += sh_t0.elapsed().as_micros();
@@ -1453,6 +1467,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         let hovered_button = w.titlebar_hovered;
                         let titlebar_left_down = w.titlebar_left_down;
                         let swallow_top = w.swallow_top;
+                        let frame_fit = w.frame_fit();
 
                         // Update titlebar if it exists and window has valid dimensions
                         let window_output = w.output.as_ref().and_then(|o| o.upgrade());
@@ -1486,6 +1501,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                                         window_x + offset_x,
                                         window_y + offset_y,
                                     ),
+                                    frame_fit,
                                     ui,
                                     frame_style,
                                 );

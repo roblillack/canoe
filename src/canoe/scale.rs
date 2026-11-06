@@ -101,9 +101,19 @@ impl Scale {
     /// draws a surface `width` wide into, so a buffer that size is presented
     /// pixel for pixel.
     pub fn edge(&self, origin: i32, logical: i32) -> i32 {
-        let device = self.device as f32;
-        let at = |v: i32| (v as f32 * device).round() as i32;
-        at(origin + logical) - at(origin)
+        self.position(origin + logical) - self.position(origin)
+    }
+
+    /// The device pixel a logical coordinate, from the output's origin, lands
+    /// on: `round(logical · scale)`, in single precision as wlroots does it.
+    pub fn position(&self, logical: i32) -> i32 {
+        (logical as f32 * self.device as f32).round() as i32
+    }
+
+    /// A logical length in device pixels, rounded down: the least an
+    /// [`edge`](Self::edge) that long comes to, wherever it starts.
+    pub fn px_floor(&self, logical: i32) -> i32 {
+        (logical as f32 * self.device as f32).floor() as i32
     }
 
     /// A fractional logical size (a font size, say) in device pixels,
@@ -294,6 +304,17 @@ mod tests {
             for width in 1..50 {
                 let (_, box_width) = wlroots_box(1.25, origin, width);
                 assert_eq!(scale.edge(origin, width), box_width);
+            }
+        }
+    }
+
+    #[test]
+    fn floor_is_the_shortest_an_edge_comes_to() {
+        for device in [1.0, 1.15, 1.25, 1.5, 1.75, 2.0] {
+            let scale = Scale::new(device);
+            for length in 0..60 {
+                let shortest = (-40..40).map(|o| scale.edge(o, length)).min().unwrap();
+                assert!(scale.px_floor(length) <= shortest, "{device} {length}");
             }
         }
     }

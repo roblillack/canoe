@@ -274,6 +274,17 @@ impl Window {
         }
     }
 
+    /// How this window's frame takes up fractional-scale rounding: tiled
+    /// windows meet the screen edges and each other exactly; floating ones
+    /// keep their border and titlebar a constant size as they move.
+    pub fn frame_fit(&self) -> super::titlebar::FrameFit {
+        if self.maximized || self.snap_state.is_some() {
+            super::titlebar::FrameFit::Tiled
+        } else {
+            super::titlebar::FrameFit::Floating
+        }
+    }
+
     /// Check if window is visible on the given output
     pub fn is_visible_on(&self, output: &super::Output) -> bool {
         if self.hidden {
