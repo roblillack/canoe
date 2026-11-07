@@ -631,7 +631,7 @@ impl State {
             let id = managed.id;
             if let Some(out) = self.context.borrow().outputs.get(&id) {
                 let mut out = out.borrow_mut();
-                out.update_exclusive_area(usable.0, usable.1, usable.2, usable.3);
+                out.update_non_exclusive_area(usable.0, usable.1, usable.2, usable.3);
                 // The desktop surface's input region leaves exclusive zones
                 // out; it is redrawn at the end of the next manage sequence.
                 if let Some(desktop) = out.desktop_surface.as_mut() {

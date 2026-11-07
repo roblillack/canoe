@@ -1,6 +1,6 @@
 [package]
 name = "canoe"
-version = "0.6.0"
+version = "0.6.1"
 edition = "2021"
 description = "Canoe, a stacking Wayland compositor with Win 3.x looks"
 license = "MIT"

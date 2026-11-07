@@ -214,7 +214,7 @@ dependencies = [
 
 [[package]]
 name = "canoe"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "bitflags 2.10.0",
  "freetype",
