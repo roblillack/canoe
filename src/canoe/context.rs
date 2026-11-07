@@ -3229,7 +3229,7 @@ impl Context {
             return;
         }
 
-        let (rect, snap_state, maximized, pre_snap, stale_fullscreen) = {
+        let (rect, snap_state, maximized, pre_snap, stale_fullscreen, unplaced) = {
             let Some(window) = self.windows.get(&window_id) else {
                 return;
             };
@@ -3258,8 +3258,16 @@ impl Context {
                 w.maximized,
                 w.pre_snap,
                 stale_fullscreen,
+                w.position_undefined,
             )
         };
+
+        // Not placed yet: there is no geometry to carry over, and the initial
+        // placement will still happen once the window is set up.
+        if unplaced && !stale_fullscreen {
+            self.set_window_output(window_id, target_id);
+            return;
+        }
 
         let force_resize = snap_state.is_some() || maximized;
         let needs_resize =
@@ -3666,5 +3674,21 @@ mod tests {
         ));
         assert_eq!((w.x, w.y), (100, 100));
         assert_eq!(w.proposed_dimensions(), (800, 600));
+    }
+
+    #[test]
+    fn removed_output_only_reanchors_unplaced_windows() {
+        let mut ctx = context_with_outputs(&[(1, 0, 0, 1920, 1080), (2, 1920, 0, 1920, 1080)]);
+        let mut window = Window::new(10);
+        window.output = Some(Rc::downgrade(&ctx.outputs[&2]));
+        ctx.windows.insert(10, Rc::new(RefCell::new(window)));
+
+        ctx.destroy_output(2);
+        ctx.handle_manage_start();
+
+        let w = ctx.windows[&10].borrow();
+        assert!(w.position_undefined);
+        let anchor = w.output.as_ref().and_then(|o| o.upgrade()).unwrap();
+        assert_eq!(anchor.borrow().id, 1);
     }
 }
