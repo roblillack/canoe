@@ -2141,6 +2141,11 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                         }
                     }
                 }
+                // Apply configured XCursor theme for compositor-rendered cursors.
+                {
+                    let theme = state.context.borrow().config.xcursor_theme_resolved();
+                    seat.borrow().set_xcursor_theme(&theme);
+                }
             }
             Event::SessionLocked => {
                 // Nothing gets shared from behind the lock screen. The lock
@@ -4190,9 +4195,14 @@ impl Dispatch<RiverDecorationV1, canoe::WindowId> for AppState {
 
 /// Export `WAYLAND_DISPLAY` and `XDG_CURRENT_DESKTOP` to the systemd user
 /// manager and the D-Bus activation environment, so services started on demand
-/// (xdg-desktop-portal and its backends) connect to this session.
+/// (xdg-desktop-portal and its backends) connect to this session. The XCursor
+/// theme is exported as well, if set, so their cursors match.
 fn update_activation_environment(context: &Context) {
-    let argv = activation_environment_argv(&context.config.env, |name| std::env::var(name).ok());
+    let argv = activation_environment_argv(
+        &context.config.env,
+        &context.config.xcursor_theme_resolved(),
+        |name| std::env::var(name).ok(),
+    );
     if let Some(argv) = argv {
         context.spawn(&argv);
     }
@@ -4203,10 +4213,12 @@ fn update_activation_environment(context: &Context) {
 /// Each variable gets the value programs launched by canoe see: the `[env]`
 /// table (`config_env`) overrides canoe's own environment (`lookup`). Values
 /// are always passed explicitly as `VAR=VAL`, so the result does not depend on
-/// which variables canoe itself inherited. Returns `None` without a display to
-/// export.
+/// which variables canoe itself inherited. `XCURSOR_THEME`/`XCURSOR_SIZE` are
+/// taken from the resolved `xcursor` theme and only exported where it sets
+/// them. Returns `None` without a display to export.
 fn activation_environment_argv(
     config_env: &HashMap<String, String>,
+    xcursor: &config::XCursorTheme,
     lookup: impl Fn(&str) -> Option<String>,
 ) -> Option<Vec<String>> {
     let effective = |name: &str| {
@@ -4219,12 +4231,19 @@ fn activation_environment_argv(
     let display = effective("WAYLAND_DISPLAY")?;
     // xdg-desktop-portal picks its backends by desktop name.
     let desktop = effective("XDG_CURRENT_DESKTOP").unwrap_or_else(|| "river".to_string());
-    Some(vec![
+    let mut argv = vec![
         "dbus-update-activation-environment".to_string(),
         "--systemd".to_string(),
         format!("WAYLAND_DISPLAY={display}"),
         format!("XDG_CURRENT_DESKTOP={desktop}"),
-    ])
+    ];
+    if let Some(ref name) = xcursor.name {
+        argv.push(format!("XCURSOR_THEME={name}"));
+    }
+    if let Some(size) = xcursor.size {
+        argv.push(format!("XCURSOR_SIZE={size}"));
+    }
+    Some(argv)
 }
 
 const USAGE: &str = "\
@@ -4522,10 +4541,15 @@ mod tests {
             .collect()
     }
 
+    fn no_xcursor() -> config::XCursorTheme {
+        config::XCursorTheme::default()
+    }
+
     #[test]
     fn test_activation_environment_uses_own_environment() {
         let argv = activation_environment_argv(
             &HashMap::new(),
+            &no_xcursor(),
             lookup_from(&[
                 ("WAYLAND_DISPLAY", "wayland-1"),
                 ("XDG_CURRENT_DESKTOP", "foo"),
@@ -4540,9 +4564,12 @@ mod tests {
 
     #[test]
     fn test_activation_environment_defaults_desktop_to_river() {
-        let argv =
-            activation_environment_argv(&HashMap::new(), lookup_from(&[("WAYLAND_DISPLAY", "w")]))
-                .expect("argv");
+        let argv = activation_environment_argv(
+            &HashMap::new(),
+            &no_xcursor(),
+            lookup_from(&[("WAYLAND_DISPLAY", "w")]),
+        )
+        .expect("argv");
         assert_eq!(argv[3], "XDG_CURRENT_DESKTOP=river");
     }
 
@@ -4554,17 +4581,43 @@ mod tests {
             lookup_from(&[("WAYLAND_DISPLAY", "w"), ("XDG_CURRENT_DESKTOP", "river")]),
             lookup_from(&[("WAYLAND_DISPLAY", "w")]),
         ] {
-            let argv = activation_environment_argv(&env, own).expect("argv");
+            let argv = activation_environment_argv(&env, &no_xcursor(), own).expect("argv");
             assert_eq!(argv[3], "XDG_CURRENT_DESKTOP=river:wlroots");
         }
     }
 
     #[test]
+    fn test_activation_environment_exports_xcursor_theme() {
+        let own = lookup_from(&[("WAYLAND_DISPLAY", "w")]);
+        let argv = activation_environment_argv(&HashMap::new(), &no_xcursor(), &own).expect("argv");
+        assert_eq!(argv.len(), 4, "nothing to export without a theme");
+
+        let xcursor = config::XCursorTheme {
+            name: Some("Adwaita".to_string()),
+            size: Some(32),
+        };
+        let argv = activation_environment_argv(&HashMap::new(), &xcursor, &own).expect("argv");
+        assert_eq!(argv[4..], ["XCURSOR_THEME=Adwaita", "XCURSOR_SIZE=32"]);
+
+        let xcursor = config::XCursorTheme {
+            name: None,
+            size: Some(32),
+        };
+        let argv = activation_environment_argv(&HashMap::new(), &xcursor, &own).expect("argv");
+        assert_eq!(argv[4..], ["XCURSOR_SIZE=32"]);
+    }
+
+    #[test]
     fn test_activation_environment_needs_a_display() {
-        assert!(activation_environment_argv(&HashMap::new(), lookup_from(&[])).is_none());
-        let env = config_env(&[("WAYLAND_DISPLAY", "")]);
         assert!(
-            activation_environment_argv(&env, lookup_from(&[("WAYLAND_DISPLAY", "w")])).is_none()
+            activation_environment_argv(&HashMap::new(), &no_xcursor(), lookup_from(&[])).is_none()
         );
+        let env = config_env(&[("WAYLAND_DISPLAY", "")]);
+        assert!(activation_environment_argv(
+            &env,
+            &no_xcursor(),
+            lookup_from(&[("WAYLAND_DISPLAY", "w")])
+        )
+        .is_none());
     }
 }

@@ -101,11 +101,24 @@ impl Default for BorderLayers {
     }
 }
 
-/// XCursor theme configuration
-#[derive(Debug, Clone)]
+/// XCursor theme configuration. `name` and `size` are `None` when nothing
+/// sets them.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct XCursorTheme {
-    pub name: String,
-    pub size: u32,
+    pub name: Option<String>,
+    pub size: Option<u32>,
+}
+
+impl XCursorTheme {
+    /// Theme name, falling back to `"default"`.
+    pub fn name_or_default(&self) -> &str {
+        self.name.as_deref().unwrap_or(DEFAULT_XCURSOR_THEME)
+    }
+
+    /// Cursor size, falling back to 24.
+    pub fn size_or_default(&self) -> u32 {
+        self.size.unwrap_or(DEFAULT_XCURSOR_SIZE)
+    }
 }
 
 /// UI theme configuration
@@ -211,10 +224,14 @@ pub struct Config {
     pub launcher_cmd: Vec<String>,
     pub terminal_cmd: Vec<String>,
     pub lock_cmd: Vec<String>,
-    /// Export WAYLAND_DISPLAY and XDG_CURRENT_DESKTOP to systemd/D-Bus
-    /// activated services (e.g. the screencast portal) on startup.
+    /// Export WAYLAND_DISPLAY, XDG_CURRENT_DESKTOP and, if set, the XCursor
+    /// theme to systemd/D-Bus activated services (e.g. the screencast portal)
+    /// on startup.
     pub update_activation_environment: bool,
-    pub xcursor_theme: Option<XCursorTheme>,
+    /// XCursor theme name from the config file.
+    pub xcursor_theme: Option<String>,
+    /// XCursor size from the config file.
+    pub xcursor_size: Option<u32>,
     pub main_modifier: MainModifier,
 
     pub repeat_rate: i32,
@@ -251,6 +268,7 @@ impl Default for Config {
             lock_cmd: vec!["swaylock".to_string()],
             update_activation_environment: true,
             xcursor_theme: None,
+            xcursor_size: None,
             main_modifier: MainModifier::default(),
 
             repeat_rate: 50,
@@ -267,10 +285,46 @@ impl Default for Config {
     }
 }
 
+/// XCursor theme used when nothing else names one.
+const DEFAULT_XCURSOR_THEME: &str = "default";
+/// XCursor size used when nothing else sets one.
+const DEFAULT_XCURSOR_SIZE: u32 = 24;
+
+impl Config {
+    /// Resolved XCursor theme. Name and size are resolved independently:
+    /// config file, then `XCURSOR_THEME`/`XCURSOR_SIZE` as programs launched
+    /// by Canoe see them (the `[env]` table overriding Canoe's own
+    /// environment). Either stays `None` if none of these sets it.
+    pub fn xcursor_theme_resolved(&self) -> XCursorTheme {
+        self.xcursor_theme_resolved_with(|name| std::env::var(name).ok())
+    }
+
+    /// [`Self::xcursor_theme_resolved`] with Canoe's own environment read
+    /// through `lookup`.
+    fn xcursor_theme_resolved_with(&self, lookup: impl Fn(&str) -> Option<String>) -> XCursorTheme {
+        let env = |name: &str| {
+            self.env
+                .get(name)
+                .cloned()
+                .or_else(|| lookup(name))
+                .filter(|value| !value.is_empty())
+        };
+        XCursorTheme {
+            name: self.xcursor_theme.clone().or_else(|| env("XCURSOR_THEME")),
+            size: self
+                .xcursor_size
+                .or_else(|| env("XCURSOR_SIZE").and_then(|s| s.trim().parse().ok()))
+                .filter(|&size| size > 0),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct FileConfig {
     env: Option<HashMap<String, String>>,
     main_modifier: Option<MainModifier>,
+    xcursor_theme: Option<String>,
+    xcursor_size: Option<u32>,
     launcher_cmd: Option<StringOrVec>,
     terminal_cmd: Option<StringOrVec>,
     lock_cmd: Option<StringOrVec>,
@@ -735,6 +789,13 @@ impl Config {
         if let Some(main_modifier) = file.main_modifier {
             self.main_modifier = main_modifier;
         }
+        if let Some(name) = file.xcursor_theme {
+            let name = name.trim();
+            self.xcursor_theme = (!name.is_empty()).then(|| name.to_string());
+        }
+        if let Some(size) = file.xcursor_size {
+            self.xcursor_size = (size > 0).then_some(size);
+        }
         if let Some(launcher_cmd) = string_or_vec(file.launcher_cmd) {
             let launcher_cmd = clean_cmd_args(launcher_cmd);
             if !launcher_cmd.is_empty() {
@@ -910,6 +971,69 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn test_xcursor_parsing() {
+        let parse = |contents: &str| {
+            let mut config = Config::default();
+            config.apply(toml::from_str(contents).expect("parse config"));
+            (config.xcursor_theme, config.xcursor_size)
+        };
+
+        assert_eq!(parse(""), (None, None));
+        assert_eq!(
+            parse("xcursor_theme = \" Adwaita \"\nxcursor_size = 32"),
+            (Some("Adwaita".to_string()), Some(32))
+        );
+        assert_eq!(
+            parse("xcursor_theme = \"Adwaita\""),
+            (Some("Adwaita".to_string()), None)
+        );
+        assert_eq!(parse("xcursor_size = 32"), (None, Some(32)));
+        // Blank names and zero sizes count as unset.
+        assert_eq!(
+            parse("xcursor_theme = \"  \"\nxcursor_size = 0"),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn test_xcursor_resolution_order() {
+        let own = |name: &str| match name {
+            "XCURSOR_THEME" => Some("Own".to_string()),
+            "XCURSOR_SIZE" => Some("16".to_string()),
+            _ => None,
+        };
+        let resolve = |config: &Config| {
+            let theme = config.xcursor_theme_resolved_with(own);
+            (theme.name.expect("name"), theme.size.expect("size"))
+        };
+
+        let mut config = Config::default();
+        assert_eq!(resolve(&config), ("Own".to_string(), 16));
+
+        // [env] overrides Canoe's own environment ...
+        config
+            .env
+            .insert("XCURSOR_THEME".to_string(), "Env".to_string());
+        config
+            .env
+            .insert("XCURSOR_SIZE".to_string(), "32".to_string());
+        assert_eq!(resolve(&config), ("Env".to_string(), 32));
+
+        // ... and the config file settings override both.
+        config.xcursor_theme = Some("File".to_string());
+        config.xcursor_size = Some(48);
+        assert_eq!(resolve(&config), ("File".to_string(), 48));
+
+        // Without any of them, nothing is set and the defaults apply.
+        let theme = Config::default().xcursor_theme_resolved_with(|_| None);
+        assert_eq!(theme, XCursorTheme::default());
+        assert_eq!(
+            (theme.name_or_default(), theme.size_or_default()),
+            ("default", 24)
+        );
     }
 
     #[test]
