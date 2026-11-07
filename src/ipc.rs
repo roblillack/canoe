@@ -61,8 +61,22 @@ impl ShareServer {
     pub fn bind() -> io::Result<Self> {
         let path = socket_path()
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "XDG_RUNTIME_DIR is not set"))?;
-        // A stale socket from an earlier run would make bind fail. Only one
-        // window manager runs per display, so whatever is there is ours.
+        Self::bind_at(path)
+    }
+
+    fn bind_at(path: PathBuf) -> io::Result<Self> {
+        // This runs before River tells us whether it accepts us as the
+        // window manager. If another canoe still answers on the socket, it is
+        // the one River uses, and taking the socket over (or removing it on
+        // exit) would break its screen sharing.
+        if UnixStream::connect(&path).is_ok() {
+            return Err(io::Error::new(
+                io::ErrorKind::AddrInUse,
+                "another window manager is answering on this display",
+            ));
+        }
+        // Nobody answers, so a socket file left there is stale and would
+        // make bind fail.
         let _ = std::fs::remove_file(&path);
         let listener = UnixListener::bind(&path)?;
         listener.set_nonblocking(true)?;
@@ -266,5 +280,27 @@ mod tests {
         assert_eq!(parse_request(b"canoe-share-picker 1\n"), Some(vec![]));
         assert_eq!(parse_request(b"something else\nMonitor: DP-1\n"), None);
         assert_eq!(parse_request(b""), None);
+    }
+
+    #[test]
+    fn leaves_the_socket_of_a_running_server_alone() {
+        let path = std::env::temp_dir().join(format!("canoe-ipc-test-{}.sock", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+
+        let running = ShareServer::bind_at(path.clone()).unwrap();
+        let second = ShareServer::bind_at(path.clone());
+        assert_eq!(
+            second.err().map(|e| e.kind()),
+            Some(io::ErrorKind::AddrInUse)
+        );
+        assert!(UnixStream::connect(&path).is_ok());
+
+        // A socket nobody listens on any more is replaced.
+        drop(running);
+        drop(UnixListener::bind(&path).unwrap());
+        let replacement = ShareServer::bind_at(path.clone()).unwrap();
+        assert!(UnixStream::connect(&path).is_ok());
+        drop(replacement);
+        assert!(!path.exists());
     }
 }
