@@ -11,9 +11,9 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Weak;
 use std::time::Instant;
-use wayland_client::Proxy;
 use wayland_client::protocol::wl_pointer::WlPointer;
 use wayland_client::protocol::wl_seat::WlSeat;
+use wayland_client::Proxy;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{
     Shape as CursorShape, WpCursorShapeDeviceV1,
 };
