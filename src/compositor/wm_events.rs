@@ -629,7 +629,8 @@ impl State {
         if managed.reported_usable != Some(usable) {
             managed.reported_usable = Some(usable);
             let id = managed.id;
-            if let Some(out) = self.context.borrow().outputs.get(&id) {
+            let mut context = self.context.borrow_mut();
+            if let Some(out) = context.outputs.get(&id).cloned() {
                 let mut out = out.borrow_mut();
                 out.update_non_exclusive_area(usable.0, usable.1, usable.2, usable.3);
                 // The desktop surface's input region leaves exclusive zones
@@ -637,7 +638,11 @@ impl State {
                 if let Some(desktop) = out.desktop_surface.as_mut() {
                     desktop.dirty = true;
                 }
+                // Snapped and maximized windows follow at the next manage
+                // sequence.
+                context.pending_usable_area_changes.push(id);
             }
+            drop(context);
             self.schedule_wm();
         }
         self.update_layer_focus();
