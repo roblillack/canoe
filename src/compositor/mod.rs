@@ -8,8 +8,8 @@
 //! the window manager asked for (see `crate::wm`).
 
 pub mod apply;
-pub mod capture;
 pub mod backend;
+pub mod capture;
 pub mod cursor;
 pub mod handlers;
 pub mod input;
@@ -62,6 +62,10 @@ use smithay::wayland::xdg_activation::XdgActivationState;
 use crate::canoe::{self, Context};
 use crate::wm::{self, ClipBox, CursorShape, OutputKey, Requests, WindowKey};
 
+/// Where a window goes once its client drew the size proposed with it, and
+/// since when it waits.
+pub type PendingPosition = (Point<i32, Logical>, Size<i32, Logical>, Instant);
+
 /// A toplevel window the compositor shows.
 pub struct ManagedWindow {
     pub key: WindowKey,
@@ -88,7 +92,7 @@ pub struct ManagedWindow {
     /// A position to apply only once the client has drawn the size proposed
     /// along with it, so resizing from the left or top edge doesn't make the
     /// content jitter (River does this with transactions).
-    pub pending_position: Option<(Point<i32, Logical>, Size<i32, Logical>, Instant)>,
+    pub pending_position: Option<PendingPosition>,
     /// The client made its initial commit.
     pub initial_commit: bool,
 }
@@ -99,7 +103,10 @@ impl ManagedWindow {
     }
 
     /// Where the window's surface (not its geometry) has its origin.
-    pub fn surface_origin(&self, fullscreen_at: Option<Point<i32, Logical>>) -> Point<i32, Logical> {
+    pub fn surface_origin(
+        &self,
+        fullscreen_at: Option<Point<i32, Logical>>,
+    ) -> Point<i32, Logical> {
         fullscreen_at.unwrap_or(self.pos) - self.window.geometry().loc
     }
 }
@@ -147,6 +154,7 @@ pub enum LockState {
     Locked,
 }
 
+#[allow(dead_code)] // protocol states are kept for their globals
 pub struct State {
     pub display_handle: DisplayHandle,
     pub loop_handle: LoopHandle<'static, State>,
@@ -234,7 +242,8 @@ pub struct State {
     pub startup_pending: bool,
 
     /// Black backdrops behind fullscreen windows, per output.
-    pub backdrop_ids: HashMap<OutputKey, smithay::backend::renderer::element::solid::SolidColorBuffer>,
+    pub backdrop_ids:
+        HashMap<OutputKey, smithay::backend::renderer::element::solid::SolidColorBuffer>,
     /// The backend draws the cursor itself (a nested window's host cursor).
     pub cursor_hidden_by_backend: bool,
     /// Leave the cursor out (for screen captures without it).
@@ -304,8 +313,8 @@ impl State {
             let config = &context.borrow().config;
             seat.add_keyboard(
                 XkbConfig::default(),
-                config.repeat_delay as i32,
-                config.repeat_rate as i32,
+                config.repeat_delay,
+                config.repeat_rate,
             )?;
         }
         seat.add_pointer();
@@ -333,12 +342,9 @@ impl State {
         )?;
 
         let theme = context.borrow().config.xcursor_theme_resolved();
-        let cursor = cursor::CursorTheme::new(
-            theme.name_or_default(),
-            theme.size_or_default(),
-        );
+        let cursor = cursor::CursorTheme::new(theme.name_or_default(), theme.size_or_default());
 
-        let mut state = State {
+        let state = State {
             display_handle: dh,
             loop_handle,
             loop_signal,
@@ -486,13 +492,17 @@ impl State {
             if window.hidden {
                 continue;
             }
-            window.window.send_frame(output, time, Some(Duration::ZERO), |_, _| {
-                Some(output.clone())
-            });
+            window
+                .window
+                .send_frame(output, time, Some(Duration::ZERO), |_, _| {
+                    Some(output.clone())
+                });
         }
         let map = smithay::desktop::layer_map_for_output(output);
         for layer in map.layers() {
-            layer.send_frame(output, time, Some(Duration::ZERO), |_, _| Some(output.clone()));
+            layer.send_frame(output, time, Some(Duration::ZERO), |_, _| {
+                Some(output.clone())
+            });
         }
         drop(map);
         if let Some(managed) = self.managed_output(output) {
@@ -506,7 +516,8 @@ impl State {
                 );
             }
         }
-        if let smithay::input::pointer::CursorImageStatus::Surface(ref surface) = self.client_cursor {
+        if let smithay::input::pointer::CursorImageStatus::Surface(ref surface) = self.client_cursor
+        {
             smithay::desktop::utils::send_frames_surface_tree(
                 surface,
                 output,
@@ -520,7 +531,12 @@ impl State {
     /// Housekeeping once per loop iteration.
     pub fn refresh(&mut self) {
         self.popups.cleanup();
-        for output in self.outputs.iter().map(|o| o.output.clone()).collect::<Vec<_>>() {
+        for output in self
+            .outputs
+            .iter()
+            .map(|o| o.output.clone())
+            .collect::<Vec<_>>()
+        {
             smithay::desktop::layer_map_for_output(&output).cleanup();
         }
         self.foreign_toplevel_state.cleanup_closed_handles();

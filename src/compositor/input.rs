@@ -6,7 +6,6 @@ use smithay::backend::input::{
     KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
 };
 use smithay::desktop::{layer_map_for_output, WindowSurfaceType};
-use smithay::desktop::space::SpaceElement;
 use smithay::input::keyboard::{FilterResult, Keycode, ModifiersState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
 use smithay::output::Output;
@@ -17,6 +16,9 @@ use smithay::wayland::shell::wlr_layer::{KeyboardInteractivity, Layer as WlrLaye
 use super::{KeyConsumer, LockState, State};
 use crate::canoe::{self, PointerTarget};
 use crate::config::modifiers;
+
+/// A relative motion: delta, unaccelerated delta, timestamp in µs.
+pub type RelativeMotion = (Point<f64, Logical>, Point<f64, Logical>, u64);
 
 /// What is under the pointer.
 #[derive(Debug, Clone)]
@@ -108,11 +110,13 @@ impl State {
             }
             InputEvent::PointerAxis { event } => {
                 let source = event.source();
+                let factor = self.context.borrow().config.scroll_factor;
                 let mut frame = AxisFrame::new(event.time_msec()).source(source);
                 for axis in [Axis::Horizontal, Axis::Vertical] {
-                    let amount = event
-                        .amount(axis)
-                        .unwrap_or_else(|| event.amount_v120(axis).unwrap_or(0.0) * 15.0 / 120.0);
+                    let amount = factor
+                        * event
+                            .amount(axis)
+                            .unwrap_or_else(|| event.amount_v120(axis).unwrap_or(0.0) * 15.0 / 120.0);
                     if amount != 0.0 {
                         frame = frame.value(axis, amount);
                         if let Some(v120) = event.amount_v120(axis) {
@@ -145,42 +149,57 @@ impl State {
         };
         self.idle_notifier_state.notify_activity(&self.seat);
 
-        let action = keyboard.input(self, keycode, state_key, serial, time, |state, _mods, handle| {
-            if pressed {
-                let raw: Vec<u32> = handle.raw_syms().iter().map(|s| s.raw()).collect();
-                let translated: Vec<u32> =
-                    handle.modified_syms().iter().map(|s| s.raw()).collect();
-                for sym in &translated {
-                    let vt = sym.wrapping_sub(xkbcommon::xkb::keysyms::KEY_XF86Switch_VT_1);
-                    if vt < 12 {
-                        state.key_consumers.insert(keycode, KeyConsumer::Binding(None));
-                        return FilterResult::Intercept(Some(KeyAction::SwitchVt(vt as i32 + 1)));
+        let action = keyboard.input(
+            self,
+            keycode,
+            state_key,
+            serial,
+            time,
+            |state, _mods, handle| {
+                if pressed {
+                    let raw: Vec<u32> = handle.raw_syms().iter().map(|s| s.raw()).collect();
+                    let translated: Vec<u32> =
+                        handle.modified_syms().iter().map(|s| s.raw()).collect();
+                    for sym in &translated {
+                        let vt = sym.wrapping_sub(xkbcommon::xkb::keysyms::KEY_XF86Switch_VT_1);
+                        if vt < 12 {
+                            state
+                                .key_consumers
+                                .insert(keycode, KeyConsumer::Binding(None));
+                            return FilterResult::Intercept(Some(KeyAction::SwitchVt(
+                                vt as i32 + 1,
+                            )));
+                        }
+                    }
+                    // Shift is what translation usually consumes.
+                    let consumed = if raw != translated {
+                        modifiers::SHIFT
+                    } else {
+                        0
+                    };
+                    if let Some(index) =
+                        state.match_xkb_binding(&raw, &translated, previous_mods, consumed)
+                    {
+                        state
+                            .key_consumers
+                            .insert(keycode, KeyConsumer::Binding(Some(index)));
+                        return FilterResult::Intercept(Some(KeyAction::Binding(index, true)));
+                    }
+                    state.key_consumers.insert(keycode, KeyConsumer::Client);
+                    FilterResult::Forward
+                } else {
+                    match state.key_consumers.remove(&keycode) {
+                        Some(KeyConsumer::Binding(Some(index))) => {
+                            FilterResult::Intercept(Some(KeyAction::Binding(index, false)))
+                        }
+                        Some(KeyConsumer::Binding(None)) => FilterResult::Intercept(None),
+                        // Releases without a press are dropped, as River does.
+                        None => FilterResult::Intercept(None),
+                        Some(KeyConsumer::Client) => FilterResult::Forward,
                     }
                 }
-                // Shift is what translation usually consumes.
-                let consumed = if raw != translated { modifiers::SHIFT } else { 0 };
-                if let Some(index) =
-                    state.match_xkb_binding(&raw, &translated, previous_mods, consumed)
-                {
-                    state
-                        .key_consumers
-                        .insert(keycode, KeyConsumer::Binding(Some(index)));
-                    return FilterResult::Intercept(Some(KeyAction::Binding(index, true)));
-                }
-                state.key_consumers.insert(keycode, KeyConsumer::Client);
-                FilterResult::Forward
-            } else {
-                match state.key_consumers.remove(&keycode) {
-                    Some(KeyConsumer::Binding(Some(index))) => {
-                        FilterResult::Intercept(Some(KeyAction::Binding(index, false)))
-                    }
-                    Some(KeyConsumer::Binding(None)) => FilterResult::Intercept(None),
-                    // Releases without a press are dropped, as River does.
-                    None => FilterResult::Intercept(None),
-                    Some(KeyConsumer::Client) => FilterResult::Forward,
-                }
-            }
-        });
+            },
+        );
         self.key_modifiers = modifier_mask(&keyboard.modifier_state());
 
         match action {
@@ -226,7 +245,7 @@ impl State {
         &mut self,
         location: Point<f64, Logical>,
         time: u32,
-        relative: Option<(Point<f64, Logical>, Point<f64, Logical>, u64)>,
+        relative: Option<RelativeMotion>,
     ) {
         let location = self.clamp_to_outputs(location);
         self.pointer_location = location;
@@ -323,7 +342,9 @@ impl State {
                 }
                 None
             }
-            Hit::Client { surface, origin, .. } => {
+            Hit::Client {
+                surface, origin, ..
+            } => {
                 self.leave_canoe_target();
                 Some((surface, origin))
             }
@@ -434,7 +455,8 @@ impl State {
                 }
                 Hit::Client { ref layer, .. } => {
                     if let Some(layer) = layer.clone() {
-                        if self.layer_interactivity(&layer) == Some(KeyboardInteractivity::OnDemand) {
+                        if self.layer_interactivity(&layer) == Some(KeyboardInteractivity::OnDemand)
+                        {
                             self.focus_layer_on_demand(&layer);
                         }
                     }
@@ -511,7 +533,8 @@ impl State {
             | PointerTarget::SharePicker(id) => output_origin(id)?,
             PointerTarget::Menu => {
                 let menu = context.window_menu.as_ref()?;
-                output_origin(menu.output_id)? + Point::<i32, Logical>::from((menu.origin_x, menu.origin_y))
+                output_origin(menu.output_id)?
+                    + Point::<i32, Logical>::from((menu.origin_x, menu.origin_y))
             }
             PointerTarget::Titlebar(window_id) => {
                 let window = self.window_by_id(window_id)?;
@@ -580,11 +603,12 @@ impl State {
             }
             if let Some(menu) = context.window_menu.as_ref() {
                 if menu.output_id == output_id {
-                    let menu_local = local - Point::<f64, Logical>::from((menu.origin_x as f64, menu.origin_y as f64));
-                    if menu.surface.accepts_input_at(
-                        menu_local.x.floor() as i32,
-                        menu_local.y.floor() as i32,
-                    ) {
+                    let menu_local = local
+                        - Point::<f64, Logical>::from((menu.origin_x as f64, menu.origin_y as f64));
+                    if menu
+                        .surface
+                        .accepts_input_at(menu_local.x.floor() as i32, menu_local.y.floor() as i32)
+                    {
                         return Hit::Canoe {
                             target: PointerTarget::Menu,
                             local: menu_local,
@@ -665,7 +689,12 @@ impl State {
         Hit::Nothing
     }
 
-    fn layer_hit(&self, output: &Output, layer: WlrLayer, location: Point<f64, Logical>) -> Option<Hit> {
+    fn layer_hit(
+        &self,
+        output: &Output,
+        layer: WlrLayer,
+        location: Point<f64, Logical>,
+    ) -> Option<Hit> {
         let output_loc = self.output_geometry(output)?.loc;
         let map = layer_map_for_output(output);
         let local = location - output_loc.to_f64();
@@ -682,12 +711,19 @@ impl State {
     }
 
     /// The part of a window (popups, frame, content) at `location`.
-    fn window_hit(&self, window: &super::ManagedWindow, location: Point<f64, Logical>) -> Option<Hit> {
+    fn window_hit(
+        &self,
+        window: &super::ManagedWindow,
+        location: Point<f64, Logical>,
+    ) -> Option<Hit> {
         let origin = window.surface_origin(None).to_f64();
         // Popups are above everything else of the window.
         if let Some((surface, loc)) = window
             .window
-            .surface_under(location - origin, WindowSurfaceType::POPUP | WindowSurfaceType::SUBSURFACE)
+            .surface_under(
+                location - origin,
+                WindowSurfaceType::POPUP | WindowSurfaceType::SUBSURFACE,
+            )
             .filter(|(surface, _)| surface != window.wl_surface())
         {
             if !self.is_toplevel_subsurface(window, &surface) {
@@ -706,8 +742,10 @@ impl State {
             if let Some(w) = context.windows.get(&window.id) {
                 let w = w.borrow();
                 if let Some(titlebar) = w.titlebar.as_ref() {
-                    if let canoe::surface::Role::Decoration { offset, .. } = titlebar.surface.role() {
-                        let frame_origin = (window.pos + Point::<i32, Logical>::from(offset)).to_f64();
+                    if let canoe::surface::Role::Decoration { offset, .. } = titlebar.surface.role()
+                    {
+                        let frame_origin =
+                            (window.pos + Point::<i32, Logical>::from(offset)).to_f64();
                         let local = location - frame_origin;
                         if titlebar
                             .surface
@@ -738,9 +776,10 @@ impl State {
         if !visible.to_f64().contains(location) && clip.is_enabled() {
             return None;
         }
-        let (surface, loc) = window
-            .window
-            .surface_under(location - origin, WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE)?;
+        let (surface, loc) = window.window.surface_under(
+            location - origin,
+            WindowSurfaceType::TOPLEVEL | WindowSurfaceType::SUBSURFACE,
+        )?;
         Some(Hit::Client {
             surface,
             origin: origin + loc.to_f64(),

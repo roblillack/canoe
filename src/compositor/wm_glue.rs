@@ -11,7 +11,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use crate::binding;
-use crate::canoe::{self, Context};
+use crate::canoe;
 use crate::canoe::scale::FractionalSurface;
 use crate::canoe::surface::{Anchor, KeyboardInteractivity, Layer, LayerSurface, Surface};
 use crate::config;
@@ -25,15 +25,14 @@ pub(super) const CLOSE_DOUBLE_CLICK: std::time::Duration = std::time::Duration::
 /// pixels from the output's corner: what the compositor rounds the window's
 /// and its decorations' edges from. A window spanning outputs lines up on
 /// the one it belongs to.
-pub(super) fn window_origin(window: &canoe::window::Window, output: Option<&canoe::Output>) -> (i32, i32) {
+pub(super) fn window_origin(
+    window: &canoe::window::Window,
+    output: Option<&canoe::Output>,
+) -> (i32, i32) {
     match output {
         Some(output) => (window.x - output.x, window.y - output.y),
         None => (window.x, window.y),
     }
-}
-
-pub(super) fn request_manage_dirty(state: &mut State) {
-    state.schedule_wm();
 }
 
 pub(super) fn render_window_menu(state: &mut State) {
@@ -71,18 +70,13 @@ pub(super) fn open_window_menu_with_items(
     header_title: Option<String>,
     initial_step: Option<binding::Direction>,
 ) {
-
     let (output_info, focused_window, menu_theme) = {
         let context = state.context.borrow();
         let focused = context.focused_window;
         let menu_theme = canoe::MenuTheme::from_ui(&context.config.ui);
         let info = context.outputs.get(&output_id).map(|output| {
             let out = output.borrow();
-            (
-                out.width,
-                out.height,
-                out.render_scale(),
-            )
+            (out.width, out.height, out.render_scale())
         });
         (info, focused, menu_theme)
     };
@@ -96,7 +90,12 @@ pub(super) fn open_window_menu_with_items(
     }
 
     let surface = Surface::new();
-    let layer_surface = LayerSurface::new(&surface, Some(output_id), Layer::Overlay, "canoe-window-menu");
+    let layer_surface = LayerSurface::new(
+        &surface,
+        Some(output_id),
+        Layer::Overlay,
+        "canoe-window-menu",
+    );
 
     let fractional = FractionalSurface::new();
     let mut menu = canoe::WindowMenu::new(
@@ -143,16 +142,12 @@ pub(super) fn open_window_menu_with_items(
     menu.origin_x = local_x;
     menu.origin_y = local_y;
 
-    menu.layer_surface.set_anchor(
-        Anchor::Top
-            | Anchor::Left,
-    );
+    menu.layer_surface.set_anchor(Anchor::Top | Anchor::Left);
     menu.layer_surface.set_margin(local_y, 0, 0, local_x);
     menu.layer_surface
         .set_size(menu.width as u32, menu.height as u32);
-    menu.layer_surface.set_keyboard_interactivity(
-        KeyboardInteractivity::None,
-    );
+    menu.layer_surface
+        .set_keyboard_interactivity(KeyboardInteractivity::None);
     menu.layer_surface.set_exclusive_zone(-1);
     menu.surface.commit();
 
@@ -193,20 +188,16 @@ pub(super) fn open_window_menu(
         mode,
         items,
         header_title,
-        initial_step
+        initial_step,
     );
 }
 
-pub(super) fn ensure_window_menu_shield(
-    state: &mut State,
-    output_id: canoe::OutputId,
-) {
-
+pub(super) fn ensure_window_menu_shield(state: &mut State, output_id: canoe::OutputId) {
     let output = {
         let context = state.context.borrow();
         context.outputs.get(&output_id).cloned()
     };
-    let Some(output) = output else {
+    let Some(_output) = output else {
         return;
     };
 
@@ -220,18 +211,16 @@ pub(super) fn ensure_window_menu_shield(
         context.window_menu_shield = None;
     }
     let surface = Surface::new();
-    let layer_surface = LayerSurface::new(&surface, Some(output_id), Layer::Overlay, "canoe-window-menu-shield");
+    let layer_surface = LayerSurface::new(
+        &surface,
+        Some(output_id),
+        Layer::Overlay,
+        "canoe-window-menu-shield",
+    );
 
-    layer_surface.set_anchor(
-        Anchor::Top
-            | Anchor::Bottom
-            | Anchor::Left
-            | Anchor::Right,
-    );
+    layer_surface.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
     layer_surface.set_exclusive_zone(-1);
-    layer_surface.set_keyboard_interactivity(
-        KeyboardInteractivity::None,
-    );
+    layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
     layer_surface.set_size(0, 0);
     surface.commit();
 
@@ -239,7 +228,6 @@ pub(super) fn ensure_window_menu_shield(
         Some(canoe::ShieldSurface::new(surface, layer_surface, output_id));
     configure_canoe_layers(state, output_id);
 }
-
 
 /// Rebuild every seat's key bindings from the freshly reloaded config, so
 /// `[hotkeys]` and `main_modifier` edits take effect (see
@@ -251,10 +239,7 @@ pub(super) fn reregister_xkb_bindings(state: &State) {
     }
 }
 
-pub(super) fn update_menu_hover_from_global(
-    state: &mut State,
-    seat_id: canoe::SeatId,
-) {
+pub(super) fn update_menu_hover_from_global(state: &mut State, seat_id: canoe::SeatId) {
     let (px, py) = {
         let context = state.context.borrow();
         let Some(seat) = context.seats.get(&seat_id) else {
@@ -441,7 +426,11 @@ pub(super) fn clear_titlebar_state(state: &mut State, window_id: canoe::WindowId
     changed
 }
 
-pub(super) fn menu_matches_app_id(context: &canoe::Context, menu: &canoe::WindowMenu, app_id: &str) -> bool {
+pub(super) fn menu_matches_app_id(
+    context: &canoe::Context,
+    menu: &canoe::WindowMenu,
+    app_id: &str,
+) -> bool {
     if menu.items.is_empty() {
         return false;
     }
@@ -454,10 +443,7 @@ pub(super) fn menu_matches_app_id(context: &canoe::Context, menu: &canoe::Window
     })
 }
 
-pub(super) fn handle_window_menu_cycle(
-    state: &mut State,
-    direction: binding::Direction,
-) {
+pub(super) fn handle_window_menu_cycle(state: &mut State, direction: binding::Direction) {
     let mut should_render = false;
     let mut open_new = false;
     let mut ensure_shield = None;
@@ -536,7 +522,7 @@ pub(super) fn handle_window_menu_cycle(
         true,
         canoe::WindowMenuMode::AltTab,
         Some("Windows".to_string()),
-        Some(direction)
+        Some(direction),
     );
     ensure_window_menu_shield(state, output_id);
 }
@@ -644,7 +630,7 @@ pub(super) fn handle_window_menu_cycle_app(state: &mut State) {
         canoe::WindowMenuMode::AltTab,
         items,
         Some(app_id),
-        Some(binding::Direction::Forward)
+        Some(binding::Direction::Forward),
     );
     ensure_window_menu_shield(state, output_id);
 }
@@ -657,10 +643,7 @@ pub(super) fn handle_window_menu_commit(state: &mut State, seat_id: canoe::SeatI
         .queue_action(binding::Action::WindowMenuCommit);
 }
 
-pub(super) fn ensure_desktop_surfaces(
-    state: &mut State,
-    output_id: canoe::OutputId,
-) {
+pub(super) fn ensure_desktop_surfaces(state: &mut State, output_id: canoe::OutputId) {
     ensure_desktop_background(state, output_id);
     ensure_desktop_surface(state, output_id);
 }
@@ -672,11 +655,7 @@ pub(super) fn ensure_desktop_surfaces(
 /// The surface is kept even when the fill is fully transparent. Creating it
 /// later, say after a reload that makes the fill visible, would put it on
 /// top of a wallpaper that is already running.
-pub(super) fn ensure_desktop_background(
-    state: &mut State,
-    output_id: canoe::OutputId,
-) {
-
+pub(super) fn ensure_desktop_background(state: &mut State, output_id: canoe::OutputId) {
     let output = {
         let context = state.context.borrow();
         context.outputs.get(&output_id).cloned()
@@ -689,18 +668,16 @@ pub(super) fn ensure_desktop_background(
         return;
     }
     let surface = Surface::new();
-    let layer_surface = LayerSurface::new(&surface, Some(output_id), Layer::Background, "canoe-desktop-background");
+    let layer_surface = LayerSurface::new(
+        &surface,
+        Some(output_id),
+        Layer::Background,
+        "canoe-desktop-background",
+    );
 
-    layer_surface.set_anchor(
-        Anchor::Top
-            | Anchor::Bottom
-            | Anchor::Left
-            | Anchor::Right,
-    );
+    layer_surface.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
     layer_surface.set_exclusive_zone(-1);
-    layer_surface.set_keyboard_interactivity(
-        KeyboardInteractivity::None,
-    );
+    layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
     layer_surface.set_size(0, 0);
     surface.commit();
     output.borrow_mut().desktop_background = Some(canoe::DesktopSurface::new(
@@ -711,11 +688,7 @@ pub(super) fn ensure_desktop_background(
     ));
 }
 
-pub(super) fn ensure_desktop_surface(
-    state: &mut State,
-    output_id: canoe::OutputId,
-) {
-
+pub(super) fn ensure_desktop_surface(state: &mut State, output_id: canoe::OutputId) {
     let output = {
         let context = state.context.borrow();
         context.outputs.get(&output_id).cloned()
@@ -728,18 +701,12 @@ pub(super) fn ensure_desktop_surface(
         return;
     }
     let surface = Surface::new();
-    let layer_surface = LayerSurface::new(&surface, Some(output_id), Layer::Bottom, "canoe-desktop");
+    let layer_surface =
+        LayerSurface::new(&surface, Some(output_id), Layer::Bottom, "canoe-desktop");
 
-    layer_surface.set_anchor(
-        Anchor::Top
-            | Anchor::Bottom
-            | Anchor::Left
-            | Anchor::Right,
-    );
+    layer_surface.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
     layer_surface.set_exclusive_zone(-1);
-    layer_surface.set_keyboard_interactivity(
-        KeyboardInteractivity::None,
-    );
+    layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
     layer_surface.set_size(0, 0);
     surface.commit();
 
@@ -754,10 +721,7 @@ pub(super) fn ensure_desktop_surface(
 
 /// Repaint the solid-fill background surface when dirty. Purely visual:
 /// the input region is always empty so every event reaches clients below.
-pub(super) fn render_desktop_background(
-    state: &mut State,
-    output_id: canoe::OutputId,
-) {
+pub(super) fn render_desktop_background(state: &mut State, output_id: canoe::OutputId) {
     let (bg_color, dirty) = {
         let context = state.context.borrow();
         let dirty = context
@@ -794,10 +758,7 @@ pub(super) fn render_desktop_background(
     background.dirty = false;
 }
 
-pub(super) fn render_desktop_surface(
-    state: &mut State,
-    output_id: canoe::OutputId,
-) {
+pub(super) fn render_desktop_surface(state: &mut State, output_id: canoe::OutputId) {
     // Check dirty flag early to skip all work when nothing changed.
     {
         let context = state.context.borrow();
@@ -917,7 +878,10 @@ pub(super) fn render_all_desktop_surfaces(state: &mut State) {
 }
 
 /// Answer a `canoe --share-picker` request without asking the user.
-pub(super) fn decline_share_request(state: &mut State, request: canoe::share_picker::ShareRequestId) {
+pub(super) fn decline_share_request(
+    state: &mut State,
+    request: canoe::share_picker::ShareRequestId,
+) {
     if let Some(server) = state.share_server.as_mut() {
         server.reply(request, None);
     }
@@ -926,10 +890,7 @@ pub(super) fn decline_share_request(state: &mut State, request: canoe::share_pic
 /// Open the screen-sharing picker for a `canoe --share-picker` request: an
 /// overlay on every output that highlights the window or screen under the
 /// pointer.
-pub(super) fn start_share_picker(
-    state: &mut State,
-    request: ipc::ShareRequest,
-) {
+pub(super) fn start_share_picker(state: &mut State, request: ipc::ShareRequest) {
     let (seat_id, candidates) = {
         let context = state.context.borrow();
         // One question at a time; and nothing is shared from a locked screen.
@@ -973,11 +934,7 @@ pub(super) fn start_share_picker(
                 }
             }
         }
-        context
-            .outputs
-            .iter()
-            .map(|(&id, _)| id)
-            .collect()
+        context.outputs.iter().map(|(&id, _)| id).collect()
     };
 
     let theme = {
@@ -987,16 +944,15 @@ pub(super) fn start_share_picker(
     let mut picker = canoe::share_picker::SharePicker::new(request.id, seat_id, candidates, theme);
     for output_id in outputs {
         let surface = Surface::new();
-        let layer_surface = LayerSurface::new(&surface, Some(output_id), Layer::Overlay, "canoe-share-picker");
-        layer_surface.set_anchor(
-            Anchor::Top
-                | Anchor::Bottom
-                | Anchor::Left
-                | Anchor::Right,
+        let layer_surface = LayerSurface::new(
+            &surface,
+            Some(output_id),
+            Layer::Overlay,
+            "canoe-share-picker",
         );
+        layer_surface.set_anchor(Anchor::Top | Anchor::Bottom | Anchor::Left | Anchor::Right);
         layer_surface.set_exclusive_zone(-1);
-        layer_surface
-            .set_keyboard_interactivity(KeyboardInteractivity::None);
+        layer_surface.set_keyboard_interactivity(KeyboardInteractivity::None);
         layer_surface.set_size(0, 0);
         surface.commit();
         let fractional = FractionalSurface::new();
@@ -1069,10 +1025,7 @@ pub(super) fn render_share_picker(state: &mut State) {
 }
 
 /// Highlight the picker target under the seat's pointer.
-pub(super) fn update_share_picker_hover(
-    state: &mut State,
-    seat: &Rc<RefCell<canoe::Seat>>,
-) {
+pub(super) fn update_share_picker_hover(state: &mut State, seat: &Rc<RefCell<canoe::Seat>>) {
     let (px, py) = {
         let seat = seat.borrow();
         (seat.pointer_x, seat.pointer_y)
@@ -1150,308 +1103,301 @@ impl State {
     /// their decorations.
     pub(super) fn render_sequence(&mut self) {
         let state = self;
-    #[cfg(feature = "debug-logging")]
-    let total_t0 = Instant::now();
-    #[cfg(feature = "debug-logging")]
-    let handle_start_t0 = Instant::now();
-    state.context.borrow_mut().handle_render_start();
-    #[cfg(feature = "debug-logging")]
-    let handle_start_us = handle_start_t0.elapsed().as_micros();
+        #[cfg(feature = "debug-logging")]
+        let total_t0 = Instant::now();
+        #[cfg(feature = "debug-logging")]
+        let handle_start_t0 = Instant::now();
+        state.context.borrow_mut().handle_render_start();
+        #[cfg(feature = "debug-logging")]
+        let handle_start_us = handle_start_t0.elapsed().as_micros();
 
-    #[cfg(feature = "debug-logging")]
-    let render_t0 = Instant::now();
-    #[cfg(feature = "debug-logging")]
-    let mut titlebars_rendered = 0u32;
-    #[cfg(feature = "debug-logging")]
-    let mut shadows_rendered = 0u32;
-    #[cfg(feature = "debug-logging")]
-    let mut shadow_render_us = 0u128;
-    #[cfg(feature = "debug-logging")]
-    let mut titlebar_render_us = 0u128;
-    #[cfg(feature = "debug-logging")]
-    let mut windows_iterated = 0u32;
-    #[cfg(feature = "debug-logging")]
-    let mut input_region_us = 0u128;
+        #[cfg(feature = "debug-logging")]
+        let render_t0 = Instant::now();
+        #[cfg(feature = "debug-logging")]
+        let mut titlebars_rendered = 0u32;
+        #[cfg(feature = "debug-logging")]
+        let mut shadows_rendered = 0u32;
+        #[cfg(feature = "debug-logging")]
+        let mut shadow_render_us = 0u128;
+        #[cfg(feature = "debug-logging")]
+        let mut titlebar_render_us = 0u128;
+        #[cfg(feature = "debug-logging")]
+        let mut windows_iterated = 0u32;
+        #[cfg(feature = "debug-logging")]
+        let mut input_region_us = 0u128;
 
-    // Update shadows and titlebars
-    {
-        let context = state.context.borrow();
-        let focused_window = context.focused_window;
-        let ui = &context.config.ui;
+        // Update shadows and titlebars
+        {
+            let context = state.context.borrow();
+            let focused_window = context.focused_window;
+            let ui = &context.config.ui;
 
-        for window in context.windows.values() {
-            let mut w = window.borrow_mut();
+            for window in context.windows.values() {
+                let mut w = window.borrow_mut();
 
-            if w.hidden {
-                continue;
-            }
-
-            let width = w.width;
-            let height = w.height;
-            if width <= 0 || height <= 0 {
-                continue;
-            }
-
-            #[cfg(feature = "debug-logging")]
-            {
-                windows_iterated += 1;
-            }
-
-            let is_fullscreen =
-                !matches!(w.fullscreen, canoe::window::FullscreenState::None);
-            let is_focused = focused_window == Some(w.id);
-            let shadows_on = ui.shadows_enabled && !is_fullscreen && !w.maximized;
-            let shadow_size = if !shadows_on {
-                0
-            } else if is_focused {
-                ui.shadows_active_size.max(0)
-            } else {
-                ui.shadows_inactive_size.max(0)
-            };
-            // Size the buffer for the larger of the active/inactive
-            // sizes so it stays constant across focus changes (no
-            // realloc); a smaller band is drawn into it when inactive.
-            let buffer_shadow_size = if !shadows_on {
-                0
-            } else {
-                ui.shadows_active_size
-                    .max(0)
-                    .max(ui.shadows_inactive_size.max(0))
-            };
-            let shadow_color = ui.shadows_color;
-            let use_ssd = w.decoration != Some(config::WindowDecoration::Csd);
-            let border_width = if use_ssd {
-                canoe::titlebar::border_width(ui, w.frame_style())
-            } else {
-                0
-            };
-            let titlebar_height = if use_ssd {
-                canoe::titlebar::titlebar_height(ui)
-            } else {
-                0
-            };
-            let swallow_top = if use_ssd { w.swallow_top } else { 0 };
-            let content_height = if use_ssd {
-                (height - swallow_top).max(1)
-            } else {
-                height.max(1)
-            };
-            let frame_width = (width + border_width * 2).max(1);
-            let frame_height =
-                (content_height + titlebar_height + border_width * 2).max(1);
-            let fit = w.frame_fit();
-
-            let window_output = w.output.as_ref().and_then(|o| o.upgrade());
-            let window_output = window_output.as_ref().map(|o| o.borrow());
-            let (window_x, window_y) = window_origin(&w, window_output.as_deref());
-
-            // The rect sits `buffer_shadow_size` in from the
-            // buffer edges, so position the surface by that inset
-            // (constant across focus). The drop-shadow shift still
-            // tracks the actual band size.
-            let offset_x = if use_ssd {
-                -border_width - buffer_shadow_size
-            } else {
-                -buffer_shadow_size
-            };
-            let shadow_shift = shadow_size / 2;
-            let offset_y = if use_ssd {
-                -border_width - titlebar_height + swallow_top - buffer_shadow_size
-                    + shadow_shift
-            } else {
-                -buffer_shadow_size + shadow_shift
-            };
-
-            if let Some(ref mut shadow) = w.shadow {
-                let integer = window_output.as_ref().map(|o| o.scale).unwrap_or(1);
-                let device = shadow.fractional.device_scale(
-                    window_output.as_ref().and_then(|o| o.preferred_scale),
-                    integer,
-                );
-                let scale = canoe::scale::Scale::new(device);
-                shadow.ensure_buffer(
-                    frame_width,
-                    frame_height,
-                    buffer_shadow_size,
-                    scale,
-                    canoe::scale::Origin::new(window_x + offset_x, window_y + offset_y),
-                );
-                {
-                    #[cfg(feature = "debug-logging")]
-                    let ir_t0 = Instant::now();
-                    shadow.update_input_region();
-                    #[cfg(feature = "debug-logging")]
-                    {
-                        input_region_us += ir_t0.elapsed().as_micros();
-                    }
+                if w.hidden {
+                    continue;
                 }
+
+                let width = w.width;
+                let height = w.height;
+                if width <= 0 || height <= 0 {
+                    continue;
+                }
+
                 #[cfg(feature = "debug-logging")]
-                let sh_t0 = Instant::now();
-                // Cast the shadow from the device pixels the frame
-                // actually covers, its top dropped by the shift.
-                let frame = canoe::titlebar::DeviceFrame::new(
-                    &scale,
-                    fit,
-                    canoe::scale::Origin::new(
-                        window_x - border_width,
-                        window_y - border_width - titlebar_height + swallow_top,
-                    ),
-                    border_width,
-                    titlebar_height,
-                    width,
-                    content_height,
-                );
-                let drop = scale.px(shadow_shift).min(frame.outer.height - 1).max(0);
-                let cast = canoe::titlebar::Rect {
-                    y: frame.outer.y + drop,
-                    height: frame.outer.height - drop,
-                    ..frame.outer
+                {
+                    windows_iterated += 1;
+                }
+
+                let is_fullscreen = !matches!(w.fullscreen, canoe::window::FullscreenState::None);
+                let is_focused = focused_window == Some(w.id);
+                let shadows_on = ui.shadows_enabled && !is_fullscreen && !w.maximized;
+                let shadow_size = if !shadows_on {
+                    0
+                } else if is_focused {
+                    ui.shadows_active_size.max(0)
+                } else {
+                    ui.shadows_inactive_size.max(0)
                 };
-                let did_render =
-                    shadow.render(cast, shadow_size, shadow_color);
-                #[cfg(feature = "debug-logging")]
-                {
-                    shadow_render_us += sh_t0.elapsed().as_micros();
-                }
-                shadow.set_offset(offset_x, offset_y);
-                if did_render && shadow.is_ready() {
-                    shadow.sync_next_commit();
-                    shadow.commit();
-                    #[cfg(feature = "debug-logging")]
-                    {
-                        shadows_rendered += 1;
-                    }
-                }
-            }
-        }
+                // Size the buffer for the larger of the active/inactive
+                // sizes so it stays constant across focus changes (no
+                // realloc); a smaller band is drawn into it when inactive.
+                let buffer_shadow_size = if !shadows_on {
+                    0
+                } else {
+                    ui.shadows_active_size
+                        .max(0)
+                        .max(ui.shadows_inactive_size.max(0))
+                };
+                let shadow_color = ui.shadows_color;
+                let use_ssd = w.decoration != Some(config::WindowDecoration::Csd);
+                let border_width = if use_ssd {
+                    canoe::titlebar::border_width(ui, w.frame_style())
+                } else {
+                    0
+                };
+                let titlebar_height = if use_ssd {
+                    canoe::titlebar::titlebar_height(ui)
+                } else {
+                    0
+                };
+                let swallow_top = if use_ssd { w.swallow_top } else { 0 };
+                let content_height = if use_ssd {
+                    (height - swallow_top).max(1)
+                } else {
+                    height.max(1)
+                };
+                let frame_width = (width + border_width * 2).max(1);
+                let frame_height = (content_height + titlebar_height + border_width * 2).max(1);
+                let fit = w.frame_fit();
 
-        for (&window_id, window) in &context.windows {
-            let mut w = window.borrow_mut();
+                let window_output = w.output.as_ref().and_then(|o| o.upgrade());
+                let window_output = window_output.as_ref().map(|o| o.borrow());
+                let (window_x, window_y) = window_origin(&w, window_output.as_deref());
 
-            let hide_titlebar =
-                w.hidden || w.decoration == Some(config::WindowDecoration::Csd);
-            if hide_titlebar {
-                if let Some(ref mut titlebar) = w.titlebar {
-                    if titlebar.mapped {
-                        titlebar.sync_next_commit();
-                        titlebar.unmap();
-                    }
-                }
-                continue;
-            }
+                // The rect sits `buffer_shadow_size` in from the
+                // buffer edges, so position the surface by that inset
+                // (constant across focus). The drop-shadow shift still
+                // tracks the actual band size.
+                let offset_x = if use_ssd {
+                    -border_width - buffer_shadow_size
+                } else {
+                    -buffer_shadow_size
+                };
+                let shadow_shift = shadow_size / 2;
+                let offset_y = if use_ssd {
+                    -border_width - titlebar_height + swallow_top - buffer_shadow_size
+                        + shadow_shift
+                } else {
+                    -buffer_shadow_size + shadow_shift
+                };
 
-            // Extract window data before borrowing titlebar
-            let width = w.width;
-            let title = w.title.clone();
-            let is_focused = focused_window == Some(window_id);
-            let is_maximized = w.maximized;
-            let show_minimize = w.has_minimize_button();
-            let show_maximize = w.has_maximize_button();
-            let frame_style = w.frame_style();
-            let height = w.height;
-            let hovered_button = w.titlebar_hovered;
-            let titlebar_left_down = w.titlebar_left_down;
-            let swallow_top = w.swallow_top;
-            let frame_fit = w.frame_fit();
-
-            // Update titlebar if it exists and window has valid dimensions
-            let window_output = w.output.as_ref().and_then(|o| o.upgrade());
-            let window_output = window_output.as_ref().map(|o| o.borrow());
-            let (window_x, window_y) = window_origin(&w, window_output.as_deref());
-            let border_width = canoe::titlebar::border_width(ui, frame_style);
-            let titlebar_height = canoe::titlebar::titlebar_height(ui);
-            let (offset_x, offset_y) =
-                (-border_width, -border_width - titlebar_height + swallow_top);
-            if let Some(ref mut titlebar) = w.titlebar {
-                if width > 0 && height > 0 {
+                if let Some(ref mut shadow) = w.shadow {
                     let integer = window_output.as_ref().map(|o| o.scale).unwrap_or(1);
-                    let device = titlebar.fractional.device_scale(
+                    let device = shadow.fractional.device_scale(
                         window_output.as_ref().and_then(|o| o.preferred_scale),
                         integer,
                     );
                     let scale = canoe::scale::Scale::new(device);
-                    let content_height = (height - swallow_top).max(1);
-                    // Ensure buffer is allocated
-                    titlebar.ensure_buffer(
-                        width,
-                        content_height,
+                    shadow.ensure_buffer(
+                        frame_width,
+                        frame_height,
+                        buffer_shadow_size,
                         scale,
-                        canoe::scale::Origin::new(
-                            window_x + offset_x,
-                            window_y + offset_y,
-                        ),
-                        frame_fit,
-                        ui,
-                        frame_style,
+                        canoe::scale::Origin::new(window_x + offset_x, window_y + offset_y),
                     );
                     {
                         #[cfg(feature = "debug-logging")]
                         let ir_t0 = Instant::now();
-                        titlebar.update_input_region(ui, frame_style);
+                        shadow.update_input_region();
                         #[cfg(feature = "debug-logging")]
                         {
                             input_region_us += ir_t0.elapsed().as_micros();
                         }
                     }
-
-                    // Render titlebar content
                     #[cfg(feature = "debug-logging")]
-                    let tb_t0 = Instant::now();
-                    let did_render = titlebar.render(
-                        title.as_deref(),
-                        is_focused,
-                        is_maximized,
-                        show_minimize,
-                        show_maximize,
-                        frame_style,
-                        hovered_button,
-                        titlebar_left_down,
-                        ui,
+                    let sh_t0 = Instant::now();
+                    // Cast the shadow from the device pixels the frame
+                    // actually covers, its top dropped by the shift.
+                    let frame = canoe::titlebar::DeviceFrame::new(
+                        &scale,
+                        fit,
+                        canoe::scale::Origin::new(
+                            window_x - border_width,
+                            window_y - border_width - titlebar_height + swallow_top,
+                        ),
+                        border_width,
+                        titlebar_height,
+                        width,
+                        content_height,
                     );
+                    let drop = scale.px(shadow_shift).min(frame.outer.height - 1).max(0);
+                    let cast = canoe::titlebar::Rect {
+                        y: frame.outer.y + drop,
+                        height: frame.outer.height - drop,
+                        ..frame.outer
+                    };
+                    let did_render = shadow.render(cast, shadow_size, shadow_color);
                     #[cfg(feature = "debug-logging")]
                     {
-                        titlebar_render_us += tb_t0.elapsed().as_micros();
+                        shadow_render_us += sh_t0.elapsed().as_micros();
                     }
-
-                    // Position decoration so it sits above content with borders
-                    titlebar.set_offset(offset_x, offset_y);
-
-                    // Sync and commit (only if we have a buffer)
-                    if did_render && titlebar.is_ready() {
-                        titlebar.sync_next_commit();
-                        titlebar.commit();
+                    shadow.set_offset(offset_x, offset_y);
+                    if did_render && shadow.is_ready() {
+                        shadow.sync_next_commit();
+                        shadow.commit();
                         #[cfg(feature = "debug-logging")]
                         {
-                            titlebars_rendered += 1;
+                            shadows_rendered += 1;
+                        }
+                    }
+                }
+            }
+
+            for (&window_id, window) in &context.windows {
+                let mut w = window.borrow_mut();
+
+                let hide_titlebar = w.hidden || w.decoration == Some(config::WindowDecoration::Csd);
+                if hide_titlebar {
+                    if let Some(ref mut titlebar) = w.titlebar {
+                        if titlebar.mapped {
+                            titlebar.sync_next_commit();
+                            titlebar.unmap();
+                        }
+                    }
+                    continue;
+                }
+
+                // Extract window data before borrowing titlebar
+                let width = w.width;
+                let title = w.title.clone();
+                let is_focused = focused_window == Some(window_id);
+                let is_maximized = w.maximized;
+                let show_minimize = w.has_minimize_button();
+                let show_maximize = w.has_maximize_button();
+                let frame_style = w.frame_style();
+                let height = w.height;
+                let hovered_button = w.titlebar_hovered;
+                let titlebar_left_down = w.titlebar_left_down;
+                let swallow_top = w.swallow_top;
+                let frame_fit = w.frame_fit();
+
+                // Update titlebar if it exists and window has valid dimensions
+                let window_output = w.output.as_ref().and_then(|o| o.upgrade());
+                let window_output = window_output.as_ref().map(|o| o.borrow());
+                let (window_x, window_y) = window_origin(&w, window_output.as_deref());
+                let border_width = canoe::titlebar::border_width(ui, frame_style);
+                let titlebar_height = canoe::titlebar::titlebar_height(ui);
+                let (offset_x, offset_y) =
+                    (-border_width, -border_width - titlebar_height + swallow_top);
+                if let Some(ref mut titlebar) = w.titlebar {
+                    if width > 0 && height > 0 {
+                        let integer = window_output.as_ref().map(|o| o.scale).unwrap_or(1);
+                        let device = titlebar.fractional.device_scale(
+                            window_output.as_ref().and_then(|o| o.preferred_scale),
+                            integer,
+                        );
+                        let scale = canoe::scale::Scale::new(device);
+                        let content_height = (height - swallow_top).max(1);
+                        // Ensure buffer is allocated
+                        titlebar.ensure_buffer(
+                            width,
+                            content_height,
+                            scale,
+                            canoe::scale::Origin::new(window_x + offset_x, window_y + offset_y),
+                            frame_fit,
+                            ui,
+                            frame_style,
+                        );
+                        {
+                            #[cfg(feature = "debug-logging")]
+                            let ir_t0 = Instant::now();
+                            titlebar.update_input_region(ui, frame_style);
+                            #[cfg(feature = "debug-logging")]
+                            {
+                                input_region_us += ir_t0.elapsed().as_micros();
+                            }
+                        }
+
+                        // Render titlebar content
+                        #[cfg(feature = "debug-logging")]
+                        let tb_t0 = Instant::now();
+                        let did_render = titlebar.render(
+                            title.as_deref(),
+                            is_focused,
+                            is_maximized,
+                            show_minimize,
+                            show_maximize,
+                            frame_style,
+                            hovered_button,
+                            titlebar_left_down,
+                            ui,
+                        );
+                        #[cfg(feature = "debug-logging")]
+                        {
+                            titlebar_render_us += tb_t0.elapsed().as_micros();
+                        }
+
+                        // Position decoration so it sits above content with borders
+                        titlebar.set_offset(offset_x, offset_y);
+
+                        // Sync and commit (only if we have a buffer)
+                        if did_render && titlebar.is_ready() {
+                            titlebar.sync_next_commit();
+                            titlebar.commit();
+                            #[cfg(feature = "debug-logging")]
+                            {
+                                titlebars_rendered += 1;
+                            }
                         }
                     }
                 }
             }
         }
-    }
 
-    #[cfg(feature = "debug-logging")]
-    let loop_us = render_t0.elapsed().as_micros();
+        #[cfg(feature = "debug-logging")]
+        let loop_us = render_t0.elapsed().as_micros();
 
-    #[cfg(feature = "debug-logging")]
-    let finish_t0 = Instant::now();
-    state.context.borrow().finish_render();
-    #[cfg(feature = "debug-logging")]
-    let finish_us = finish_t0.elapsed().as_micros();
+        #[cfg(feature = "debug-logging")]
+        let finish_t0 = Instant::now();
+        state.context.borrow().finish_render();
+        #[cfg(feature = "debug-logging")]
+        let finish_us = finish_t0.elapsed().as_micros();
 
-    #[cfg(feature = "debug-logging")]
-    {
-        let total_us = total_t0.elapsed().as_micros();
-        // Anything not explicitly attributed lives here -- if it
-        // grows, the next thing to instrument is whatever Wayland
-        // calls the loop wraps (attach/commit/sync).
-        let attributed_us = handle_start_us
-            + titlebar_render_us
-            + shadow_render_us
-            + input_region_us
-            + finish_us;
-        let other_us = total_us.saturating_sub(attributed_us);
-        eprintln!(
+        #[cfg(feature = "debug-logging")]
+        {
+            let total_us = total_t0.elapsed().as_micros();
+            // Anything not explicitly attributed lives here -- if it
+            // grows, the next thing to instrument is whatever Wayland
+            // calls the loop wraps (attach/commit/sync).
+            let attributed_us = handle_start_us
+                + titlebar_render_us
+                + shadow_render_us
+                + input_region_us
+                + finish_us;
+            let other_us = total_us.saturating_sub(attributed_us);
+            eprintln!(
             "[canoe render] RenderStart total={:.2}ms windows={} handle_start={:.2}ms loop={:.2}ms ({}tb={:.2}ms + {}sh={:.2}ms + input_region={:.2}ms + other={:.2}ms) finish={:.2}ms",
             total_us as f64 / 1000.0,
             windows_iterated,
@@ -1465,7 +1411,7 @@ impl State {
             other_us as f64 / 1000.0,
             finish_us as f64 / 1000.0,
         );
-    }
+        }
     }
 }
 
@@ -1594,7 +1540,14 @@ pub fn poll_share_server(state: &mut State) {
         let mut poll_fds: Vec<PollFd> = fds
             .iter()
             .map(|(fd, input, _)| {
-                PollFd::new(*fd, if *input { PollFlags::POLLIN } else { PollFlags::empty() })
+                PollFd::new(
+                    *fd,
+                    if *input {
+                        PollFlags::POLLIN
+                    } else {
+                        PollFlags::empty()
+                    },
+                )
             })
             .collect();
         if poll(&mut poll_fds, nix::poll::PollTimeout::ZERO).unwrap_or(0) <= 0 {

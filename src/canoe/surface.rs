@@ -191,7 +191,10 @@ pub enum Role {
     None,
     /// Drawn below (`above == false`) or above a window's content, `offset`
     /// logical pixels from the content's top left corner.
-    Decoration { above: bool, offset: (i32, i32) },
+    Decoration {
+        above: bool,
+        offset: (i32, i32),
+    },
     /// Anchored to an output.
     Layer(LayerPlacement),
 }
@@ -405,7 +408,12 @@ impl Surface {
                 if size == (1, 1) {
                     // Premultiplied BGRA bytes.
                     let [b, g, r, a] = [pixels[0], pixels[1], pixels[2], pixels[3]];
-                    let color = [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, a as f32 / 255.0];
+                    let color = [
+                        r as f32 / 255.0,
+                        g as f32 / 255.0,
+                        b as f32 / 255.0,
+                        a as f32 / 255.0,
+                    ];
                     match state.solid.as_mut() {
                         Some(solid) => solid.update((1, 1), color),
                         None => state.solid = Some(SolidColorBuffer::new((1, 1), color)),
@@ -421,7 +429,8 @@ impl Surface {
                             let x1 = (rect.loc.x + rect.size.w) as usize * 4;
                             for y in rect.loc.y..rect.loc.y + rect.size.h {
                                 let row = y as usize * stride;
-                                dst[row + x0..row + x1].copy_from_slice(&pixels[row + x0..row + x1]);
+                                dst[row + x0..row + x1]
+                                    .copy_from_slice(&pixels[row + x0..row + x1]);
                             }
                         }
                         Result::<_, std::convert::Infallible>::Ok(damage.clone())
@@ -545,7 +554,12 @@ pub struct LayerSurface {
 }
 
 impl LayerSurface {
-    pub fn new(surface: &Surface, output_id: Option<OutputId>, layer: Layer, namespace: &str) -> Self {
+    pub fn new(
+        surface: &Surface,
+        output_id: Option<OutputId>,
+        layer: Layer,
+        namespace: &str,
+    ) -> Self {
         surface.set_role(Role::Layer(LayerPlacement {
             output_id,
             layer,

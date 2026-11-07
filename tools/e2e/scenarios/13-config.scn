@@ -1,0 +1,11 @@
+# Theme, hotkeys, startup commands (#34), environment, reload on SIGHUP.
+devices
+sleep 500
+shot 01-startup-window
+key super+i
+wait-toplevel hotkey 4000
+shot 02-hotkey-window
+run sed -i 's/border_width = 10/border_width = 3/' $HOME/.config/canoe/canoe.toml
+run pkill -HUP -x canoe
+sleep 500
+shot 03-reloaded

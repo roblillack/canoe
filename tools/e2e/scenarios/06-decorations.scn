@@ -1,0 +1,15 @@
+# Decoration negotiation (#26): SSD unless the client prefers CSD.
+# Titles are shaped, with font fallback and color emoji (#52, #59).
+devices
+spawn $WLTEST --app-id none --title "none ✓ 日本語 🚣" --decoration none --size 300x150
+wait-toplevel none 4000
+drag 150 27 160 420
+spawn $WLTEST --app-id ssd --title "prefers ssd" --decoration ssd --size 300x150
+wait-toplevel ssd 4000
+drag 150 27 480 420
+spawn $WLTEST --app-id unset --title "no preference" --decoration unset --size 300x150
+wait-toplevel unset 4000
+drag 150 27 800 420
+spawn $WLTEST --app-id csd --title "prefers csd" --decoration csd --size 300x150 --color b03070
+wait-toplevel csd 4000
+shot 01-decorations

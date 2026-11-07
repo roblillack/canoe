@@ -160,15 +160,6 @@ impl FractionalSurface {
         true
     }
 
-    /// Record the output's fractional scale. True when it changed anything.
-    pub fn set_preferred(&mut self, scale: u32) -> bool {
-        if scale == 0 || self.preferred == Some(scale) {
-            return false;
-        }
-        self.preferred = Some(scale);
-        true
-    }
-
     /// The device scale to draw at: the surface's own preferred scale, else
     /// `output_preferred`, else the output's integer scale.
     pub fn device_scale(&self, output_preferred: Option<u32>, integer_scale: i32) -> f64 {

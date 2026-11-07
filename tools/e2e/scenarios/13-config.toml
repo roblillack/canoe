@@ -1,0 +1,14 @@
+startup_cmds = [["sh", "-c", "$WLTEST --app-id startup --title \"started at $CANOE_TEST_VAR\""]]
+
+[env]
+CANOE_TEST_VAR = "startup"
+
+[hotkeys]
+"Super+I" = ["sh", "-c", "$WLTEST --app-id hotkey --title hotkey --color 90a030"]
+
+[ui]
+border_width = 10
+border_active = { outer = "#FFD000", mid = "#000000", inner = "#FFD000" }
+titlebar_bg_active = "#FFD000"
+titlebar_text_active = "#000000"
+desktop_background = "#204060"

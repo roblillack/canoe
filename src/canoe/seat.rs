@@ -156,7 +156,8 @@ impl Seat {
     /// defaults for unset parts.
     pub fn set_xcursor_theme(&self, theme: &XCursorTheme) {
         if let Some(ref rwm_seat) = self.rwm_seat {
-            rwm_seat.set_xcursor_theme(theme.name_or_default().to_string(), theme.size_or_default());
+            rwm_seat
+                .set_xcursor_theme(theme.name_or_default().to_string(), theme.size_or_default());
         }
     }
 

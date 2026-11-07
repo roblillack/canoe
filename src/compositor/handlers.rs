@@ -28,7 +28,6 @@ use smithay::wayland::idle_inhibit::IdleInhibitHandler;
 use smithay::wayland::idle_notify::{IdleNotifierHandler, IdleNotifierState};
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraintsHandler};
-use smithay::wayland::seat::WaylandFocus;
 use smithay::wayland::selection::data_device::{
     set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState,
     ServerDndGrabHandler,
@@ -47,8 +46,7 @@ use smithay::wayland::shell::wlr_layer::{
 };
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::{
-    PopupSurface, PositionerState, ToplevelSurface, XdgPopupSurfaceData, XdgShellHandler,
-    XdgShellState, XdgToplevelSurfaceData,
+    PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::xdg_activation::{
@@ -70,6 +68,7 @@ use crate::canoe;
 /// The linux-dmabuf global, when the renderer can import dmabufs.
 pub struct DmabufGlobal {
     pub state: DmabufState,
+    #[allow(dead_code)] // keeps the global's handle
     pub global: smithay::wayland::dmabuf::DmabufGlobal,
 }
 
@@ -100,11 +99,9 @@ impl CompositorHandler for State {
         }
 
         self.popups.commit(surface);
-        if let Some(popup) = self.popups.find_popup(surface) {
-            if let PopupKind::Xdg(ref xdg) = popup {
-                if !xdg.is_initial_configure_sent() {
-                    let _ = xdg.send_configure();
-                }
+        if let Some(PopupKind::Xdg(ref xdg)) = self.popups.find_popup(surface) {
+            if !xdg.is_initial_configure_sent() {
+                let _ = xdg.send_configure();
             }
         }
 
@@ -192,7 +189,12 @@ impl XdgShellHandler for State {
         let _ = self.popups.track_popup(PopupKind::Xdg(surface));
     }
 
-    fn reposition_request(&mut self, surface: PopupSurface, positioner: PositionerState, token: u32) {
+    fn reposition_request(
+        &mut self,
+        surface: PopupSurface,
+        positioner: PositionerState,
+        token: u32,
+    ) {
         surface.with_pending_state(|state| {
             state.geometry = positioner.get_geometry();
             state.positioner = positioner;
@@ -552,8 +554,24 @@ impl FractionalScaleHandler for State {
         while let Some(parent) = get_parent(&root) {
             root = parent;
         }
-        let scale = self
-            .output_for_surface(&root)
+        // A window that isn't shown yet opens on the window manager's
+        // current output: lay it out for that one right away.
+        let current_output = {
+            let context = self.context.borrow();
+            context
+                .current_output
+                .and_then(|id| self.output_by_id(id))
+                .map(|o| o.output.clone())
+        };
+        let mapped = self
+            .window_for_surface(&root)
+            .is_some_and(|w| w.reported_size.is_some());
+        let output = if mapped {
+            self.output_for_surface(&root)
+        } else {
+            current_output.or_else(|| self.output_for_surface(&root))
+        };
+        let scale = output
             .map(|o| o.current_scale().fractional_scale())
             .unwrap_or(1.0);
         with_states(&surface, |states| {
@@ -645,11 +663,7 @@ impl SessionLockHandler for State {
         };
         if let Some(mode) = output.current_mode() {
             let scale = output.current_scale().fractional_scale();
-            let size = mode
-                .size
-                .to_f64()
-                .to_logical(scale)
-                .to_i32_round::<i32>();
+            let size = mode.size.to_f64().to_logical(scale).to_i32_round::<i32>();
             surface.with_pending_state(|state| {
                 state.size = Some((size.w as u32, size.h as u32).into());
             });
@@ -668,9 +682,7 @@ impl State {
         if self.lock_state != LockState::Locking {
             return;
         }
-        let all = self
-            .active_outputs()
-            .all(|o| o.lock_surface.is_some());
+        let all = self.active_outputs().all(|o| o.lock_surface.is_some());
         if all {
             if let Some(locker) = self.locker.take() {
                 locker.lock();
@@ -705,7 +717,11 @@ impl IdleInhibitHandler for State {
 }
 
 impl PointerConstraintsHandler for State {
-    fn new_constraint(&mut self, surface: &WlSurface, pointer: &smithay::input::pointer::PointerHandle<Self>) {
+    fn new_constraint(
+        &mut self,
+        surface: &WlSurface,
+        pointer: &smithay::input::pointer::PointerHandle<Self>,
+    ) {
         if pointer.current_focus().as_ref() == Some(surface) {
             with_pointer_constraint(surface, pointer, |constraint| {
                 if let Some(constraint) = constraint {
@@ -726,7 +742,10 @@ impl PointerConstraintsHandler for State {
 
 impl State {
     /// The output whose area contains `point`.
-    pub fn output_at(&self, point: smithay::utils::Point<f64, smithay::utils::Logical>) -> Option<Output> {
+    pub fn output_at(
+        &self,
+        point: smithay::utils::Point<f64, smithay::utils::Logical>,
+    ) -> Option<Output> {
         self.active_outputs()
             .find(|o| {
                 self.output_geometry(&o.output)
@@ -742,11 +761,7 @@ impl State {
     ) -> Option<Rectangle<i32, smithay::utils::Logical>> {
         let mode = output.current_mode()?;
         let scale = output.current_scale().fractional_scale();
-        let size = mode
-            .size
-            .to_f64()
-            .to_logical(scale)
-            .to_i32_round::<i32>();
+        let size = mode.size.to_f64().to_logical(scale).to_i32_round::<i32>();
         let size = output.current_transform().transform_size(size);
         Some(Rectangle::new(output.current_location(), size))
     }
@@ -755,10 +770,16 @@ impl State {
     pub fn output_for_surface(&self, root: &WlSurface) -> Option<Output> {
         if let Some(window) = self.window_for_surface(root) {
             let center = window.pos.to_f64()
-                + window.window.geometry().size.to_f64().downscale(2.0).to_point();
-            return self.output_at(center).or_else(|| {
-                self.active_outputs().next().map(|o| o.output.clone())
-            });
+                + window
+                    .window
+                    .geometry()
+                    .size
+                    .to_f64()
+                    .downscale(2.0)
+                    .to_point();
+            return self
+                .output_at(center)
+                .or_else(|| self.active_outputs().next().map(|o| o.output.clone()));
         }
         self.outputs.iter().map(|o| o.output.clone()).find(|o| {
             layer_map_for_output(o)
@@ -791,6 +812,3 @@ delegate_pointer_constraints!(State);
 delegate_relative_pointer!(State);
 delegate_dmabuf!(State);
 smithay::delegate_shm!(State);
-
-#[allow(dead_code)]
-fn _unused(_: XdgToplevelSurfaceData, _: XdgPopupSurfaceData) {}

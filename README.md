@@ -1,8 +1,14 @@
-# Canoe 🛶 - River Window Manager
+# Canoe 🛶 - Stacking Wayland Compositor
 
 ![Canoe screenshot](./assets/canoe-screenshot-1.png)
 
-A stacking window manager for the River Wayland compositor, written in Rust.
+A stacking Wayland compositor and window manager, written in Rust on top of
+[Smithay](https://github.com/Smithay/smithay).
+
+> **Experimental branch.** Canoe started out as a window manager for the
+> River compositor. This branch runs the same window manager inside its own
+> compositor instead. See [Status of the standalone
+> compositor](#status-of-the-standalone-compositor) for what is missing.
 
 ## Features
 
@@ -29,9 +35,16 @@ cargo install canoe
 
 ## Running
 
+From a text console (VT), with seatd or systemd-logind managing the seat:
+
 ```bash
-river -c canoe
+canoe
 ```
+
+Inside a running Wayland or X11 session, `canoe` opens a window instead
+(`--backend winit`; built with the default `winit` feature), which is handy
+for trying it out. `--backend headless` runs without any monitor, for
+automated tests (see `tools/e2e`).
 
 To start Canoe from a display manager (GDM, SDDM, LightDM, greetd with
 tuigreet, …), install the session file:
@@ -40,10 +53,10 @@ tuigreet, …), install the session file:
 sudo install -Dm644 contrib/canoe.desktop /usr/share/wayland-sessions/canoe.desktop
 ```
 
-The display manager looks up `river` in its own `PATH`, which does not include
+The display manager looks up `canoe` in its own `PATH`, which does not include
 your home directory, so changes in `~/.profile` or `~/.config/environment.d/`
-don't help. If `river` or `canoe` live in your home directory (e.g. after
-`cargo install`), link them somewhere on the system `PATH`:
+don't help. If `canoe` lives in your home directory (e.g. after
+`cargo install`), link it somewhere on the system `PATH`:
 
 ```bash
 sudo ln -s ~/.cargo/bin/canoe /usr/local/bin/
@@ -110,7 +123,7 @@ Sending a window to another output with `Super+Alt+Arrow` works the same way.
 
 ## Screen Sharing
 
-Apps share the screen through the screencast portal. On River that portal is
+Apps share the screen through the screencast portal. For Canoe that portal is
 [xdg-desktop-portal-wlr](https://github.com/emersion/xdg-desktop-portal-wlr)
 (0.8 or newer for sharing single windows). It asks a *chooser* program what to
 share, and Canoe is one: when an app wants to share, Canoe dims all screens and
@@ -123,7 +136,7 @@ same window or screen gets the same answer without asking, once.
 
 1. Install `xdg-desktop-portal-wlr` (e.g. `apt install xdg-desktop-portal-wlr`).
 
-2. Route screen sharing to it in `~/.config/xdg-desktop-portal/river-portals.conf`:
+2. Route screen sharing to it in `~/.config/xdg-desktop-portal/canoe-portals.conf`:
 
    ```ini
    [preferred]
@@ -147,7 +160,7 @@ same window or screen gets the same answer without asking, once.
    `systemctl --user restart xdg-desktop-portal xdg-desktop-portal-wlr`.
 
 The portal needs to know which Wayland display to capture. On startup Canoe
-exports `WAYLAND_DISPLAY` and `XDG_CURRENT_DESKTOP` (defaulting to `river`) to
+exports `WAYLAND_DISPLAY` and `XDG_CURRENT_DESKTOP` (defaulting to `canoe`) to
 the systemd user manager and D-Bus activation environment, using the same
 values as the programs it launches (see [Environment
 variables](#environment-variables)). `XCURSOR_THEME` and `XCURSOR_SIZE` are
@@ -158,11 +171,12 @@ manage the session environment yourself (or run Canoe nested), turn that off:
 update_activation_environment = false
 ```
 
-wlroots 0.20.2 and earlier can show a black share when an app captures a
-window that is already being captured (Chrome does this, previewing the window
-while it asks to share it) and the window doesn't change. To work around it,
-Canoe makes a window repaint shortly after you pick it, by briefly flagging it
-as resizing and tiled. Its size doesn't change.
+On River, wlroots 0.20.2 and earlier could show a black share when an app
+captured a window that was already being captured (Chrome does this,
+previewing the window while it asks to share it). Canoe's own compositor
+renders every capture afresh and doesn't have this problem; the workaround
+from the River days (briefly flagging the picked window as resizing and tiled
+so it repaints) still runs, and is harmless.
 
 ## Configuration
 
@@ -254,7 +268,7 @@ makes Canoe ignore the whole configuration file.
 ### Cursor theme
 
 `xcursor_theme` and `xcursor_size` set the XCursor theme and cursor size (in
-logical pixels) for cursors that River draws: on the desktop, titlebars and
+logical pixels) for cursors that Canoe draws: on the desktop, titlebars and
 borders, and while moving or resizing windows. Canoe also sets
 `XCURSOR_THEME` and `XCURSOR_SIZE` for the programs it launches, so their
 cursors match.
@@ -266,11 +280,11 @@ xcursor_size = 32
 
 The theme and size are looked up separately: first in `canoe.toml`, then
 `XCURSOR_THEME`/`XCURSOR_SIZE` in the [`[env]`](#environment-variables) table,
-then Canoe's own environment. If none of them sets a value, River uses the
+then Canoe's own environment. If none of them sets a value, Canoe uses the
 `default` theme at size 24, and launched programs get no `XCURSOR_*` variable,
 so they pick their own default.
 
-A `SIGHUP` reload changes the cursors River draws right away. Programs that are
+A `SIGHUP` reload changes the cursors Canoe draws right away. Programs that are
 already running keep the theme they started with.
 
 GTK apps usually ignore these variables and take their cursor theme from
@@ -363,14 +377,9 @@ Canoe draws the desktop on two layer-shell surfaces per output:
 desktop_background = "transparent"
 ```
 
-Wallpaper programs draw on the `background` layer too, and River stacks
-surfaces on the same layer in the order they are created; no client can move
-its surface below one that already exists. A wallpaper started from
-`startup_cmds` begins above Canoe's fill. But whenever Canoe creates the fill
-while the wallpaper is already running, the fill is placed on top and hides
-it: when you restart Canoe, when you plug in a monitor, or when the wallpaper
-is started outside of Canoe (e.g. from River's init). With `"transparent"`
-there is nothing to hide the wallpaper, whatever the order.
+Wallpaper programs draw on the `background` layer too. Canoe always draws
+its fill below them, so a wallpaper is never hidden by it, but drawing a fill
+nobody sees is wasted work.
 
 By default the icon surface takes pointer input across the whole output,
 except where bars and panels reserve space (their exclusive zones), so clicks
@@ -407,9 +416,38 @@ force_ssd = true
 swallow_top = 48
 ```
 
+## Status of the standalone compositor
+
+Canoe's window manager is unchanged in substance: it runs in process and
+talks to the compositor through the same requests and events it used with
+River (see `src/wm.rs`), so its behavior carries over. `tools/e2e` runs
+scripted scenarios on River with Canoe from `main` and on this compositor,
+and compares screenshots: windows, decorations at fractional scales, menus,
+the window switcher, icons, multiple outputs, layer shell, session locking,
+screen-sharing picks, configuration and rules give the same results.
+
+Supported: xdg-shell (with xdg-decoration and popups), wlr-layer-shell,
+ext-session-lock, wlr-screencopy and ext-image-copy-capture (outputs and
+single windows), ext-foreign-toplevel-list, wlr-output-management,
+fractional scaling and viewporter, cursor-shape, data device, primary
+selection and wlr-data-control, xdg-activation, presentation-time,
+idle-notify and idle-inhibit, pointer constraints and relative pointer,
+virtual keyboard and pointer, linux-dmabuf.
+
+Missing or untested:
+
+- **XWayland**: X11 programs don't run.
+- **DRM/KMS**: the `udev` backend (real monitors) uses one GPU, has no
+  direct scanout tuning, adaptive sync, gamma control or DRM leasing, and has
+  only been compile-tested so far.
+- No wlr-foreign-toplevel-management (taskbars that control windows), no
+  tablet, touch or gesture input, no text-input/input-method.
+- Input devices take libinput's defaults, apart from tap-to-click.
+
 ## Requirements
 
-- [River](https://codeberg.org/river/river) Wayland compositor
+- libinput, libseat (seatd or systemd-logind), libgbm, libdrm, Mesa (EGL and
+  OpenGL ES 2), pixman, xkbcommon, fontconfig, freetype
 - foot terminal (for Super+Shift+Return)
 - fuzzel (for Super+Space launcher)
 - swaylock (for Super+L screen lock)

@@ -40,18 +40,12 @@ pub struct WindowShadow {
     origin: Origin,
     /// The scale the buffer is drawn at.
     pub scale: Scale,
-    /// wl_output names the shadow surface is currently on.
-    pub output_names: Vec<u32>,
     last_key: Option<ShadowKey>,
 }
 
 impl WindowShadow {
     /// Create a new shadow surface.
-    pub fn new(
-        surface: Surface,
-        decoration: Decoration,
-        fractional: FractionalSurface,
-    ) -> Self {
+    pub fn new(surface: Surface, decoration: Decoration, fractional: FractionalSurface) -> Self {
         Self {
             surface,
             decoration,
@@ -63,7 +57,6 @@ impl WindowShadow {
             buffer_height: 0,
             origin: Origin::default(),
             scale: Scale::default(),
-            output_names: Vec::new(),
             last_key: None,
         }
     }
@@ -112,10 +105,8 @@ impl WindowShadow {
     }
 
     /// Clear input region so the shadow does not intercept clicks.
-    pub fn update_input_region(
-        &self,
-    ) {
-        let mut region = Region::new();
+    pub fn update_input_region(&self) {
+        let region = Region::new();
         self.surface.set_input_region(Some(&region));
     }
 
@@ -129,12 +120,7 @@ impl WindowShadow {
     /// logical pixels; the scale is the one `ensure_buffer` was given.
     ///
     /// [`DeviceFrame`]: super::titlebar::DeviceFrame
-    pub fn render(
-        &mut self,
-        cast: Rect,
-        shadow_size: i32,
-        shadow_color: u32,
-    ) -> bool {
+    pub fn render(&mut self, cast: Rect, shadow_size: i32, shadow_color: u32) -> bool {
         if self.width <= 0
             || self.height <= 0
             || self.buffer_width <= 0
@@ -171,10 +157,7 @@ impl WindowShadow {
         #[cfg(feature = "debug-logging")]
         let prep_t0 = std::time::Instant::now();
         let allocated_before = self.shm_pool.allocate_fresh_count();
-        let slot_idx = match self
-            .shm_pool
-            .prepare(buffer_width, buffer_height, stride)
-        {
+        let slot_idx = match self.shm_pool.prepare(buffer_width, buffer_height, stride) {
             Some(s) => s,
             None => return false,
         };

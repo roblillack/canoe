@@ -48,13 +48,17 @@ impl State {
             Request::ProposeDimensions(key, width, height) => {
                 self.with_toplevel(key, |window| {
                     let size = (width > 0 && height > 0).then(|| Size::from((width, height)));
-                    window.toplevel.with_pending_state(|state| state.size = size);
+                    window
+                        .toplevel
+                        .with_pending_state(|state| state.size = size);
                 });
             }
             Request::SetDimensionBounds(key, width, height) => {
                 self.with_toplevel(key, |window| {
                     let bounds = (width > 0 && height > 0).then(|| Size::from((width, height)));
-                    window.toplevel.with_pending_state(|state| state.bounds = bounds);
+                    window
+                        .toplevel
+                        .with_pending_state(|state| state.bounds = bounds);
                 });
             }
             Request::Hide(key) => {
@@ -98,7 +102,9 @@ impl State {
                 self.with_toplevel(key, |window| {
                     window.fullscreen = Some(output_key);
                     if let Some(size) = size {
-                        window.toplevel.with_pending_state(|state| state.size = Some(size));
+                        window
+                            .toplevel
+                            .with_pending_state(|state| state.size = Some(size));
                     }
                 });
             }

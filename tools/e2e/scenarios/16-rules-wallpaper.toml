@@ -1,0 +1,8 @@
+[ui]
+desktop_background = "transparent"
+desktop_menu = false
+
+[[rules]]
+match_app_id = ["swallowed"]
+force_ssd = true
+swallow_top = 40

@@ -3,6 +3,7 @@
 
 pub mod headless;
 pub mod udev;
+#[cfg(feature = "winit")]
 pub mod winit;
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
@@ -10,9 +11,11 @@ use smithay::output::{Mode, Output};
 
 use super::State;
 
+#[allow(clippy::large_enum_variant)] // there is exactly one
 pub enum Backend {
     None,
     Headless(headless::HeadlessData),
+    #[cfg(feature = "winit")]
     Winit(winit::WinitData),
     Udev(udev::UdevData),
 }
@@ -23,6 +26,7 @@ impl Backend {
         match state.backend {
             Backend::None => {}
             Backend::Headless(_) => headless::schedule_redraws(state),
+            #[cfg(feature = "winit")]
             Backend::Winit(_) => winit::schedule_redraws(state),
             Backend::Udev(_) => udev::schedule_redraws(state),
         }
@@ -30,6 +34,7 @@ impl Backend {
 
     pub fn import_dmabuf(state: &mut State, dmabuf: &Dmabuf) -> bool {
         match state.backend {
+            #[cfg(feature = "winit")]
             Backend::Winit(ref mut data) => data.import_dmabuf(dmabuf),
             Backend::Udev(ref mut data) => data.import_dmabuf(dmabuf),
             _ => false,

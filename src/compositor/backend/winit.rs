@@ -50,7 +50,12 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
     );
     output.add_mode(mode);
     output.set_preferred(mode);
-    output.change_current_state(Some(mode), Some(Transform::Flipped180), None, Some((0, 0).into()));
+    output.change_current_state(
+        Some(mode),
+        Some(Transform::Flipped180),
+        None,
+        Some((0, 0).into()),
+    );
 
     // Hardware-accelerated clients.
     let formats = backend.renderer().dmabuf_formats();
@@ -74,26 +79,28 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
     }
     state.add_output(output);
 
-    state.loop_handle.insert_source(winit, |event, _, state| match event {
-        WinitEvent::Resized { size, .. } => {
-            let output = match state.backend {
-                Backend::Winit(ref data) => data.output.clone(),
-                _ => return,
-            };
-            let mode = Mode {
-                size,
-                refresh: 60_000,
-            };
-            output.change_current_state(Some(mode), None, None, None);
-            output.set_preferred(mode);
-            state.output_changed(&output);
-            state.queue_redraw_all();
-        }
-        WinitEvent::Input(event) => state.process_input_event(event),
-        WinitEvent::Redraw => render(state),
-        WinitEvent::CloseRequested => state.loop_signal.stop(),
-        _ => {}
-    })?;
+    state
+        .loop_handle
+        .insert_source(winit, |event, _, state| match event {
+            WinitEvent::Resized { size, .. } => {
+                let output = match state.backend {
+                    Backend::Winit(ref data) => data.output.clone(),
+                    _ => return,
+                };
+                let mode = Mode {
+                    size,
+                    refresh: 60_000,
+                };
+                output.change_current_state(Some(mode), None, None, None);
+                output.set_preferred(mode);
+                state.output_changed(&output);
+                state.queue_redraw_all();
+            }
+            WinitEvent::Input(event) => state.process_input_event(event),
+            WinitEvent::Redraw => render(state),
+            WinitEvent::CloseRequested => state.loop_signal.stop(),
+            _ => {}
+        })?;
     Ok(())
 }
 

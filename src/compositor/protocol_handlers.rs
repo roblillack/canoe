@@ -10,12 +10,16 @@ use super::protocols::output_management::{
 use super::protocols::virtual_pointer::{
     delegate_virtual_pointer, VirtualPointer, VirtualPointerEvent, VirtualPointerHandler,
 };
-use smithay::desktop::space::SpaceElement;
 use super::State;
 use crate::wm::OutputHandle;
+use smithay::desktop::space::SpaceElement;
 
 impl VirtualPointerHandler for State {
-    fn virtual_pointer_event(&mut self, pointer: &VirtualPointer<Self>, event: VirtualPointerEvent) {
+    fn virtual_pointer_event(
+        &mut self,
+        pointer: &VirtualPointer<Self>,
+        event: VirtualPointerEvent,
+    ) {
         match event {
             VirtualPointerEvent::Motion { time, delta } => {
                 let location = self.pointer_location + delta;
@@ -109,7 +113,11 @@ impl OutputManagementHandler for State {
         &mut self.output_management_state
     }
 
-    fn apply_output_configuration(&mut self, config: Vec<HeadConfiguration>, test_only: bool) -> bool {
+    fn apply_output_configuration(
+        &mut self,
+        config: Vec<HeadConfiguration>,
+        test_only: bool,
+    ) -> bool {
         // Leave at least one output on.
         if !config.iter().any(|head| head.enabled) {
             return false;

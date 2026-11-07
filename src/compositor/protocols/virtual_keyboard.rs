@@ -66,7 +66,8 @@ impl Dispatch<ZwpVirtualKeyboardManagerV1, ()> for State {
         _dhandle: &DisplayHandle,
         data_init: &mut DataInit<'_, Self>,
     ) {
-        if let zwp_virtual_keyboard_manager_v1::Request::CreateVirtualKeyboard { id, .. } = request {
+        if let zwp_virtual_keyboard_manager_v1::Request::CreateVirtualKeyboard { id, .. } = request
+        {
             data_init.init(id, VirtualKeyboardData::default());
         }
     }
@@ -83,7 +84,11 @@ impl Dispatch<ZwpVirtualKeyboardV1, VirtualKeyboardData> for State {
         _data_init: &mut DataInit<'_, Self>,
     ) {
         match request {
-            zwp_virtual_keyboard_v1::Request::Key { time, key, state: key_state } => {
+            zwp_virtual_keyboard_v1::Request::Key {
+                time,
+                key,
+                state: key_state,
+            } => {
                 let pressed = key_state == 1;
                 {
                     let mut held = data.pressed.lock().unwrap();
@@ -104,7 +109,12 @@ impl Dispatch<ZwpVirtualKeyboardV1, VirtualKeyboardData> for State {
         }
     }
 
-    fn destroyed(state: &mut Self, _client: ClientId, _resource: &ZwpVirtualKeyboardV1, data: &VirtualKeyboardData) {
+    fn destroyed(
+        state: &mut Self,
+        _client: ClientId,
+        _resource: &ZwpVirtualKeyboardV1,
+        data: &VirtualKeyboardData,
+    ) {
         let held: Vec<u32> = data.pressed.lock().unwrap().drain().collect();
         let time = state.start_time.elapsed().as_millis() as u32;
         for key in held {

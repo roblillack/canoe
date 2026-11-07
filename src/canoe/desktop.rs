@@ -113,7 +113,7 @@ impl DesktopSurface {
     /// Ensure a buffer for a surface drawn in a single color: one pixel
     /// stretched over the surface when it has a viewport, else a full-size
     /// buffer at scale 1.
-    pub fn ensure_solid_buffer(&mut self, ) {
+    pub fn ensure_solid_buffer(&mut self) {
         if self.width <= 0 || self.height <= 0 {
             return;
         }
@@ -135,11 +135,7 @@ impl DesktopSurface {
     }
 
     /// (Re)allocate the buffer unless one of this size already exists.
-    fn allocate_buffer(
-        &mut self,
-        buf_w: i32,
-        buf_h: i32,
-    ) {
+    fn allocate_buffer(&mut self, buf_w: i32, buf_h: i32) {
         if self.buffer.is_some() && self.buf_width == buf_w && self.buf_height == buf_h {
             return;
         }
@@ -418,10 +414,7 @@ impl DesktopSurface {
     ///
     /// Never pass `None` to set_input_region here: `None` means an
     /// *infinite* region; an empty region means "no input".
-    pub fn update_input_region(
-        &self,
-        desktop_area: Option<(i32, i32, i32, i32)>,
-    ) {
+    pub fn update_input_region(&self, desktop_area: Option<(i32, i32, i32, i32)>) {
         if self.width <= 0 || self.height <= 0 {
             return;
         }

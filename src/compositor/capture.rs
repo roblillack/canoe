@@ -77,7 +77,11 @@ impl State {
     fn window_key_for_identifier(&self, identifier: &str) -> Option<crate::wm::WindowKey> {
         self.windows
             .iter()
-            .find(|w| w.foreign.as_ref().is_some_and(|f| f.identifier() == identifier))
+            .find(|w| {
+                w.foreign
+                    .as_ref()
+                    .is_some_and(|f| f.identifier() == identifier)
+            })
             .map(|w| w.key)
     }
 
@@ -85,7 +89,10 @@ impl State {
     fn render_capture(&mut self, target: CaptureTarget, buffer: &WlBuffer) -> bool {
         let mut backend = std::mem::replace(&mut self.backend, Backend::None);
         let ok = match backend {
-            Backend::Headless(ref mut data) => self.capture_with(&mut data.renderer, target, buffer),
+            Backend::Headless(ref mut data) => {
+                self.capture_with(&mut data.renderer, target, buffer)
+            }
+            #[cfg(feature = "winit")]
             Backend::Winit(ref mut data) => self.capture_with(data.renderer(), target, buffer),
             Backend::Udev(ref mut data) => match data.renderer() {
                 Some(renderer) => self.capture_with(renderer, target, buffer),
@@ -97,7 +104,12 @@ impl State {
         ok
     }
 
-    fn capture_with<R>(&mut self, renderer: &mut R, target: CaptureTarget, buffer: &WlBuffer) -> bool
+    fn capture_with<R>(
+        &mut self,
+        renderer: &mut R,
+        target: CaptureTarget,
+        buffer: &WlBuffer,
+    ) -> bool
     where
         R: ShmCaptureRenderer + ImportAll + ImportMem,
         R::TextureId: Clone + Send + 'static,
@@ -115,7 +127,13 @@ impl State {
                 self.suppress_cursor = false;
                 let elements: Vec<RelocateRenderElement<CanoeElement<R>>> = elements
                     .into_iter()
-                    .map(|e| RelocateRenderElement::from_element(e, Point::from((-region.loc.x, -region.loc.y)), Relocate::Relative))
+                    .map(|e| {
+                        RelocateRenderElement::from_element(
+                            e,
+                            Point::from((-region.loc.x, -region.loc.y)),
+                            Relocate::Relative,
+                        )
+                    })
                     .collect();
                 renderer
                     .render_to_shm(buffer, scale, transform, &elements, CLEAR_COLOR)
@@ -128,24 +146,52 @@ impl State {
                 let scale = self.window_scale(key);
                 let window = self.window_by_key(key).unwrap();
                 let geometry = window.window.geometry();
-                let location = Point::<f64, smithay::utils::Logical>::from((-geometry.loc.x as f64, -geometry.loc.y as f64)).to_physical(Scale::from(scale));
+                let location = Point::<f64, smithay::utils::Logical>::from((
+                    -geometry.loc.x as f64,
+                    -geometry.loc.y as f64,
+                ))
+                .to_physical(Scale::from(scale));
                 let mut elements: Vec<CanoeElement<R>> = Vec::new();
-                for (popup, offset) in smithay::desktop::PopupManager::popups_for_surface(window.wl_surface()) {
+                for (popup, offset) in
+                    smithay::desktop::PopupManager::popups_for_surface(window.wl_surface())
+                {
                     let at = location
-                        + (offset - popup.geometry().loc).to_f64().to_physical(Scale::from(scale));
+                        + (offset - popup.geometry().loc)
+                            .to_f64()
+                            .to_physical(Scale::from(scale));
                     elements.extend(
-                        surface_tree_elements(renderer, popup.wl_surface(), at, scale.into(), 1.0, Kind::Unspecified)
-                            .into_iter()
-                            .map(CanoeElement::Surface),
+                        surface_tree_elements(
+                            renderer,
+                            popup.wl_surface(),
+                            at,
+                            scale.into(),
+                            1.0,
+                            Kind::Unspecified,
+                        )
+                        .into_iter()
+                        .map(CanoeElement::Surface),
                     );
                 }
                 elements.extend(
-                    surface_tree_elements(renderer, window.wl_surface(), location, scale.into(), 1.0, Kind::Unspecified)
-                        .into_iter()
-                        .map(CanoeElement::Surface),
+                    surface_tree_elements(
+                        renderer,
+                        window.wl_surface(),
+                        location,
+                        scale.into(),
+                        1.0,
+                        Kind::Unspecified,
+                    )
+                    .into_iter()
+                    .map(CanoeElement::Surface),
                 );
                 renderer
-                    .render_to_shm(buffer, scale, Transform::Normal, &elements, [0.0, 0.0, 0.0, 0.0])
+                    .render_to_shm(
+                        buffer,
+                        scale,
+                        Transform::Normal,
+                        &elements,
+                        [0.0, 0.0, 0.0, 0.0],
+                    )
                     .is_ok()
             }
         }

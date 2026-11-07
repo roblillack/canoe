@@ -18,6 +18,9 @@
 //!
 //! [`Output::current_transform`]: smithay::output::Output::current_transform
 
+// A complete protocol API: not every accessor is used by canoe.
+#![allow(dead_code)]
+
 use smithay::{
     backend::{
         allocator::Fourcc,

@@ -28,6 +28,9 @@
 //! delegate_screencopy!(State);
 //! ```
 
+// A complete protocol API: not every accessor is used by canoe.
+#![allow(dead_code)]
+
 use std::{
     sync::{Arc, Mutex},
     time::Duration,

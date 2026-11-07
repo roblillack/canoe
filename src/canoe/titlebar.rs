@@ -450,8 +450,6 @@ pub struct Titlebar {
     /// Cached icon bitmaps (rasterized from embedded SVGs)
     icon_cache: Option<IconCache>,
     button_cache: Option<ButtonCache>,
-    /// wl_output names the titlebar surface is currently on
-    pub output_names: Vec<u32>,
     /// Whether titlebar needs redraw
     pub dirty: bool,
     /// Whether the surface currently has a buffer attached (i.e. is visible)
@@ -471,11 +469,7 @@ pub struct Titlebar {
 
 impl Titlebar {
     /// Create a new titlebar
-    pub fn new(
-        surface: Surface,
-        decoration: Decoration,
-        fractional: FractionalSurface,
-    ) -> Self {
+    pub fn new(surface: Surface, decoration: Decoration, fractional: FractionalSurface) -> Self {
         Self {
             surface,
             decoration,
@@ -493,7 +487,6 @@ impl Titlebar {
             rects: FrameRects::default(),
             icon_cache: None,
             button_cache: None,
-            output_names: Vec::new(),
             dirty: true,
             mapped: false,
             needs_full_damage: true,
@@ -799,10 +792,7 @@ impl Titlebar {
         #[cfg(feature = "debug-logging")]
         let prep_t0 = std::time::Instant::now();
         let allocated_before = self.shm_pool.allocate_fresh_count();
-        let slot_idx = match self
-            .shm_pool
-            .prepare(buffer_width, buffer_height, stride)
-        {
+        let slot_idx = match self.shm_pool.prepare(buffer_width, buffer_height, stride) {
             Some(s) => s,
             None => return false,
         };
@@ -1173,11 +1163,7 @@ impl Titlebar {
     }
 
     /// Limit input to the frame (titlebar + borders), let content receive clicks.
-    pub fn update_input_region(
-        &self,
-        ui: &UiConfig,
-        frame_style: FrameStyle,
-    ) {
+    pub fn update_input_region(&self, ui: &UiConfig, frame_style: FrameStyle) {
         if self.width <= 0 || self.height <= 0 {
             return;
         }

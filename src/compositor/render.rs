@@ -81,9 +81,9 @@ where
                 return;
             };
             location += view.offset.to_f64().to_physical(scale);
-            if let Ok(Some(element)) =
-                WaylandSurfaceRenderElement::from_surface(renderer, surface, states, location, alpha, kind)
-            {
+            if let Ok(Some(element)) = WaylandSurfaceRenderElement::from_surface(
+                renderer, surface, states, location, alpha, kind,
+            ) {
                 elements.push(element);
             }
         },
@@ -100,7 +100,10 @@ fn surface_with_popups<R>(
     surface: &WlSurface,
     location: Point<f64, Physical>,
     scale: Scale<f64>,
-) -> (Vec<WaylandSurfaceRenderElement<R>>, Vec<WaylandSurfaceRenderElement<R>>)
+) -> (
+    Vec<WaylandSurfaceRenderElement<R>>,
+    Vec<WaylandSurfaceRenderElement<R>>,
+)
 where
     R: Renderer + ImportAll,
     R::TextureId: Clone + 'static,
@@ -109,8 +112,14 @@ where
     for (popup, offset) in PopupManager::popups_for_surface(surface) {
         let geometry = popup.geometry();
         let at = location + (offset - geometry.loc).to_f64().to_physical(scale);
-        let mut elements =
-            surface_tree_elements(renderer, popup.wl_surface(), at, scale, 1.0, Kind::Unspecified);
+        let mut elements = surface_tree_elements(
+            renderer,
+            popup.wl_surface(),
+            at,
+            scale,
+            1.0,
+            Kind::Unspecified,
+        );
         // Later popups are on top.
         elements.append(&mut popups);
         popups = elements;
@@ -139,8 +148,9 @@ where
         }
         // Covers the same device pixels as a buffer would.
         let size = content.logical_size;
-        let end = (location + Point::<f64, Logical>::from((size.0 as f64, size.1 as f64)).to_physical(scale))
-            .to_i32_round::<i32>();
+        let end = (location
+            + Point::<f64, Logical>::from((size.0 as f64, size.1 as f64)).to_physical(scale))
+        .to_i32_round::<i32>();
         let start = location.to_i32_round::<i32>();
         solid.resize(((end.x - start.x).max(0), (end.y - start.y).max(0)));
         return Some(CanoeElement::Solid(SolidColorRenderElement::from_buffer(
@@ -206,7 +216,7 @@ impl State {
 
         // Built bottom to top, reversed at the end.
         let mut bottom_up: Vec<CanoeElement<R>> = Vec::new();
-        let mut push_top_first = |list: &mut Vec<CanoeElement<R>>, elements: Vec<CanoeElement<R>>| {
+        let push_top_first = |list: &mut Vec<CanoeElement<R>>, elements: Vec<CanoeElement<R>>| {
             list.extend(elements.into_iter().rev());
         };
 
@@ -220,7 +230,10 @@ impl State {
                     1.0,
                     Kind::Unspecified,
                 );
-                push_top_first(&mut bottom_up, elements.into_iter().map(Into::into).collect());
+                push_top_first(
+                    &mut bottom_up,
+                    elements.into_iter().map(Into::into).collect(),
+                );
             }
             let mut elements = self.cursor_elements(renderer, output, geometry, scale);
             elements.extend(bottom_up.into_iter().rev());
@@ -235,27 +248,49 @@ impl State {
         if let Some(out) = canoe_output.as_ref() {
             let out = out.borrow();
             if let Some(background) = out.desktop_background.as_ref() {
-                if let Some(origin) = canoe_layer_origin(&background.surface, geometry.loc, output_size) {
-                    if let Some(e) = canoe_surface(renderer, &background.surface, origin, output_loc, scale) {
+                if let Some(origin) =
+                    canoe_layer_origin(&background.surface, geometry.loc, output_size)
+                {
+                    if let Some(e) =
+                        canoe_surface(renderer, &background.surface, origin, output_loc, scale)
+                    {
                         bottom_up.push(e);
                     }
                 }
             }
         }
-        self.push_layer(renderer, output, WlrLayer::Background, geometry, scale, &mut bottom_up);
+        self.push_layer(
+            renderer,
+            output,
+            WlrLayer::Background,
+            geometry,
+            scale,
+            &mut bottom_up,
+        );
 
         // Bottom layer: canoe's desktop icons, then bars and panels.
         if let Some(out) = canoe_output.as_ref() {
             let out = out.borrow();
             if let Some(desktop) = out.desktop_surface.as_ref() {
-                if let Some(origin) = canoe_layer_origin(&desktop.surface, geometry.loc, output_size) {
-                    if let Some(e) = canoe_surface(renderer, &desktop.surface, origin, output_loc, scale) {
+                if let Some(origin) =
+                    canoe_layer_origin(&desktop.surface, geometry.loc, output_size)
+                {
+                    if let Some(e) =
+                        canoe_surface(renderer, &desktop.surface, origin, output_loc, scale)
+                    {
                         bottom_up.push(e);
                     }
                 }
             }
         }
-        self.push_layer(renderer, output, WlrLayer::Bottom, geometry, scale, &mut bottom_up);
+        self.push_layer(
+            renderer,
+            output,
+            WlrLayer::Bottom,
+            geometry,
+            scale,
+            &mut bottom_up,
+        );
 
         // Windows.
         for window in &self.windows {
@@ -275,22 +310,28 @@ impl State {
             if let Some(shadow) = w.shadow.as_ref() {
                 if let canoe::surface::Role::Decoration { offset, .. } = shadow.surface.role() {
                     let origin = pos + Point::<i32, Logical>::from(offset).to_f64();
-                    if let Some(e) = canoe_surface(renderer, &shadow.surface, origin, output_loc, scale) {
+                    if let Some(e) =
+                        canoe_surface(renderer, &shadow.surface, origin, output_loc, scale)
+                    {
                         bottom_up.push(e);
                     }
                 }
             }
             let surface_origin = window.surface_origin(None).to_f64();
-            let (main, popups) =
-                surface_with_popups(renderer, window.wl_surface(), to_phys(surface_origin), scale);
+            let (main, popups) = surface_with_popups(
+                renderer,
+                window.wl_surface(),
+                to_phys(surface_origin),
+                scale,
+            );
             let clip = window.content_clip;
             if clip.is_enabled() {
                 let crop = Rectangle::<f64, Logical>::new(
                     pos + Point::from((clip.x as f64, clip.y as f64)),
                     (clip.width as f64, clip.height as f64).into(),
                 );
-                let crop = Rectangle::new(to_phys(crop.loc), crop.size.to_physical(scale))
-                    .to_i32_round();
+                let crop =
+                    Rectangle::new(to_phys(crop.loc), crop.size.to_physical(scale)).to_i32_round();
                 let cropped: Vec<CanoeElement<R>> = main
                     .into_iter()
                     .filter_map(|e| CropRenderElement::from_element(e, scale, crop))
@@ -302,7 +343,8 @@ impl State {
             }
             if window.ssd {
                 if let Some(titlebar) = w.titlebar.as_ref() {
-                    if let canoe::surface::Role::Decoration { offset, .. } = titlebar.surface.role() {
+                    if let canoe::surface::Role::Decoration { offset, .. } = titlebar.surface.role()
+                    {
                         let origin = pos + Point::<i32, Logical>::from(offset).to_f64();
                         if let Some(e) =
                             canoe_surface(renderer, &titlebar.surface, origin, output_loc, scale)
@@ -315,7 +357,14 @@ impl State {
             push_top_first(&mut bottom_up, popups.into_iter().map(Into::into).collect());
         }
 
-        self.push_layer(renderer, output, WlrLayer::Top, geometry, scale, &mut bottom_up);
+        self.push_layer(
+            renderer,
+            output,
+            WlrLayer::Top,
+            geometry,
+            scale,
+            &mut bottom_up,
+        );
 
         // A fullscreen window, on black.
         if let Some(window) = self
@@ -325,7 +374,11 @@ impl State {
             .find(|w| !w.hidden && w.fullscreen == Some(output_key))
         {
             let backdrop = SolidColorBuffer::new(geometry.size, [0.0, 0.0, 0.0, 1.0]);
-            let backdrop_id = self.backdrop_ids.entry(output_key).or_insert(backdrop).clone();
+            let backdrop_id = self
+                .backdrop_ids
+                .entry(output_key)
+                .or_insert(backdrop)
+                .clone();
             bottom_up.push(CanoeElement::Solid(SolidColorRenderElement::from_buffer(
                 &backdrop_id,
                 Point::<i32, Physical>::from((0, 0)),
@@ -334,18 +387,28 @@ impl State {
                 Kind::Unspecified,
             )));
             let origin = window.surface_origin(Some(geometry.loc)).to_f64();
-            let (main, popups) = surface_with_popups(renderer, window.wl_surface(), to_phys(origin), scale);
+            let (main, popups) =
+                surface_with_popups(renderer, window.wl_surface(), to_phys(origin), scale);
             push_top_first(&mut bottom_up, main.into_iter().map(Into::into).collect());
             push_top_first(&mut bottom_up, popups.into_iter().map(Into::into).collect());
         }
 
-        self.push_layer(renderer, output, WlrLayer::Overlay, geometry, scale, &mut bottom_up);
+        self.push_layer(
+            renderer,
+            output,
+            WlrLayer::Overlay,
+            geometry,
+            scale,
+            &mut bottom_up,
+        );
 
         // The window manager's overlays.
         if let Some(menu) = context.window_menu.as_ref() {
             if menu.output_id == output_id {
                 if let Some(origin) = canoe_layer_origin(&menu.surface, geometry.loc, output_size) {
-                    if let Some(e) = canoe_surface(renderer, &menu.surface, origin, output_loc, scale) {
+                    if let Some(e) =
+                        canoe_surface(renderer, &menu.surface, origin, output_loc, scale)
+                    {
                         bottom_up.push(e);
                     }
                 }
@@ -353,8 +416,12 @@ impl State {
         }
         if let Some(picker) = context.share_picker.as_ref() {
             for surface in picker.surfaces.iter().filter(|s| s.output_id == output_id) {
-                if let Some(origin) = canoe_layer_origin(&surface.surface, geometry.loc, output_size) {
-                    if let Some(e) = canoe_surface(renderer, &surface.surface, origin, output_loc, scale) {
+                if let Some(origin) =
+                    canoe_layer_origin(&surface.surface, geometry.loc, output_size)
+                {
+                    if let Some(e) =
+                        canoe_surface(renderer, &surface.surface, origin, output_loc, scale)
+                    {
                         bottom_up.push(e);
                     }
                 }
@@ -387,7 +454,8 @@ impl State {
                 continue;
             };
             let location = layer_geo.loc.to_f64().to_physical(scale);
-            let (main, popups) = surface_with_popups(renderer, surface.wl_surface(), location, scale);
+            let (main, popups) =
+                surface_with_popups(renderer, surface.wl_surface(), location, scale);
             bottom_up.extend(main.into_iter().rev().map(Into::into));
             bottom_up.extend(popups.into_iter().rev().map(Into::into));
         }
@@ -443,19 +511,23 @@ impl State {
                             .unwrap_or_default()
                     });
                     let location = (local - hotspot.to_f64()).to_physical(scale);
-                    return surface_tree_elements(renderer, surface, location, scale, 1.0, Kind::Cursor)
-                        .into_iter()
-                        .map(Into::into)
-                        .collect();
+                    return surface_tree_elements(
+                        renderer,
+                        surface,
+                        location,
+                        scale,
+                        1.0,
+                        Kind::Cursor,
+                    )
+                    .into_iter()
+                    .map(Into::into)
+                    .collect();
                 }
             }
         };
 
         let integer = output.current_scale().integer_scale().max(1) as u32;
-        let Some(frame) = self
-            .cursor
-            .frame(name, integer, self.start_time.elapsed())
-        else {
+        let Some(frame) = self.cursor.frame(name, integer, self.start_time.elapsed()) else {
             return Vec::new();
         };
         let size = self.cursor.size() as f64;
@@ -474,7 +546,9 @@ impl State {
             location,
             &frame.buffer,
             None,
-            Some(Rectangle::from_size((frame.size.0 as f64, frame.size.1 as f64).into())),
+            Some(Rectangle::from_size(
+                (frame.size.0 as f64, frame.size.1 as f64).into(),
+            )),
             Some(logical_size.into()),
             Kind::Cursor,
         )

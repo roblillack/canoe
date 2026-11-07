@@ -1,0 +1,25 @@
+# Super+` cycles windows of the focused app; a keyboard-exclusive overlay
+# (a launcher, like fuzzel) takes the keyboard and gives it back (River's
+# layer-shell seat focus events).
+spawn $WLTEST --app-id same --title "same 1" --size 300x200 > $OUT/same1.log
+wait-toplevel same 4000
+drag 150 27 500 300
+spawn $WLTEST --app-id same --title "same 2" --size 300x200 --color 50a050
+sleep 800
+spawn $WLTEST --app-id other --title other --size 300x200 --color a05050
+sleep 800
+drag 150 27 900 120
+move 600 400 ; btn click left
+spawn sleep 0.6; grim -c $OUT/00-app-cycle-open.png
+keydown super ; key grave ; sleep 1200 ; keyup super
+shot 01-app-cycled
+spawn $WLTEST --layer overlay --anchor top --size 400x60 --keyboard exclusive --color 303030 > $OUT/launcher.log
+sleep 600
+key x
+shot 02-launcher
+run pkill -f "wltest --layer overlay"
+sleep 400
+key y
+sleep 300
+run grep -c "key x pressed" $OUT/launcher.log > $OUT/launcher-got-x.txt
+run cat $OUT/*.log | grep -c "key y pressed" > $OUT/window-got-y-after.txt

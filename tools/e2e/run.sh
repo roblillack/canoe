@@ -21,6 +21,10 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 WLINPUT=${WLINPUT:-$ROOT/tools/wlinput/target/release/wlinput}
 OUTPUTS=${CANOE_E2E_OUTPUTS:-1280x720}
+hdr=$(grep -m1 '^#! outputs ' "$SCENARIO" | cut -d' ' -f3)
+[ -n "$hdr" ] && OUTPUTS=$hdr
+WLTEST=${WLTEST:-$ROOT/tools/wlinput/target/release/wltest}
+export WLTEST WLINPUT
 BASE=/tmp/cne2e-$MODE
 rm -rf "$BASE"; mkdir -p "$BASE/rt" "$BASE/home/.config/canoe" "$OUT"
 chmod 700 "$BASE/rt"
@@ -34,6 +38,7 @@ trap cleanup EXIT
 
 if [ "$MODE" = river ]; then
     BIN=${4:-/tmp/claude-1000/-home-rob-dev-canoe/113295b5-117b-4933-8519-67c588c3f18b/scratchpad/canoe-main/target/release/canoe}
+    export CANOE_BIN=$BIN
     n=$(echo "$OUTPUTS" | tr ',' '\n' | wc -l)
     WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_HEADLESS_OUTPUTS=$n \
         river -no-xwayland -c "echo \$WAYLAND_DISPLAY > $BASE/display; exec $BIN" >"$BASE/log" 2>&1 &
@@ -50,7 +55,8 @@ if [ "$MODE" = river ]; then
     done
 else
     BIN=${4:-$ROOT/target/release/canoe}
-    CANOE_HEADLESS_OUTPUTS=$OUTPUTS "$BIN" --backend headless >"$BASE/log" 2>&1 &
+    export CANOE_BIN=$BIN
+    CANOE_TRACE_WM=${CANOE_TRACE_WM:-} CANOE_HEADLESS_OUTPUTS=$OUTPUTS "$BIN" --backend headless >"$BASE/log" 2>&1 &
     PIDS+=($!)
     for i in $(seq 50); do s=$(grep -o 'WAYLAND_DISPLAY=[^ ]*' "$BASE/log" | cut -d= -f2); [ -n "$s" ] && break; sleep 0.1; done
     export WAYLAND_DISPLAY=$BASE/rt/$s
@@ -69,7 +75,14 @@ while IFS= read -r line || [ -n "$line" ]; do
         *)
             IFS=';' read -ra parts <<<"$line"
             args=(); for p in "${parts[@]}"; do p="${p#"${p%%[![:space:]]*}"}"; args+=("${p%"${p##*[![:space:]]}"}"); done
-            if [ ${#args[@]} -eq 1 ]; then "$WLINPUT" ${args[0]}; else "$WLINPUT" "${args[@]}"; fi || echo "wlinput failed: $line" >&2
+            # Create the virtual devices first: on River the seat only has
+            # input capabilities while they exist, and clients need a moment
+            # to bind them, else the first event gets lost.
+            if [ ${#args[@]} -eq 1 ] && [[ ${args[0]} == wait-* || ${args[0]} == toplevels ]]; then
+                "$WLINPUT" ${args[0]}
+            else
+                "$WLINPUT" "devices 150" "${args[@]}"
+            fi || echo "wlinput failed: $line" >&2
             ;;
     esac
 done <"$SCENARIO"

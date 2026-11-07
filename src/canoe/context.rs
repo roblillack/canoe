@@ -438,6 +438,7 @@ impl Context {
     }
 
     /// Remove a seat from context
+    #[allow(dead_code)] // the compositor has a single, permanent seat
     pub fn destroy_seat(&mut self, seat_id: SeatId) {
         // Update current seat if necessary
         if self.current_seat == Some(seat_id) {

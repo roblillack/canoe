@@ -202,11 +202,7 @@ impl PickerSurface {
     }
 
     /// Draw `scene` at `scale` and present it.
-    pub fn render(
-        &mut self,
-        scene: &PickerScene,
-        scale: Scale,
-    ) {
+    pub fn render(&mut self, scene: &PickerScene, scale: Scale) {
         if !self.configured || !self.ensure_buffer(scale) {
             return;
         }
@@ -325,13 +321,6 @@ impl SharePicker {
 
     pub fn surface_mut(&mut self, output_id: OutputId) -> Option<&mut PickerSurface> {
         self.surfaces.iter_mut().find(|s| s.output_id == output_id)
-    }
-
-    pub fn owns_surface(&self, surface: &Surface) -> Option<OutputId> {
-        self.surfaces
-            .iter()
-            .find(|s| &s.surface == surface)
-            .map(|s| s.output_id)
     }
 }
 

@@ -31,6 +31,9 @@
 //! let virtual_pointer_state = VirtualPointerManagerState::new::<State, _>(&display_handle, |_client| true);
 //! ```
 
+// A complete protocol API: not every accessor is used by canoe.
+#![allow(dead_code)]
+
 use std::sync::{Arc, Mutex};
 
 use smithay::backend::input::{Axis, AxisSource, ButtonState};
@@ -142,7 +145,8 @@ pub struct VirtualPointerManagerGlobalData {
 
 impl std::fmt::Debug for VirtualPointerManagerGlobalData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VirtualPointerManagerGlobalData").finish_non_exhaustive()
+        f.debug_struct("VirtualPointerManagerGlobalData")
+            .finish_non_exhaustive()
     }
 }
 
@@ -210,7 +214,10 @@ impl<D: SeatHandler> Eq for VirtualPointer<D> {}
 impl<D: SeatHandler + 'static> std::fmt::Debug for VirtualPointer<D> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("VirtualPointer")
-            .field("seat", &self.inner.seat.as_ref().map(|s| s.name().to_owned()))
+            .field(
+                "seat",
+                &self.inner.seat.as_ref().map(|s| s.name().to_owned()),
+            )
             .field("output", &self.output().map(|o| o.name()))
             .finish_non_exhaustive()
     }
@@ -238,7 +245,8 @@ impl<D: SeatHandler> VirtualPointer<D> {
     }
 }
 
-impl<D: VirtualPointerHandler> GlobalDispatch<ZwlrVirtualPointerManagerV1, VirtualPointerManagerGlobalData, D>
+impl<D: VirtualPointerHandler>
+    GlobalDispatch<ZwlrVirtualPointerManagerV1, VirtualPointerManagerGlobalData, D>
     for VirtualPointerManagerState
 {
     fn bind(
@@ -267,7 +275,10 @@ fn create_pointer<D: VirtualPointerHandler>(
     let pointer = VirtualPointer {
         inner: Arc::new(VirtualPointerInner {
             seat: seat.as_ref().and_then(Seat::<D>::from_resource),
-            output: output.as_ref().and_then(Output::from_resource).map(|o| o.downgrade()),
+            output: output
+                .as_ref()
+                .and_then(Output::from_resource)
+                .map(|o| o.downgrade()),
             pending_axis: Mutex::new(None),
         }),
     };
@@ -275,7 +286,9 @@ fn create_pointer<D: VirtualPointerHandler>(
     state.virtual_pointer_created(&pointer);
 }
 
-impl<D: VirtualPointerHandler> Dispatch<ZwlrVirtualPointerManagerV1, (), D> for VirtualPointerManagerState {
+impl<D: VirtualPointerHandler> Dispatch<ZwlrVirtualPointerManagerV1, (), D>
+    for VirtualPointerManagerState
+{
     fn request(
         state: &mut D,
         _client: &Client,
@@ -287,7 +300,9 @@ impl<D: VirtualPointerHandler> Dispatch<ZwlrVirtualPointerManagerV1, (), D> for 
     ) {
         use zwlr_virtual_pointer_manager_v1::Request;
         match request {
-            Request::CreateVirtualPointer { seat, id } => create_pointer(state, data_init, id, seat, None),
+            Request::CreateVirtualPointer { seat, id } => {
+                create_pointer(state, data_init, id, seat, None)
+            }
             Request::CreateVirtualPointerWithOutput { seat, output, id } => {
                 create_pointer(state, data_init, id, seat, output)
             }
@@ -315,7 +330,9 @@ fn convert_axis_source(source: WEnum<wl_pointer::AxisSource>) -> Option<AxisSour
     }
 }
 
-impl<D: VirtualPointerHandler> Dispatch<ZwlrVirtualPointerV1, VirtualPointer<D>, D> for VirtualPointerManagerState {
+impl<D: VirtualPointerHandler> Dispatch<ZwlrVirtualPointerV1, VirtualPointer<D>, D>
+    for VirtualPointerManagerState
+{
     fn request(
         state: &mut D,
         _client: &Client,
@@ -443,7 +460,12 @@ impl<D: VirtualPointerHandler> Dispatch<ZwlrVirtualPointerV1, VirtualPointer<D>,
         }
     }
 
-    fn destroyed(state: &mut D, _client: ClientId, _resource: &ZwlrVirtualPointerV1, pointer: &VirtualPointer<D>) {
+    fn destroyed(
+        state: &mut D,
+        _client: ClientId,
+        _resource: &ZwlrVirtualPointerV1,
+        pointer: &VirtualPointer<D>,
+    ) {
         state.virtual_pointer_destroyed(pointer);
     }
 }

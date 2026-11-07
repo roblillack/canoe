@@ -9,7 +9,7 @@ mod rule;
 mod wm;
 
 use std::collections::HashMap;
-use std::os::fd::{AsFd, AsRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, OwnedFd};
 use std::sync::atomic::{AtomicI32, Ordering};
 use std::time::Duration;
 
@@ -91,7 +91,6 @@ fn activation_environment_argv(
     Some(argv)
 }
 
-
 const USAGE: &str = "\
 canoe - a stacking Wayland compositor
 
@@ -129,15 +128,22 @@ struct CliArgs {
 /// Parse command-line arguments, exiting the process for --help/--version or on
 /// an unknown flag. Kept deliberately tiny so we avoid a full arg-parsing dep.
 fn parse_args() -> CliArgs {
-    let nested = std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
+    let nested =
+        std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
     let mut args = CliArgs {
         skip_config: false,
-        backend: if nested { BackendKind::Winit } else { BackendKind::Udev },
+        backend: if nested {
+            BackendKind::Winit
+        } else {
+            BackendKind::Udev
+        },
     };
     let mut iter = std::env::args().skip(1);
     while let Some(arg) = iter.next() {
         let (flag, inline) = match arg.split_once('=') {
-            Some((flag, value)) if flag.starts_with("--") => (flag.to_string(), Some(value.to_string())),
+            Some((flag, value)) if flag.starts_with("--") => {
+                (flag.to_string(), Some(value.to_string()))
+            }
             _ => (arg.clone(), None),
         };
         match flag.as_str() {
@@ -250,12 +256,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     match args.backend {
         BackendKind::Headless => compositor::backend::headless::init(&mut state)?,
+        #[cfg(feature = "winit")]
         BackendKind::Winit => compositor::backend::winit::init(&mut state)?,
+        #[cfg(not(feature = "winit"))]
+        BackendKind::Winit => return Err("canoe was built without the winit feature".into()),
         BackendKind::Udev => compositor::backend::udev::init(&mut state)?,
     }
     std::env::set_var("WAYLAND_DISPLAY", &socket_name);
     std::env::remove_var("DISPLAY");
-    eprintln!("canoe: listening on WAYLAND_DISPLAY={}", socket_name.to_string_lossy());
+    eprintln!(
+        "canoe: listening on WAYLAND_DISPLAY={}",
+        socket_name.to_string_lossy()
+    );
 
     let signal_fd = install_signal_handlers()?;
     let signal_source = Generic::new(signal_fd, Interest::READ, Mode::Level);
@@ -271,13 +283,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Ok(server) => state.share_server = Some(server),
         Err(e) => eprintln!("canoe: screen-sharing picker unavailable: {e}"),
     }
-    if state.share_server.is_some() {
-        event_loop
-            .handle()
-            .insert_source(Timer::from_duration(Duration::from_millis(50)), |_, _, state| {
+    // Connections wake the loop up; while requests are in flight (they are
+    // short-lived) a timer looks after them.
+    if let Some(fd) = state
+        .share_server
+        .as_ref()
+        .and_then(|s| s.listener_fd().ok())
+    {
+        event_loop.handle().insert_source(
+            Generic::new(fd, Interest::READ, Mode::Level),
+            |_, _, state| {
                 compositor::wm_glue::poll_share_server(state);
-                TimeoutAction::ToDuration(Duration::from_millis(50))
-            })?;
+                if state.share_timer.is_none() {
+                    let timer = Timer::from_duration(Duration::from_millis(50));
+                    state.share_timer = state
+                        .loop_handle
+                        .insert_source(timer, |_, _, state| {
+                            compositor::wm_glue::poll_share_server(state);
+                            let busy = state
+                                .share_server
+                                .as_ref()
+                                .is_some_and(|s| s.has_connections())
+                                || state.context.borrow().next_share_nudge().is_some();
+                            if busy {
+                                TimeoutAction::ToDuration(Duration::from_millis(50))
+                            } else {
+                                state.share_timer = None;
+                                TimeoutAction::Drop
+                            }
+                        })
+                        .ok();
+                }
+                Ok(PostAction::Continue)
+            },
+        )?;
     }
 
     // Let D-Bus activated services (the screencast portal, above all) find
@@ -343,7 +382,7 @@ mod tests {
             lookup_from(&[("WAYLAND_DISPLAY", "w")]),
         )
         .expect("argv");
-        assert_eq!(argv[3], "XDG_CURRENT_DESKTOP=river");
+        assert_eq!(argv[3], "XDG_CURRENT_DESKTOP=canoe");
     }
 
     #[test]

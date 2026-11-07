@@ -10,13 +10,14 @@ use smithay::desktop::{layer_map_for_output, Window};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
-use smithay::utils::{Logical, Point, Rectangle, Serial};
+use smithay::utils::{Logical, Rectangle, Serial};
 use smithay::wayland::compositor::{
-    send_surface_state, with_states, with_surface_tree_downward, SurfaceAttributes,
-    TraversalAction,
+    send_surface_state, with_states, with_surface_tree_downward, TraversalAction,
 };
 use smithay::wayland::fractional_scale::with_fractional_scale;
-use smithay::wayland::shell::wlr_layer::{KeyboardInteractivity as WlrKeyboardInteractivity, Layer as WlrLayer};
+use smithay::wayland::shell::wlr_layer::{
+    KeyboardInteractivity as WlrKeyboardInteractivity, Layer as WlrLayer,
+};
 use smithay::wayland::shell::xdg::{SurfaceCachedState, ToplevelSurface, XdgToplevelSurfaceData};
 
 use crate::binding;
@@ -24,10 +25,10 @@ use crate::canoe;
 use crate::canoe::scale::FractionalSurface;
 use crate::canoe::surface::{Decoration, Surface};
 use crate::config;
-use crate::wm::{OutputHandle, Request, WindowHandle};
+use crate::wm::{OutputHandle, WindowHandle};
 
 use super::wm_glue::*;
-use super::{KeyConsumer, ManagedOutput, ManagedWindow, State};
+use super::{ManagedOutput, ManagedWindow, State};
 
 /// How long a window's new position waits for the client to take the size
 /// proposed with it.
@@ -46,22 +47,43 @@ impl State {
         if !self.requests.is_empty() {
             self.wm_dirty = true;
         }
+        let trace = std::env::var_os("CANOE_TRACE_WM").is_some();
+        let t0 = Instant::now();
+        let mut phases = Vec::new();
         while self.wm_dirty && rounds < 8 {
             rounds += 1;
             self.wm_dirty = false;
+            let t = Instant::now();
             self.manage_sequence();
+            phases.push(("manage", t.elapsed()));
+            let t = Instant::now();
             self.apply_requests();
             self.render_sequence();
+            phases.push(("render", t.elapsed()));
+            let t = Instant::now();
             self.apply_requests();
+            phases.push(("apply", t.elapsed()));
         }
         if self.wm_dirty {
             self.schedule_wm();
         }
+        let t = Instant::now();
         self.send_pending_configures();
         self.update_keyboard_focus();
+        phases.push(("focus", t.elapsed()));
+        let t = Instant::now();
         self.update_surface_outputs();
+        phases.push(("outputs", t.elapsed()));
         self.queue_redraw_all();
         self.maybe_launch_startup_commands();
+        if trace {
+            eprintln!(
+                "wm: {:?} total, {} windows: {:?}",
+                t0.elapsed(),
+                self.windows.len(),
+                phases
+            );
+        }
     }
 
     fn manage_sequence(&mut self) {
@@ -205,11 +227,11 @@ impl State {
             return;
         }
 
-        let has_buffer = smithay::backend::renderer::utils::with_renderer_surface_state(
-            surface,
-            |state| state.buffer().is_some(),
-        )
-        .unwrap_or(false);
+        let has_buffer =
+            smithay::backend::renderer::utils::with_renderer_surface_state(surface, |state| {
+                state.buffer().is_some()
+            })
+            .unwrap_or(false);
         if !has_buffer {
             return;
         }
@@ -543,9 +565,8 @@ impl State {
             let mut out = canoe_output.borrow_mut();
             out.name = Some(output.name());
             out.scale = scale.ceil().max(1.0) as i32;
-            out.preferred_scale = Some(
-                (scale * canoe::scale::FRACTIONAL_DENOMINATOR as f64).round() as u32,
-            );
+            out.preferred_scale =
+                Some((scale * canoe::scale::FRACTIONAL_DENOMINATOR as f64).round() as u32);
         }
         match previous {
             None => {
@@ -562,9 +583,7 @@ impl State {
                         .pending_output_shifts
                         .push((id, dx, dy));
                 }
-                canoe_output
-                    .borrow_mut()
-                    .update_dimensions(rect.2, rect.3);
+                canoe_output.borrow_mut().update_dimensions(rect.2, rect.3);
                 if (old.2, old.3) != (rect.2, rect.3) {
                     self.context
                         .borrow_mut()
@@ -632,13 +651,15 @@ impl State {
             .collect();
         for window in &self.windows {
             let geo = window.window.geometry();
-            let bbox = Rectangle::new(window.pos - geo.loc + window.window.bbox().loc, window.window.bbox().size);
+            let bbox = Rectangle::new(
+                window.pos - geo.loc + window.window.bbox().loc,
+                window.window.bbox().size,
+            );
             let mut primary: Option<(Output, i32)> = None;
             for (output, area) in &outputs {
                 match bbox.intersection(*area) {
                     Some(overlap) if !window.hidden => {
-                        let overlap_local =
-                            Rectangle::new(overlap.loc - area.loc, overlap.size);
+                        let overlap_local = Rectangle::new(overlap.loc - area.loc, overlap.size);
                         window.window.output_enter(output, overlap_local);
                         let size = overlap.size.w * overlap.size.h;
                         if primary.as_ref().is_none_or(|(_, best)| size > *best) {
@@ -832,12 +853,14 @@ impl State {
             .update_window_output_from_pointer(seat_id, x, y);
         self.context.borrow_mut().update_cursor_for_seat(seat_id);
         update_menu_hover_from_global(self, seat_id);
-        let titlebar_window = self
-            .context
-            .borrow()
-            .windows
-            .iter()
-            .find_map(|(&window_id, window)| window.borrow().titlebar_left_down.then_some(window_id));
+        let titlebar_window =
+            self.context
+                .borrow()
+                .windows
+                .iter()
+                .find_map(|(&window_id, window)| {
+                    window.borrow().titlebar_left_down.then_some(window_id)
+                });
         if let Some(window_id) = titlebar_window {
             if update_titlebar_hover_from_global(self, window_id, x, y) {
                 self.schedule_wm();
@@ -1005,16 +1028,17 @@ impl State {
         })
     }
 
-    pub fn key_consumer(&self, keycode: smithay::input::keyboard::Keycode) -> Option<KeyConsumer> {
-        self.key_consumers.get(&keycode).copied()
-    }
-
     // ------------------------------------------------------------------
     // Pointer input on the window manager's own surfaces
 
     /// The pointer entered one of the window manager's surfaces at
     /// `(surface_x, surface_y)` (wl_pointer.enter).
-    pub fn canoe_pointer_enter(&mut self, target: canoe::PointerTarget, surface_x: f64, surface_y: f64) {
+    pub fn canoe_pointer_enter(
+        &mut self,
+        target: canoe::PointerTarget,
+        surface_x: f64,
+        surface_y: f64,
+    ) {
         let Some(seat) = self.wm_seat() else {
             return;
         };
@@ -1124,216 +1148,172 @@ impl State {
             return;
         };
         let seat_id = seat.borrow().id;
-            let target = seat.borrow().pointer_target;
-            if matches!(target, canoe::PointerTarget::MenuShield(_)) {
-                return;
+        let target = seat.borrow().pointer_target;
+        if matches!(target, canoe::PointerTarget::MenuShield(_)) {
+            return;
+        }
+        // The picker overlay takes the whole click, so act on the
+        // release: a left click shares, a right click declines.
+        if matches!(target, canoe::PointerTarget::SharePicker(_)) {
+            if !pressed {
+                if button == config::button::LEFT {
+                    finish_share_picker(state, true, true);
+                } else if button == config::button::RIGHT {
+                    finish_share_picker(state, false, true);
+                }
             }
-            // The picker overlay takes the whole click, so act on the
-            // release: a left click shares, a right click declines.
-            if matches!(target, canoe::PointerTarget::SharePicker(_)) {
-                if !pressed {
-                    if button == config::button::LEFT {
-                        finish_share_picker(state, true, true);
-                    } else if button == config::button::RIGHT {
-                        finish_share_picker(state, false, true);
+            return;
+        }
+        match pressed {
+            true => {
+                if target != canoe::PointerTarget::Menu {
+                    let had_menu = {
+                        let mut context = state.context.borrow_mut();
+                        if context.window_menu.is_some() {
+                            context.close_window_menu();
+                            true
+                        } else {
+                            false
+                        }
+                    };
+                    if had_menu {
+                        seat.borrow_mut().menu_click_button = None;
+                        if matches!(target, canoe::PointerTarget::Desktop(_)) {
+                            seat.borrow_mut().queue_action(binding::Action::ClearFocus);
+                        }
+                        return;
                     }
                 }
-                return;
-            }
-            match pressed {
-                true => {
-                    if target != canoe::PointerTarget::Menu {
-                        let had_menu = {
-                            let mut context = state.context.borrow_mut();
-                            if context.window_menu.is_some() {
-                                context.close_window_menu();
-                                true
-                            } else {
-                                false
-                            }
+                match target {
+                    canoe::PointerTarget::Desktop(output_id) => {
+                        let (px, py) = {
+                            let seat_ref = seat.borrow();
+                            (seat_ref.last_surface_x, seat_ref.last_surface_y)
                         };
-                        if had_menu {
-                            seat.borrow_mut().menu_click_button = None;
-                            if matches!(target, canoe::PointerTarget::Desktop(_)) {
-                                seat.borrow_mut().queue_action(binding::Action::ClearFocus);
-                            }
-                            return;
-                        }
-                    }
-                    match target {
-                        canoe::PointerTarget::Desktop(output_id) => {
-                            let (px, py) = {
-                                let seat_ref = seat.borrow();
-                                (seat_ref.last_surface_x, seat_ref.last_surface_y)
+                        if button == config::button::LEFT {
+                            // Hit-test desktop icons
+                            let hit = {
+                                let context = state.context.borrow();
+                                context.outputs.get(&output_id).and_then(|o| {
+                                    o.borrow()
+                                        .desktop_surface
+                                        .as_ref()
+                                        .and_then(|d| d.icon_at(px, py))
+                                })
                             };
-                            if button == config::button::LEFT {
-                                // Hit-test desktop icons
-                                let hit = {
-                                    let context = state.context.borrow();
-                                    context.outputs.get(&output_id).and_then(|o| {
-                                        o.borrow()
-                                            .desktop_surface
-                                            .as_ref()
-                                            .and_then(|d| d.icon_at(px, py))
-                                    })
+                            if let Some(icon_window_id) = hit {
+                                // Check for double-click to restore
+                                let now = Instant::now();
+                                let is_double = {
+                                    let seat_ref = seat.borrow();
+                                    seat_ref
+                                        .last_icon_click
+                                        .map(|(last_wid, when)| {
+                                            last_wid == icon_window_id
+                                                && now.duration_since(when) <= CLOSE_DOUBLE_CLICK
+                                        })
+                                        .unwrap_or(false)
                                 };
-                                if let Some(icon_window_id) = hit {
-                                    // Check for double-click to restore
-                                    let now = Instant::now();
-                                    let is_double = {
-                                        let seat_ref = seat.borrow();
-                                        seat_ref
-                                            .last_icon_click
-                                            .map(|(last_wid, when)| {
-                                                last_wid == icon_window_id
-                                                    && now.duration_since(when)
-                                                        <= CLOSE_DOUBLE_CLICK
-                                            })
-                                            .unwrap_or(false)
-                                    };
-                                    seat.borrow_mut().last_icon_click =
-                                        Some((icon_window_id, now));
-                                    if is_double {
-                                        // Defer through Action::IconActivate so focus_window
-                                        // (window-management state) runs inside a manage
-                                        // sequence; the preceding single click already
-                                        // selected this icon via enter_icon_focus.
-                                        let mut seat_mut = seat.borrow_mut();
-                                        seat_mut.last_icon_click = None;
-                                        seat_mut
-                                            .queue_action(binding::Action::IconActivate);
-                                        drop(seat_mut);
-                                    } else {
-                                        // Single click: select icon and enter icon focus mode
-                                        let seat_id = seat_id;
-                                        state.context.borrow_mut().enter_icon_focus(
-                                            output_id,
-                                            icon_window_id,
-                                            seat_id,
-                                        );
-                                        render_desktop_surface(state, output_id);
-                                    }
+                                seat.borrow_mut().last_icon_click = Some((icon_window_id, now));
+                                if is_double {
+                                    // Defer through Action::IconActivate so focus_window
+                                    // (window-management state) runs inside a manage
+                                    // sequence; the preceding single click already
+                                    // selected this icon via enter_icon_focus.
+                                    let mut seat_mut = seat.borrow_mut();
+                                    seat_mut.last_icon_click = None;
+                                    seat_mut.queue_action(binding::Action::IconActivate);
+                                    drop(seat_mut);
                                 } else {
-                                    // Clicked empty space: clear local icon-mode state
-                                    // synchronously, then queue the protocol-bound mode
-                                    // switch + clear-focus to run inside the next manage
-                                    // sequence (this is a wl_pointer event, not part of
-                                    // any river manage sequence).
-                                    seat.borrow_mut().last_icon_click = None;
-                                    {
-                                        let mut context = state.context.borrow_mut();
-                                        if let Some(focused_output) =
-                                            context.icon_focus_output.take()
-                                        {
-                                            if let Some(output) =
-                                                context.outputs.get(&focused_output)
-                                            {
-                                                if let Some(desktop) = output
-                                                    .borrow_mut()
-                                                    .desktop_surface
-                                                    .as_mut()
-                                                {
-                                                    desktop.selected_icon = None;
-                                                    desktop.dirty = true;
-                                                }
-                                            }
-                                        }
-                                    }
-                                    render_desktop_surface(state, output_id);
-                                    {
-                                        let mut seat_mut = seat.borrow_mut();
-                                        seat_mut.queue_action(binding::Action::ClearFocus);
-                                        seat_mut.queue_action(
-                                            binding::Action::SwitchMode {
-                                                mode: config::Mode::Default,
-                                            },
-                                        );
-                                    }
-                                }
-                            } else if button == config::button::RIGHT {
-                                let icon_hit = {
-                                    let context = state.context.borrow();
-                                    context.outputs.get(&output_id).and_then(|o| {
-                                        o.borrow()
-                                            .desktop_surface
-                                            .as_ref()
-                                            .and_then(|d| d.icon_at(px, py))
-                                    })
-                                };
-                                if let Some(icon_window_id) = icon_hit {
-                                    // Right-click on an icon: just select it, no menu.
-                                    let seat_id = seat_id;
-                                    seat.borrow_mut().last_icon_click = None;
+                                    // Single click: select icon and enter icon focus mode
                                     state.context.borrow_mut().enter_icon_focus(
                                         output_id,
                                         icon_window_id,
                                         seat_id,
                                     );
                                     render_desktop_surface(state, output_id);
-                                } else {
-                                    if state.context.borrow().config.ui.desktop_menu {
-                                        let mut context = state.context.borrow_mut();
-                                        if context.window_menu.is_some() {
-                                            context.close_window_menu();
-                                        }
-                                        drop(context);
-                                        open_window_menu(
-                                            state,
-                                            output_id,
-                                            px,
-                                            py,
-                                            false,
-                                            canoe::WindowMenuMode::Pointer,
-                                            Some("Windows".to_string()),
-                                            None
-                                        );
-                                        update_menu_hover_from_global(state, seat_id);
-                                        seat.borrow_mut().menu_click_button = Some(button);
-                                        seat.borrow_mut()
-                                            .queue_action(binding::Action::ClearFocus);
-                                    } else {
-                                        seat.borrow_mut()
-                                            .queue_action(binding::Action::ClearFocus);
-                                    }
                                 }
                             } else {
-                                seat.borrow_mut().queue_action(binding::Action::ClearFocus);
-                            }
-                        }
-                        canoe::PointerTarget::Menu => {
-                            seat.borrow_mut().menu_click_button = Some(button);
-                        }
-                        canoe::PointerTarget::MenuShield(_)
-                        | canoe::PointerTarget::SharePicker(_) => {}
-                        canoe::PointerTarget::Titlebar(window_id) => {
-                            if button == config::button::LEFT {
-                                let (px, py) = {
-                                    let seat_ref = seat.borrow();
-                                    (seat_ref.last_surface_x, seat_ref.last_surface_y)
-                                };
-                                update_titlebar_hover_from_surface(
-                                    state, window_id, px as f64, py as f64,
-                                );
-                                let should_render = {
-                                    let context = state.context.borrow();
-                                    if let Some(window) = context.windows.get(&window_id) {
-                                        let mut w = window.borrow_mut();
-                                        w.titlebar_left_down = true;
-                                        w.titlebar_pressed = w.titlebar_hovered;
-                                        true
-                                    } else {
-                                        false
+                                // Clicked empty space: clear local icon-mode state
+                                // synchronously, then queue the protocol-bound mode
+                                // switch + clear-focus to run inside the next manage
+                                // sequence (this is a wl_pointer event, not part of
+                                // any river manage sequence).
+                                seat.borrow_mut().last_icon_click = None;
+                                {
+                                    let mut context = state.context.borrow_mut();
+                                    if let Some(focused_output) = context.icon_focus_output.take() {
+                                        if let Some(output) = context.outputs.get(&focused_output) {
+                                            if let Some(desktop) =
+                                                output.borrow_mut().desktop_surface.as_mut()
+                                            {
+                                                desktop.selected_icon = None;
+                                                desktop.dirty = true;
+                                            }
+                                        }
                                     }
-                                };
-                                if should_render {
+                                }
+                                render_desktop_surface(state, output_id);
+                                {
+                                    let mut seat_mut = seat.borrow_mut();
+                                    seat_mut.queue_action(binding::Action::ClearFocus);
+                                    seat_mut.queue_action(binding::Action::SwitchMode {
+                                        mode: config::Mode::Default,
+                                    });
                                 }
                             }
+                        } else if button == config::button::RIGHT {
+                            let icon_hit = {
+                                let context = state.context.borrow();
+                                context.outputs.get(&output_id).and_then(|o| {
+                                    o.borrow()
+                                        .desktop_surface
+                                        .as_ref()
+                                        .and_then(|d| d.icon_at(px, py))
+                                })
+                            };
+                            if let Some(icon_window_id) = icon_hit {
+                                // Right-click on an icon: just select it, no menu.
+                                seat.borrow_mut().last_icon_click = None;
+                                state.context.borrow_mut().enter_icon_focus(
+                                    output_id,
+                                    icon_window_id,
+                                    seat_id,
+                                );
+                                render_desktop_surface(state, output_id);
+                            } else {
+                                if state.context.borrow().config.ui.desktop_menu {
+                                    let mut context = state.context.borrow_mut();
+                                    if context.window_menu.is_some() {
+                                        context.close_window_menu();
+                                    }
+                                    drop(context);
+                                    open_window_menu(
+                                        state,
+                                        output_id,
+                                        px,
+                                        py,
+                                        false,
+                                        canoe::WindowMenuMode::Pointer,
+                                        Some("Windows".to_string()),
+                                        None,
+                                    );
+                                    update_menu_hover_from_global(state, seat_id);
+                                    seat.borrow_mut().menu_click_button = Some(button);
+                                    seat.borrow_mut().queue_action(binding::Action::ClearFocus);
+                                } else {
+                                    seat.borrow_mut().queue_action(binding::Action::ClearFocus);
+                                }
+                            }
+                        } else {
+                            seat.borrow_mut().queue_action(binding::Action::ClearFocus);
                         }
-                        canoe::PointerTarget::None => {}
                     }
-                }
-                false => {
-                    if let canoe::PointerTarget::Titlebar(window_id) = target {
+                    canoe::PointerTarget::Menu => {
+                        seat.borrow_mut().menu_click_button = Some(button);
+                    }
+                    canoe::PointerTarget::MenuShield(_) | canoe::PointerTarget::SharePicker(_) => {}
+                    canoe::PointerTarget::Titlebar(window_id) => {
                         if button == config::button::LEFT {
                             let (px, py) = {
                                 let seat_ref = seat.borrow();
@@ -1342,119 +1322,134 @@ impl State {
                             update_titlebar_hover_from_surface(
                                 state, window_id, px as f64, py as f64,
                             );
-                            let (action, should_render) = {
+                            let should_render = {
                                 let context = state.context.borrow();
-                                let Some(window) = context.windows.get(&window_id) else {
-                                    return;
-                                };
-                                let mut w = window.borrow_mut();
-                                w.titlebar_left_down = false;
-                                let hovered = w.titlebar_hovered;
-                                let pressed = w.titlebar_pressed.take();
-                                let action = if pressed.is_some() && pressed == hovered {
-                                    pressed
+                                if let Some(window) = context.windows.get(&window_id) {
+                                    let mut w = window.borrow_mut();
+                                    w.titlebar_left_down = true;
+                                    w.titlebar_pressed = w.titlebar_hovered;
+                                    true
                                 } else {
-                                    None
-                                };
-                                (action, true)
-                            };
-                            if should_render {
-                            }
-
-                            match action {
-                                Some(canoe::titlebar::TitlebarButton::Close) => {
-                                    let now = Instant::now();
-                                    let should_close = {
-                                        let mut seat_ref = seat.borrow_mut();
-                                        let is_double = seat_ref
-                                            .last_close_click
-                                            .map(|(last_window, when)| {
-                                                last_window == window_id
-                                                    && now.duration_since(when)
-                                                        <= CLOSE_DOUBLE_CLICK
-                                            })
-                                            .unwrap_or(false);
-                                        seat_ref.last_close_click = Some((window_id, now));
-                                        is_double
-                                    };
-                                    if should_close {
-                                        if let Some(window) =
-                                            state.context.borrow().windows.get(&window_id)
-                                        {
-                                            window
-                                                .borrow_mut()
-                                                .queue_event(canoe::WindowEvent::Close);
-                                        }
-                                    }
+                                    false
                                 }
-                                Some(canoe::titlebar::TitlebarButton::Hide) => {
-                                    seat.borrow_mut().last_close_click = None;
+                            };
+                            if should_render {}
+                        }
+                    }
+                    canoe::PointerTarget::None => {}
+                }
+            }
+            false => {
+                if let canoe::PointerTarget::Titlebar(window_id) = target {
+                    if button == config::button::LEFT {
+                        let (px, py) = {
+                            let seat_ref = seat.borrow();
+                            (seat_ref.last_surface_x, seat_ref.last_surface_y)
+                        };
+                        update_titlebar_hover_from_surface(state, window_id, px as f64, py as f64);
+                        let action = {
+                            let context = state.context.borrow();
+                            let Some(window) = context.windows.get(&window_id) else {
+                                return;
+                            };
+                            let mut w = window.borrow_mut();
+                            w.titlebar_left_down = false;
+                            let hovered = w.titlebar_hovered;
+                            let pressed = w.titlebar_pressed.take();
+                            if pressed.is_some() && pressed == hovered {
+                                pressed
+                            } else {
+                                None
+                            }
+                        };
+
+                        match action {
+                            Some(canoe::titlebar::TitlebarButton::Close) => {
+                                let now = Instant::now();
+                                let should_close = {
+                                    let mut seat_ref = seat.borrow_mut();
+                                    let is_double = seat_ref
+                                        .last_close_click
+                                        .map(|(last_window, when)| {
+                                            last_window == window_id
+                                                && now.duration_since(when) <= CLOSE_DOUBLE_CLICK
+                                        })
+                                        .unwrap_or(false);
+                                    seat_ref.last_close_click = Some((window_id, now));
+                                    is_double
+                                };
+                                if should_close {
                                     if let Some(window) =
                                         state.context.borrow().windows.get(&window_id)
                                     {
+                                        window.borrow_mut().queue_event(canoe::WindowEvent::Close);
+                                    }
+                                }
+                            }
+                            Some(canoe::titlebar::TitlebarButton::Hide) => {
+                                seat.borrow_mut().last_close_click = None;
+                                if let Some(window) = state.context.borrow().windows.get(&window_id)
+                                {
+                                    window
+                                        .borrow_mut()
+                                        .queue_event(canoe::WindowEvent::Minimize);
+                                }
+                            }
+                            Some(canoe::titlebar::TitlebarButton::Maximize) => {
+                                seat.borrow_mut().last_close_click = None;
+                                if let Some(window) = state.context.borrow().windows.get(&window_id)
+                                {
+                                    if window.borrow().maximized {
                                         window
                                             .borrow_mut()
-                                            .queue_event(canoe::WindowEvent::Minimize);
+                                            .queue_event(canoe::WindowEvent::Unmaximize);
+                                    } else {
+                                        window
+                                            .borrow_mut()
+                                            .queue_event(canoe::WindowEvent::Maximize);
                                     }
-                                }
-                                Some(canoe::titlebar::TitlebarButton::Maximize) => {
-                                    seat.borrow_mut().last_close_click = None;
-                                    if let Some(window) =
-                                        state.context.borrow().windows.get(&window_id)
-                                    {
-                                        if window.borrow().maximized {
-                                            window.borrow_mut().queue_event(
-                                                canoe::WindowEvent::Unmaximize,
-                                            );
-                                        } else {
-                                            window
-                                                .borrow_mut()
-                                                .queue_event(canoe::WindowEvent::Maximize);
-                                        }
-                                    }
-                                }
-                                None => {
-                                    seat.borrow_mut().last_close_click = None;
                                 }
                             }
+                            None => {
+                                seat.borrow_mut().last_close_click = None;
+                            }
                         }
-                        return;
                     }
-                    let (activate, close_menu) = {
-                        let seat_ref = seat.borrow();
-                        if seat_ref.menu_click_button != Some(button) {
-                            (false, false)
-                        } else {
-                            let context = state.context.borrow();
-                            let hovered = context
-                                .window_menu
-                                .as_ref()
-                                .and_then(|menu| menu.hovered)
-                                .is_some();
-                            if context.window_menu_mode
-                                == Some(canoe::WindowMenuMode::Pointer)
-                            {
-                                if hovered {
-                                    (true, false)
-                                } else {
-                                    (false, false)
-                                }
+                    return;
+                }
+                let (activate, close_menu) = {
+                    let seat_ref = seat.borrow();
+                    if seat_ref.menu_click_button != Some(button) {
+                        (false, false)
+                    } else {
+                        let context = state.context.borrow();
+                        let hovered = context
+                            .window_menu
+                            .as_ref()
+                            .and_then(|menu| menu.hovered)
+                            .is_some();
+                        if context.window_menu_mode == Some(canoe::WindowMenuMode::Pointer) {
+                            if hovered {
+                                (true, false)
                             } else {
                                 (false, false)
                             }
+                        } else {
+                            (false, false)
                         }
-                    };
-                    seat.borrow_mut().menu_click_button = None;
-                    if activate {
-                        seat.borrow_mut()
-                            .queue_action(binding::Action::ActivateMenuHovered);
-                        return;
                     }
-                    if close_menu {
-                        state.context.borrow_mut().close_window_menu();
-                    }
+                };
+                seat.borrow_mut().menu_click_button = None;
+                if activate {
+                    seat.borrow_mut()
+                        .queue_action(binding::Action::ActivateMenuHovered);
+                    return;
+                }
+                if close_menu {
+                    state.context.borrow_mut().close_window_menu();
                 }
             }
+        }
     }
 }
 
@@ -1488,6 +1483,3 @@ fn send_scale(surface: &WlSurface, output: &Output) {
         |_, _, _| true,
     );
 }
-
-#[allow(dead_code)]
-fn _types(_: Point<f64, Logical>, _: Instant, _: SurfaceAttributes, _: Request) {}

@@ -34,6 +34,9 @@
 //! buffer, never report the cursor as entered, deliver one fully transparent
 //! frame and then never deliver another one.
 
+// A complete protocol API: not every accessor is used by canoe.
+#![allow(dead_code)]
+
 use std::{
     sync::{
         atomic::{AtomicBool, Ordering},

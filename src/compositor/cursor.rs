@@ -174,13 +174,8 @@ fn pick_frames(images: &[Image], target: u32) -> Vec<CursorFrame> {
 /// A black arrow with a white outline, for systems without cursor themes.
 fn builtin_arrow(size: i32) -> CursorFrame {
     let size = size.max(8);
-    let mut buffer = MemoryRenderBuffer::new(
-        Fourcc::Argb8888,
-        (size, size),
-        1,
-        Transform::Normal,
-        None,
-    );
+    let mut buffer =
+        MemoryRenderBuffer::new(Fourcc::Argb8888, (size, size), 1, Transform::Normal, None);
     let _ = buffer.render().draw(|dst: &mut [u8]| {
         for y in 0..size {
             for x in 0..size {

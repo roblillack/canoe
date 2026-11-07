@@ -46,6 +46,9 @@
 //! let output_management_state = OutputManagementState::new::<State>(&display_handle);
 //! ```
 
+// A complete protocol API: not every accessor is used by canoe.
+#![allow(dead_code)]
+
 use std::sync::{Arc, Mutex};
 
 use smithay::output::{Mode, Output};
@@ -135,7 +138,11 @@ pub trait OutputManagementHandler:
     /// and [`OutputManagementState::set_enabled`]. There is no need to call
     /// [`OutputManagementState::update`] from here: the module does it right
     /// after replying to the client.
-    fn apply_output_configuration(&mut self, config: Vec<HeadConfiguration>, test_only: bool) -> bool;
+    fn apply_output_configuration(
+        &mut self,
+        config: Vec<HeadConfiguration>,
+        test_only: bool,
+    ) -> bool;
 }
 
 /// Global data of the `zwlr_output_manager_v1` global.
@@ -145,7 +152,8 @@ pub struct OutputManagementGlobalData {
 
 impl std::fmt::Debug for OutputManagementGlobalData {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("OutputManagementGlobalData").finish_non_exhaustive()
+        f.debug_struct("OutputManagementGlobalData")
+            .finish_non_exhaustive()
     }
 }
 
@@ -426,7 +434,8 @@ impl OutputManagementState {
                 Some(old) if *old == new => continue,
                 Some(old) if old.same_identity(&new) => {
                     for manager in &mut self.managers {
-                        if let Some(head) = manager.heads.iter_mut().find(|h| h.head_id == entry.id) {
+                        if let Some(head) = manager.heads.iter_mut().find(|h| h.head_id == entry.id)
+                        {
                             send_head_changes::<D>(&self.display, head, old, &new);
                         }
                     }
@@ -435,17 +444,22 @@ impl OutputManagementState {
                     // Name or other "sent once" properties changed: re-create
                     // the head object.
                     for manager in &mut self.managers {
-                        if let Some(pos) = manager.heads.iter().position(|h| h.head_id == entry.id) {
+                        if let Some(pos) = manager.heads.iter().position(|h| h.head_id == entry.id)
+                        {
                             manager.heads.remove(pos).finish();
                         }
-                        if let Some(head) = create_head::<D>(&self.display, &manager.manager, entry.id, &new) {
+                        if let Some(head) =
+                            create_head::<D>(&self.display, &manager.manager, entry.id, &new)
+                        {
                             manager.heads.push(head);
                         }
                     }
                 }
                 None => {
                     for manager in &mut self.managers {
-                        if let Some(head) = create_head::<D>(&self.display, &manager.manager, entry.id, &new) {
+                        if let Some(head) =
+                            create_head::<D>(&self.display, &manager.manager, entry.id, &new)
+                        {
                             manager.heads.push(head);
                         }
                     }
@@ -464,11 +478,15 @@ impl OutputManagementState {
     }
 
     fn entry(&self, output: &Output) -> Option<&HeadEntry> {
-        self.heads.iter().find(|h| !h.removed && h.output == *output)
+        self.heads
+            .iter()
+            .find(|h| !h.removed && h.output == *output)
     }
 
     fn entry_mut(&mut self, output: &Output) -> Option<&mut HeadEntry> {
-        self.heads.iter_mut().find(|h| !h.removed && h.output == *output)
+        self.heads
+            .iter_mut()
+            .find(|h| !h.removed && h.output == *output)
     }
 
     /// Whether the compositor's state differs from what clients were told.
@@ -532,7 +550,11 @@ fn create_head<D: OutputManagementHandler>(
 ) -> Option<HeadInstance> {
     let client = manager.client()?;
     let head = client
-        .create_resource::<ZwlrOutputHeadV1, _, D>(dh, manager.version(), OutputHeadData { head_id })
+        .create_resource::<ZwlrOutputHeadV1, _, D>(
+            dh,
+            manager.version(),
+            OutputHeadData { head_id },
+        )
         .ok()?;
     manager.head(&head);
 
@@ -563,7 +585,9 @@ fn create_head<D: OutputManagementHandler>(
     instance.head.enabled(snapshot.enabled as i32);
     if snapshot.enabled {
         send_current_mode(&instance, snapshot);
-        instance.head.position(snapshot.position.x, snapshot.position.y);
+        instance
+            .head
+            .position(snapshot.position.x, snapshot.position.y);
         instance.head.transform(to_wl_transform(snapshot.transform));
         instance.head.scale(snapshot.scale);
     }
@@ -586,7 +610,8 @@ fn send_modes<D: OutputManagementHandler>(
             mode,
         };
         // Like libwayland, a new_id created by an event gets its parent's version.
-        let Ok(resource) = client.create_resource::<ZwlrOutputModeV1, _, D>(dh, instance.head.version(), data)
+        let Ok(resource) =
+            client.create_resource::<ZwlrOutputModeV1, _, D>(dh, instance.head.version(), data)
         else {
             continue;
         };
@@ -603,14 +628,12 @@ fn send_modes<D: OutputManagementHandler>(
 }
 
 fn send_current_mode(instance: &HeadInstance, snapshot: &HeadSnapshot) {
-    let current = snapshot
-        .current_mode
-        .and_then(|current| {
-            instance
-                .modes
-                .iter()
-                .find(|(mode, resource)| *mode == current && resource.is_alive())
-        });
+    let current = snapshot.current_mode.and_then(|current| {
+        instance
+            .modes
+            .iter()
+            .find(|(mode, resource)| *mode == current && resource.is_alive())
+    });
     if let Some((_, resource)) = current {
         instance.head.current_mode(resource);
     }
@@ -623,7 +646,8 @@ fn send_head_changes<D: OutputManagementHandler>(
     new: &HeadSnapshot,
 ) {
     let head = instance.head.clone();
-    if old.physical_size != new.physical_size && new.physical_size.w > 0 && new.physical_size.h > 0 {
+    if old.physical_size != new.physical_size && new.physical_size.w > 0 && new.physical_size.h > 0
+    {
         head.physical_size(new.physical_size.w, new.physical_size.h);
     }
 
@@ -719,7 +743,9 @@ impl<D: OutputManagementHandler> Dispatch<ZwlrOutputManagerV1, (), D> for Output
     }
 }
 
-impl<D: OutputManagementHandler> Dispatch<ZwlrOutputHeadV1, OutputHeadData, D> for OutputManagementState {
+impl<D: OutputManagementHandler> Dispatch<ZwlrOutputHeadV1, OutputHeadData, D>
+    for OutputManagementState
+{
     fn request(
         _state: &mut D,
         _client: &Client,
@@ -733,14 +759,21 @@ impl<D: OutputManagementHandler> Dispatch<ZwlrOutputHeadV1, OutputHeadData, D> f
         let _ = request;
     }
 
-    fn destroyed(state: &mut D, _client: ClientId, head: &ZwlrOutputHeadV1, _data: &OutputHeadData) {
+    fn destroyed(
+        state: &mut D,
+        _client: ClientId,
+        head: &ZwlrOutputHeadV1,
+        _data: &OutputHeadData,
+    ) {
         for manager in &mut state.output_management_state().managers {
             manager.heads.retain(|h| h.head != *head);
         }
     }
 }
 
-impl<D: OutputManagementHandler> Dispatch<ZwlrOutputModeV1, OutputModeData, D> for OutputManagementState {
+impl<D: OutputManagementHandler> Dispatch<ZwlrOutputModeV1, OutputModeData, D>
+    for OutputManagementState
+{
     fn request(
         _state: &mut D,
         _client: &Client,
@@ -786,14 +819,18 @@ impl<D: OutputManagementHandler> Dispatch<ZwlrOutputConfigurationV1, OutputConfi
                     },
                 );
                 if inner.used {
-                    configuration.post_error(Error::AlreadyUsed, "configuration has already been used");
+                    configuration
+                        .post_error(Error::AlreadyUsed, "configuration has already been used");
                     return;
                 }
                 let Some(head_id) = head.data::<OutputHeadData>().map(|d| d.head_id) else {
                     return;
                 };
                 if inner.heads.iter().any(|h| h.head_id == head_id) {
-                    configuration.post_error(Error::AlreadyConfiguredHead, "head has already been configured");
+                    configuration.post_error(
+                        Error::AlreadyConfiguredHead,
+                        "head has already been configured",
+                    );
                     return;
                 }
                 inner.heads.push(PendingHead {
@@ -805,14 +842,18 @@ impl<D: OutputManagementHandler> Dispatch<ZwlrOutputConfigurationV1, OutputConfi
             Request::DisableHead { head } => {
                 let mut inner = data.inner.lock().unwrap();
                 if inner.used {
-                    configuration.post_error(Error::AlreadyUsed, "configuration has already been used");
+                    configuration
+                        .post_error(Error::AlreadyUsed, "configuration has already been used");
                     return;
                 }
                 let Some(head_id) = head.data::<OutputHeadData>().map(|d| d.head_id) else {
                     return;
                 };
                 if inner.heads.iter().any(|h| h.head_id == head_id) {
-                    configuration.post_error(Error::AlreadyConfiguredHead, "head has already been configured");
+                    configuration.post_error(
+                        Error::AlreadyConfiguredHead,
+                        "head has already been configured",
+                    );
                     return;
                 }
                 inner.heads.push(PendingHead {
@@ -826,7 +867,8 @@ impl<D: OutputManagementHandler> Dispatch<ZwlrOutputConfigurationV1, OutputConfi
                 let pending = {
                     let mut inner = data.inner.lock().unwrap();
                     if inner.used {
-                        configuration.post_error(Error::AlreadyUsed, "configuration has already been used");
+                        configuration
+                            .post_error(Error::AlreadyUsed, "configuration has already been used");
                         return;
                     }
                     inner.used = true;
@@ -916,7 +958,8 @@ impl OutputManagementState {
     }
 }
 
-impl<D: OutputManagementHandler> Dispatch<ZwlrOutputConfigurationHeadV1, OutputConfigurationHeadData, D>
+impl<D: OutputManagementHandler>
+    Dispatch<ZwlrOutputConfigurationHeadV1, OutputConfigurationHeadData, D>
     for OutputManagementState
 {
     fn request(
@@ -949,11 +992,17 @@ impl<D: OutputManagementHandler> Dispatch<ZwlrOutputConfigurationHeadV1, OutputC
                     return already_set("mode");
                 }
                 match mode.data::<OutputModeData>() {
-                    Some(m) if m.head_id == head.head_id => head.mode = Some(ModeConfiguration::Mode(m.mode)),
+                    Some(m) if m.head_id == head.head_id => {
+                        head.mode = Some(ModeConfiguration::Mode(m.mode))
+                    }
                     _ => config_head.post_error(Error::InvalidMode, "mode does not belong to head"),
                 }
             }
-            Request::SetCustomMode { width, height, refresh } => {
+            Request::SetCustomMode {
+                width,
+                height,
+                refresh,
+            } => {
                 if head.mode.is_some() {
                     return already_set("mode");
                 }
@@ -979,9 +1028,13 @@ impl<D: OutputManagementHandler> Dispatch<ZwlrOutputConfigurationHeadV1, OutputC
                 match transform {
                     WEnum::Value(t) => match from_wl_transform(t) {
                         Some(t) => head.transform = Some(t),
-                        None => config_head.post_error(Error::InvalidTransform, "invalid transform"),
+                        None => {
+                            config_head.post_error(Error::InvalidTransform, "invalid transform")
+                        }
                     },
-                    WEnum::Unknown(_) => config_head.post_error(Error::InvalidTransform, "invalid transform"),
+                    WEnum::Unknown(_) => {
+                        config_head.post_error(Error::InvalidTransform, "invalid transform")
+                    }
                 }
             }
             Request::SetScale { scale } => {
@@ -1001,7 +1054,10 @@ impl<D: OutputManagementHandler> Dispatch<ZwlrOutputConfigurationHeadV1, OutputC
                 match state {
                     WEnum::Value(AdaptiveSyncState::Enabled) => head.adaptive_sync = Some(true),
                     WEnum::Value(AdaptiveSyncState::Disabled) => head.adaptive_sync = Some(false),
-                    _ => config_head.post_error(Error::InvalidAdaptiveSyncState, "invalid adaptive sync state"),
+                    _ => config_head.post_error(
+                        Error::InvalidAdaptiveSyncState,
+                        "invalid adaptive sync state",
+                    ),
                 }
             }
             _ => {}

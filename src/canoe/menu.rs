@@ -7,8 +7,8 @@ use std::hash::{Hash, Hasher};
 use super::render::{ColorGlyphs, Renderer};
 use super::scale::{FractionalSurface, Origin, Scale};
 use super::shadow::{draw_shadow_soft, SoftShadowRect};
-use super::titlebar::Rect;
 use super::surface::{Buffer, LayerSurface, Region, Surface};
+use super::titlebar::Rect;
 use super::{font, OutputId, WindowId};
 
 /// Menu entry data.
@@ -378,9 +378,7 @@ impl WindowMenu {
         }
     }
 
-    pub fn update_input_region(
-        &self,
-    ) {
+    pub fn update_input_region(&self) {
         if self.width <= 0 || self.height <= 0 {
             return;
         }

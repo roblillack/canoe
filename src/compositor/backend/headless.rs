@@ -3,7 +3,8 @@
 //! monitors, input comes from virtual devices.
 //!
 //! `CANOE_HEADLESS_OUTPUTS` lists the outputs as `WIDTHxHEIGHT[@SCALE]`,
-//! comma-separated (default `1280x720`).
+//! comma-separated (default `1280x720`). With `CANOE_HEADLESS_REVERSE` set
+//! they are announced last to first.
 
 use std::time::{Duration, Instant};
 
@@ -36,12 +37,6 @@ struct HeadlessOutput {
     image: pixman::Image<'static, 'static>,
 }
 
-impl HeadlessData {
-    fn output_mut(&mut self, output: &Output) -> Option<&mut HeadlessOutput> {
-        self.outputs.iter_mut().find(|o| &o.output == output)
-    }
-}
-
 /// Parse `1280x720@1.5`.
 fn parse_output(spec: &str) -> Option<(i32, i32, f64)> {
     let (size, scale) = match spec.split_once('@') {
@@ -64,6 +59,7 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
 
     let specs = std::env::var("CANOE_HEADLESS_OUTPUTS").unwrap_or_else(|_| "1280x720".into());
     let mut x = 0;
+    let mut outputs = Vec::new();
     for (index, spec) in specs.split(',').enumerate() {
         let Some((width, height, scale)) = parse_output(spec) else {
             return Err(format!("bad output spec {spec:?} in CANOE_HEADLESS_OUTPUTS").into());
@@ -90,17 +86,31 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
             Some((x, 0).into()),
         );
         x += (width as f64 / scale).round() as i32;
+        outputs.push(output);
+    }
+    // Announcing outputs last to first (as wlroots' headless backend ends
+    // up doing) helps reproduce order-dependent behavior in tests.
+    if std::env::var_os("CANOE_HEADLESS_REVERSE").is_some() {
+        outputs.reverse();
+    }
+    for output in outputs {
         add_backend_output(state, &output)?;
         state.add_output(output);
     }
     Ok(())
 }
 
-fn add_backend_output(state: &mut State, output: &Output) -> Result<(), Box<dyn std::error::Error>> {
+fn add_backend_output(
+    state: &mut State,
+    output: &Output,
+) -> Result<(), Box<dyn std::error::Error>> {
     let Backend::Headless(ref mut data) = state.backend else {
         return Ok(());
     };
-    let size = output.current_mode().map(|m| m.size).unwrap_or((1, 1).into());
+    let size = output
+        .current_mode()
+        .map(|m| m.size)
+        .unwrap_or((1, 1).into());
     let image = Offscreen::<pixman::Image<'static, 'static>>::create_buffer(
         &mut data.renderer,
         smithay::backend::allocator::Fourcc::Argb8888,
@@ -191,25 +201,4 @@ fn render_output(state: &mut State, output: &Output) {
     if let Some(damage) = damage {
         state.capture_damage(output, &damage);
     }
-}
-
-/// The rendered image of an output, for screen capture.
-pub fn with_output_image<T>(
-    state: &mut State,
-    output: &Output,
-    f: impl FnOnce(&mut PixmanRenderer, &mut pixman::Image<'static, 'static>) -> T,
-) -> Option<T> {
-    let Backend::Headless(ref mut data) = state.backend else {
-        return None;
-    };
-    let HeadlessData {
-        renderer, outputs, ..
-    } = data;
-    let target = outputs.iter_mut().find(|o| &o.output == output)?;
-    Some(f(renderer, &mut target.image))
-}
-
-#[allow(dead_code)]
-fn _unused(data: &mut HeadlessData, output: &Output) {
-    let _ = data.output_mut(output);
 }
