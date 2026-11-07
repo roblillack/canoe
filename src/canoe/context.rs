@@ -1936,6 +1936,7 @@ impl Context {
         for window_id in std::mem::take(&mut self.pending_fullscreen_exits) {
             self.restore_from_stale_fullscreen(window_id);
         }
+        self.fit_oversized_new_windows();
 
         self.run_share_nudges();
 
@@ -2037,6 +2038,24 @@ impl Context {
                     // (min == max) and dialogs naturally end up at their own
                     // requested size through the same path.
                     w.propose_preferred_dimensions();
+                }
+
+                // Ask the window to pick a size that fits where it will be
+                // placed. Apps that ignore this hint get shrunk once they're
+                // placed, see place_new_window.
+                if let Some(window) = self.windows.get(&window_id) {
+                    let bounds = {
+                        let w = window.borrow();
+                        self.placement_area(&w).map(|(_, _, area_w, area_h)| {
+                            let (left, top, right, bottom) = self.frame_insets(&w);
+                            (area_w - left - right, area_h - top - bottom)
+                        })
+                    };
+                    if let Some((max_width, max_height)) = bounds {
+                        window
+                            .borrow()
+                            .set_dimension_bounds(max_width.max(1), max_height.max(1));
+                    }
                 }
 
                 // Focus the new window
@@ -2402,11 +2421,88 @@ impl Context {
         current
     }
 
+    /// The area a new window is placed in: the usable area of the output it
+    /// was assigned, its parent's, or the one new windows go to.
+    fn placement_area(&self, window: &Window) -> Option<(i32, i32, i32, i32)> {
+        let output = window
+            .output
+            .as_ref()
+            .and_then(|o| o.upgrade())
+            .or_else(|| {
+                let parent = self.windows.get(&window.parent?)?.borrow();
+                parent.output.as_ref().and_then(|o| o.upgrade())
+            })
+            .or_else(|| {
+                let output_id = self
+                    .preferred_output_for_window_id(window.id)
+                    .or(self.current_output)?;
+                self.outputs.get(&output_id).cloned()
+            })?;
+        let output = output.borrow();
+        let output_rect = (output.x, output.y, output.width, output.height);
+        intersect_rects(output.usable_area(), output_rect)
+    }
+
+    /// Give a new window its first position, near (`x`, `y`) but moved so its
+    /// frame lies within its placement area. A window too large for the area
+    /// is pinned to its top-left, keeping the titlebar reachable, and shrunk
+    /// in the next manage sequence.
+    fn place_new_window(&mut self, window_id: WindowId, x: i32, y: i32) {
+        let Some(window) = self.windows.get(&window_id) else {
+            return;
+        };
+        let (x, y, oversized) = {
+            let w = window.borrow();
+            match self.placement_area(&w) {
+                Some(area) => {
+                    fit_new_window((x, y, w.width, w.height), self.frame_insets(&w), area)
+                }
+                None => (x, y, false),
+            }
+        };
+        let mut w = window.borrow_mut();
+        w.set_position(x, y);
+        if oversized {
+            w.pending_initial_fit = true;
+            if let Some(ref rwm) = self.rwm {
+                rwm.manage_dirty();
+            }
+        }
+    }
+
+    /// Shrink windows that were placed while larger than their area, as far
+    /// as their minimum size allows.
+    fn fit_oversized_new_windows(&mut self) {
+        for window in self.windows.values() {
+            if !window.borrow().pending_initial_fit {
+                continue;
+            }
+            let (area, insets) = {
+                let w = window.borrow();
+                (self.placement_area(&w), self.frame_insets(&w))
+            };
+            let mut w = window.borrow_mut();
+            w.pending_initial_fit = false;
+            // Sized by other means since it was placed.
+            let resized_since = w.maximized
+                || w.snap_state.is_some()
+                || !matches!(w.fullscreen, super::window::FullscreenState::None)
+                || !matches!(w.operator, super::window::Operator::None);
+            let Some((_, _, area_w, area_h)) = area.filter(|_| !resized_since) else {
+                continue;
+            };
+            let (left, top, right, bottom) = insets;
+            let width = w.width.min(area_w - left - right).max(w.min_width).max(1);
+            let height = w.height.min(area_h - top - bottom).max(w.min_height).max(1);
+            if (width, height) != (w.width, w.height) {
+                w.propose_dimensions(width, height);
+            }
+        }
+    }
+
     fn apply_initial_positions(&mut self) {
         // Dialogs (windows with a parent) get centred over their parent
         // rather than being cascaded along with regular toplevels.
-        let titlebar_h = super::titlebar::titlebar_height(&self.config.ui);
-        let border_width = self.config.ui.border_width;
         let dialog_positions: Vec<(WindowId, i32, i32)> = self
             .windows
             .iter()
@@ -2419,38 +2515,22 @@ impl Context {
                 if parent.position_undefined || parent.width <= 0 || parent.height <= 0 {
                     return None;
                 }
-                let mut cx = parent.x + (parent.width - w.width) / 2;
-                let mut cy = parent.y + (parent.height - w.height) / 2;
-                if let Some(output) = w
-                    .output
-                    .as_ref()
-                    .and_then(|o| o.upgrade())
-                    .or_else(|| parent.output.as_ref().and_then(|o| o.upgrade()))
-                {
-                    let (ax, ay, aw, ah) = output.borrow().usable_area();
-                    if aw > 0 && ah > 0 {
-                        let min_x = ax + border_width;
-                        let min_y = ay + border_width + titlebar_h;
-                        let max_x = (ax + aw - border_width - w.width).max(min_x);
-                        let max_y = (ay + ah - border_width - w.height).max(min_y);
-                        cx = cx.clamp(min_x, max_x);
-                        cy = cy.clamp(min_y, max_y);
-                    }
-                }
+                let cx = parent.x + (parent.width - w.width) / 2;
+                let cy = parent.y + (parent.height - w.height) / 2;
                 Some((id, cx, cy))
             })
             .collect();
         for (id, x, y) in dialog_positions {
-            if let Some(window) = self.windows.get(&id) {
-                window.borrow_mut().set_position(x, y);
-            }
+            self.place_new_window(id, x, y);
         }
 
         let mut output_windows: HashMap<OutputId, Vec<WindowId>> = HashMap::new();
 
         for (&window_id, window) in &self.windows {
             let w = window.borrow();
-            if !w.position_undefined {
+            // Wait for the window's first size: placement needs it, and River
+            // doesn't show the window before then anyway.
+            if !w.position_undefined || w.width <= 0 || w.height <= 0 {
                 continue;
             }
 
@@ -2523,9 +2603,7 @@ impl Context {
                     start_y + (end_y - start_y) * idx as i32 / denom
                 };
 
-                if let Some(window) = self.windows.get(window_id) {
-                    window.borrow_mut().set_position(x, y);
-                }
+                self.place_new_window(*window_id, x, y);
             }
         }
     }
@@ -3636,6 +3714,25 @@ fn intersect_rects(
     (x2 > x1 && y2 > y1).then_some((x1, y1, x2 - x1, y2 - y1))
 }
 
+/// Move a new window's content `rect` so its frame (content plus `insets`:
+/// left, top, right, bottom) lies within `area`, by as little as possible.
+/// Returns the new position and whether the frame is too large to fit, in
+/// which case it's pinned to the area's top-left.
+fn fit_new_window(
+    rect: (i32, i32, i32, i32),
+    insets: (i32, i32, i32, i32),
+    area: (i32, i32, i32, i32),
+) -> (i32, i32, bool) {
+    let (x, y, width, height) = rect;
+    let (left, top, right, bottom) = insets;
+    let (ax, ay, aw, ah) = area;
+    let frame_w = width + left + right;
+    let frame_h = height + top + bottom;
+    let frame_x = (x - left).clamp(ax, (ax + aw - frame_w).max(ax));
+    let frame_y = (y - top).clamp(ay, (ay + ah - frame_h).max(ay));
+    (frame_x + left, frame_y + top, frame_w > aw || frame_h > ah)
+}
+
 /// Whether rect `inner` lies entirely within rect `outer`.
 fn rect_contains(outer: (i32, i32, i32, i32), inner: (i32, i32, i32, i32)) -> bool {
     inner.0 >= outer.0
@@ -4026,5 +4123,80 @@ mod tests {
         let w = ctx.windows[&12].borrow();
         assert_eq!((w.x, w.y), (0, 0));
         assert_eq!(w.proposed_dimensions(), (1920, 1080));
+    }
+
+    #[test]
+    fn fit_new_window_moves_or_pins_frame() {
+        let area = (0, 0, 1366, 768);
+        let insets = (2, 30, 2, 2);
+        // Fits where it is.
+        assert_eq!(
+            fit_new_window((100, 100, 800, 600), insets, area),
+            (100, 100, false)
+        );
+        // Fits, but placed across the bottom-right edge.
+        assert_eq!(
+            fit_new_window((700, 300, 800, 600), insets, area),
+            (564, 166, false)
+        );
+        // Too large: pinned so the titlebar stays reachable.
+        assert_eq!(
+            fit_new_window((40, 60, 1920, 1080), insets, area),
+            (2, 30, true)
+        );
+    }
+
+    #[test]
+    fn oversized_new_window_is_pinned_then_shrunk() {
+        let mut ctx = context_with_outputs(&[(1, 0, 0, 1366, 768)]);
+        let mut window = Window::new(10);
+        window.output = Some(Rc::downgrade(&ctx.outputs[&1]));
+        window.decoration = Some(WindowDecoration::Ssd);
+        window.min_width = 400;
+        window.update_dimensions(1920, 1080);
+        ctx.windows.insert(10, Rc::new(RefCell::new(window)));
+        let (left, top, right, bottom) = ctx.frame_insets(&ctx.windows[&10].borrow());
+
+        ctx.apply_initial_positions();
+        {
+            let w = ctx.windows[&10].borrow();
+            assert_eq!((w.x, w.y), (left, top));
+            assert!(w.pending_initial_fit);
+        }
+
+        ctx.handle_manage_start();
+        let w = ctx.windows[&10].borrow();
+        assert!(!w.pending_initial_fit);
+        assert_eq!(
+            w.proposed_dimensions(),
+            (1366 - left - right, 768 - top - bottom)
+        );
+    }
+
+    #[test]
+    fn new_windows_wait_for_their_size_and_cascade_within_the_area() {
+        let mut ctx = context_with_outputs(&[(1, 0, 0, 1366, 768)]);
+        for id in [10, 11] {
+            let mut window = Window::new(id);
+            window.output = Some(Rc::downgrade(&ctx.outputs[&1]));
+            ctx.windows.insert(id, Rc::new(RefCell::new(window)));
+        }
+
+        // No size yet: not placed.
+        ctx.apply_initial_positions();
+        assert!(ctx.windows[&10].borrow().position_undefined);
+
+        for id in [10, 11] {
+            ctx.windows[&id].borrow_mut().update_dimensions(1200, 700);
+        }
+        ctx.apply_initial_positions();
+        // The second cascade slot would reach past the right edge.
+        for id in [10, 11] {
+            let w = ctx.windows[&id].borrow();
+            assert!(!w.position_undefined);
+            assert!(!w.pending_initial_fit);
+            assert!(w.x >= 0 && w.x + w.width <= 1366, "x = {}", w.x);
+            assert!(w.y >= 0 && w.y + w.height <= 768, "y = {}", w.y);
+        }
     }
 }

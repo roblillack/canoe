@@ -11,6 +11,8 @@ A stacking window manager for the River Wayland compositor, written in Rust.
 - Titlebar/edge window movement and resizing (Super+Drag anywhere)
 - Multihead support (focus/send windows across outputs, windows follow
   output layout and resolution changes, and move off unplugged outputs)
+- New windows open fully on screen; apps that ask for more room than the
+  screen has are shrunk to fit, as far as their minimum size allows
 - Window switcher (keyboard cycle + desktop right-click menu)
 - Window focus follows click
 - Minimized windows shown as icons on the desktop (can be disabled)

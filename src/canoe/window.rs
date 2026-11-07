@@ -10,6 +10,7 @@ use crate::protocol::{RiverNodeV1, RiverOutputV1, RiverWindowV1};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Weak;
+use wayland_client::Proxy;
 
 /// Window identifier
 pub type WindowId = usize;
@@ -168,6 +169,9 @@ pub struct Window {
     pub unhandled_events: VecDeque<WindowEvent>,
     /// Position is undefined (newly created)
     pub position_undefined: bool,
+    /// Placed while larger than its output's usable area; propose a size
+    /// that fits in the next manage sequence
+    pub pending_initial_fit: bool,
     /// Titlebar for server-side decoration
     pub titlebar: Option<super::Titlebar>,
     /// Shadow decoration surface
@@ -224,6 +228,7 @@ impl Window {
             operator: Operator::None,
             unhandled_events: VecDeque::new(),
             position_undefined: true,
+            pending_initial_fit: false,
             titlebar: None,
             shadow: None,
             titlebar_hovered: None,
@@ -363,6 +368,16 @@ impl Window {
     #[cfg(test)]
     pub fn proposed_dimensions(&self) -> (i32, i32) {
         (self.proposed_width, self.proposed_height)
+    }
+
+    /// Recommend that the window keep within the given size when it picks
+    /// its own dimensions. Only a hint; ignored by River before version 4.
+    pub fn set_dimension_bounds(&self, max_width: i32, max_height: i32) {
+        if let Some(ref rwm_window) = self.rwm_window {
+            if rwm_window.version() >= 4 {
+                rwm_window.set_dimension_bounds(max_width.max(0), max_height.max(0));
+            }
+        }
     }
 
     /// Set window position
