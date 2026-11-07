@@ -21,6 +21,8 @@
 #lock_cmd = "swaylock"
 
 # Programs launched once when Canoe starts (not on reload). Empty by default.
+# When one of them draws a wallpaper, set desktop_background = "transparent"
+# under [ui] below.
 #startup_cmds = ["kanshi", "mako", ["swaybg", "-i", "/home/me/bg.png"]]
 
 # Export WAYLAND_DISPLAY and XDG_CURRENT_DESKTOP to the systemd user manager
@@ -44,7 +46,8 @@
 #"Super+I" = "control-panel"
 #"Super+E" = ["sh", "-c", "notify-send 'hi there' && foot"]
 
-# Colors accept #RGB, #RRGGBB or #RRGGBBAA. Sizes are in logical pixels.
+# Colors accept #RGB, #RRGGBB, #RRGGBBAA or "transparent". Sizes are in
+# logical pixels.
 [ui]
 #border_width = 5
 #border_active = { outer = "#000000", mid = "#C0C0C0", inner = "#000000" }
@@ -66,7 +69,9 @@
 #shadows_color = "#00000033"
 #font_name = "sans"             # fontconfig pattern
 #font_size = 15.0
-#desktop_background = "#008080" # drawn below wallpaper clients; alpha 00 for none
+# Use "transparent" when a program like swaybg draws the wallpaper; a fill
+# would otherwise cover it after restarting Canoe or plugging in a monitor.
+#desktop_background = "#008080"
 #desktop_menu = true            # false: only icons take clicks, the rest go to the wallpaper
 #icons_enabled = true           # show minimized windows as desktop icons
 # Desktop icon labels default to values derived from the settings above:

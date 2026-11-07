@@ -179,13 +179,19 @@ startup_cmds = [
     "mako",
     ["swaybg", "-i", "/home/me/wallpaper.png", "-m", "fill"],
 ]
+
+[ui]
+desktop_background = "transparent"  # let the wallpaper show, see below
 ```
 
 The commands are launched in order, but Canoe does not wait for one to finish
 before starting the next. They start once Canoe has set up the desktop on every
-output, so a wallpaper client launched here is drawn above
-[`desktop_background`](#desktop-and-wallpapers). They run only at startup: a `SIGHUP` reload does not
-run them again, so changes take effect the next time Canoe starts.
+output. They run only at startup: a `SIGHUP` reload does not run them again, so
+changes take effect the next time Canoe starts.
+
+When a program like `swaybg` draws your wallpaper, set `desktop_background =
+"transparent"`, as above; see [Desktop and wallpapers](#desktop-and-wallpapers)
+for why.
 
 ### Environment variables
 
@@ -238,7 +244,7 @@ reload — no restart needed; canoe rebinds every seat's shortcuts.
 ### UI Settings
 
 UI options live under the `[ui]` table and let you tune borders, titlebars, and menu colors.
-Colors accept `#RGB`, `#RRGGBB`, or `#RRGGBBAA`.
+Colors accept `#RGB`, `#RRGGBB`, `#RRGGBBAA`, or `transparent`.
 
 Sizes (borders, shadows, fonts) are given in logical pixels. They scale with the
 display's (fractional) scale and are drawn crisply at its native resolution.
@@ -279,13 +285,26 @@ icons_highlight_text = "#000000" # optional; defaults to menu_highlight_text
 
 Canoe draws the desktop on two layer-shell surfaces per output:
 
-- `desktop_background` is a solid fill on the `background` layer. River stacks
-  surfaces on the same layer in the order they are created, so a wallpaper
-  client such as `swaybg` started after Canoe is drawn on top of it, and the
-  fill shows through wherever the wallpaper is transparent. Set an alpha of
-  `00` (e.g. `"#00000000"`) to draw no fill at all.
+- `desktop_background` is a solid fill on the `background` layer.
 - Minimized-window icons are drawn on a transparent surface on the `bottom`
   layer, above any wallpaper.
+
+**If you use a separate program to show a background image** (`swaybg`,
+`shaderbg`, `wpaperd`, …), set:
+
+```toml
+[ui]
+desktop_background = "transparent"
+```
+
+Wallpaper programs draw on the `background` layer too, and River stacks
+surfaces on the same layer in the order they are created; no client can move
+its surface below one that already exists. A wallpaper started from
+`startup_cmds` begins above Canoe's fill. But whenever Canoe creates the fill
+while the wallpaper is already running, the fill is placed on top and hides
+it: when you restart Canoe, when you plug in a monitor, or when the wallpaper
+is started outside of Canoe (e.g. from River's init). With `"transparent"`
+there is nothing to hide the wallpaper, whatever the order.
 
 By default the icon surface takes pointer input across the whole output:
 right-clicking the empty desktop opens the window menu, and left-clicking it
