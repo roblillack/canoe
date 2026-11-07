@@ -932,7 +932,7 @@ impl Context {
             return;
         }
 
-        let (old_area, new_area, window_rect, snap_state, maximized, fullscreen, pre_snap) = {
+        let (old_area, new_area, window_rect, fullscreen) = {
             let Some(window) = self.windows.get(&window_id) else {
                 return;
             };
@@ -948,11 +948,13 @@ impl Context {
             (
                 old_area,
                 new_area,
-                (w.x, w.y, w.width, w.height),
-                w.snap_state,
-                w.maximized,
+                super::window::SavedGeometry {
+                    x: w.x,
+                    y: w.y,
+                    width: w.width,
+                    height: w.height,
+                },
                 w.fullscreen.clone(),
-                w.pre_snap,
             )
         };
 
@@ -977,72 +979,12 @@ impl Context {
             return;
         }
 
-        let (ox, oy, ow, oh) = old_area;
-        let (nx, ny, nw, nh) = new_area;
-        if ow <= 0 || oh <= 0 || nw <= 0 || nh <= 0 {
+        if old_area.2 <= 0 || old_area.3 <= 0 || new_area.2 <= 0 || new_area.3 <= 0 {
             self.set_window_output(window_id, target_output_id);
             return;
         }
 
-        let map_rect = |x: i32, y: i32, w: i32, h: i32, resize: bool| {
-            let rect_w = w.max(1);
-            let rect_h = h.max(1);
-            let ratio_w = rect_w as f32 / ow as f32;
-            let ratio_h = rect_h as f32 / oh as f32;
-            let mut new_w = if resize {
-                (ratio_w * nw as f32).round() as i32
-            } else {
-                rect_w
-            };
-            let mut new_h = if resize {
-                (ratio_h * nh as f32).round() as i32
-            } else {
-                rect_h
-            };
-            new_w = new_w.max(1).min(nw);
-            new_h = new_h.max(1).min(nh);
-
-            let rel_x = (x - ox) as f32 / ow as f32;
-            let rel_y = (y - oy) as f32 / oh as f32;
-            let mut new_x = nx + (rel_x * nw as f32).round() as i32;
-            let mut new_y = ny + (rel_y * nh as f32).round() as i32;
-            let max_x = nx + (nw - new_w).max(0);
-            let max_y = ny + (nh - new_h).max(0);
-            new_x = new_x.clamp(nx, max_x);
-            new_y = new_y.clamp(ny, max_y);
-            (new_x, new_y, new_w, new_h)
-        };
-
-        let (win_x, win_y, win_w, win_h) = window_rect;
-        let force_resize = snap_state.is_some() || maximized;
-        let needs_resize = force_resize || win_w.max(1) > nw || win_h.max(1) > nh;
-        let (new_x, new_y, new_w, new_h) = map_rect(win_x, win_y, win_w, win_h, needs_resize);
-
-        let mapped_pre_snap = if snap_state.is_some() {
-            pre_snap.map(|saved| {
-                let (px, py, pw, ph) = map_rect(saved.x, saved.y, saved.width, saved.height, true);
-                super::window::SavedGeometry {
-                    x: px,
-                    y: py,
-                    width: pw,
-                    height: ph,
-                }
-            })
-        } else {
-            None
-        };
-
-        self.set_window_output(window_id, target_output_id);
-        if let Some(window) = self.windows.get(&window_id) {
-            let mut w = window.borrow_mut();
-            if let Some(saved) = mapped_pre_snap {
-                w.pre_snap = Some(saved);
-            }
-            w.set_position(new_x, new_y);
-            if needs_resize {
-                w.propose_dimensions(new_w, new_h);
-            }
-        }
+        self.relocate_window(window_id, window_rect, old_area, target_output_id, false);
 
         // Rearrange both outputs
         if let Some(current_id) = self.current_output {
@@ -3239,6 +3181,78 @@ impl Context {
         }
     }
 
+    /// Carry `rect`, a window's geometry within `old_area`, over to output
+    /// `target_id`, keeping its position relative to the usable area. The
+    /// window keeps its size unless it is snapped, doesn't fit, or `resize`
+    /// is set; a snapped window's restore geometry moves along. Returns the
+    /// geometry the window was given.
+    fn relocate_window(
+        &mut self,
+        window_id: WindowId,
+        rect: super::window::SavedGeometry,
+        old_area: (i32, i32, i32, i32),
+        target_id: OutputId,
+        resize: bool,
+    ) -> super::window::SavedGeometry {
+        let new_area = self
+            .outputs
+            .get(&target_id)
+            .map(|output| output.borrow().usable_area())
+            .unwrap_or(old_area);
+        let (snap_state, maximized, pre_snap) = self
+            .windows
+            .get(&window_id)
+            .map(|window| {
+                let w = window.borrow();
+                (w.snap_state, w.maximized, w.pre_snap)
+            })
+            .unwrap_or_default();
+
+        let scale = snap_state.is_some() || maximized;
+        let too_large = rect.width.max(1) > new_area.2 || rect.height.max(1) > new_area.3;
+        let (x, y, width, height) = map_rect_between_areas(
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            old_area,
+            new_area,
+            scale || too_large,
+        );
+        let mapped_pre_snap = if snap_state.is_some() {
+            pre_snap.map(|s| {
+                let (x, y, width, height) =
+                    map_rect_between_areas(s.x, s.y, s.width, s.height, old_area, new_area, true);
+                super::window::SavedGeometry {
+                    x,
+                    y,
+                    width,
+                    height,
+                }
+            })
+        } else {
+            None
+        };
+
+        self.set_window_output(window_id, target_id);
+        if let Some(window) = self.windows.get(&window_id) {
+            let mut w = window.borrow_mut();
+            if let Some(saved) = mapped_pre_snap {
+                w.pre_snap = Some(saved);
+            }
+            w.set_position(x, y);
+            if scale || too_large || resize {
+                w.propose_dimensions(width, height);
+            }
+        }
+        super::window::SavedGeometry {
+            x,
+            y,
+            width,
+            height,
+        }
+    }
+
     /// Move a window from a removed output onto a remaining one, mapping its
     /// geometry proportionally. Maximized/snapped state is preserved (saved
     /// geometries remapped too); fullscreen-on-the-dead-output degrades to
@@ -3261,7 +3275,7 @@ impl Context {
             return;
         }
 
-        let (rect, snap_state, maximized, pre_snap, stale_fullscreen, unplaced) = {
+        let (rect, maximized, stale_fullscreen, unplaced) = {
             let Some(window) = self.windows.get(&window_id) else {
                 return;
             };
@@ -3284,14 +3298,7 @@ impl Context {
                     height: w.height,
                 }
             };
-            (
-                rect,
-                w.snap_state,
-                w.maximized,
-                w.pre_snap,
-                stale_fullscreen,
-                w.position_undefined,
-            )
+            (rect, w.maximized, stale_fullscreen, w.position_undefined)
         };
 
         // Not placed yet: there is no geometry to carry over, and the initial
@@ -3301,52 +3308,12 @@ impl Context {
             return;
         }
 
-        let force_resize = snap_state.is_some() || maximized;
-        let needs_resize =
-            force_resize || rect.width.max(1) > new_area.2 || rect.height.max(1) > new_area.3;
-        let (new_x, new_y, new_w, new_h) = map_rect_between_areas(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            dead_area,
-            new_area,
-            needs_resize,
-        );
-        let mapped_pre_snap = if snap_state.is_some() {
-            pre_snap.map(|s| {
-                let (px, py, pw, ph) =
-                    map_rect_between_areas(s.x, s.y, s.width, s.height, dead_area, new_area, true);
-                super::window::SavedGeometry {
-                    x: px,
-                    y: py,
-                    width: pw,
-                    height: ph,
-                }
-            })
-        } else {
-            None
-        };
-
-        self.set_window_output(window_id, target_id);
-        if let Some(window) = self.windows.get(&window_id) {
-            let mut w = window.borrow_mut();
-            if let Some(saved) = mapped_pre_snap {
-                w.pre_snap = Some(saved);
-            }
-            w.set_position(new_x, new_y);
-            // Leaving fullscreen leaves position and dimensions undefined
-            // until both are proposed, so always propose the windowed size.
-            if needs_resize || stale_fullscreen {
-                w.propose_dimensions(new_w, new_h);
-            }
-            if stale_fullscreen {
-                w.pre_fullscreen = Some(super::window::SavedGeometry {
-                    x: new_x,
-                    y: new_y,
-                    width: new_w,
-                    height: new_h,
-                });
+        // Leaving fullscreen leaves position and dimensions undefined until
+        // both are proposed, so always propose the windowed size.
+        let placed = self.relocate_window(window_id, rect, dead_area, target_id, stale_fullscreen);
+        if stale_fullscreen {
+            if let Some(window) = self.windows.get(&window_id) {
+                window.borrow_mut().pre_fullscreen = Some(placed);
             }
         }
         if maximized {
