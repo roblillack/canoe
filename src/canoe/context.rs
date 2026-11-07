@@ -1977,16 +1977,16 @@ impl Context {
         }
 
         let shifts = std::mem::take(&mut self.pending_output_shifts);
-          for (output_id, dx, dy) in shifts {
-              self.apply_output_shift(output_id, dx, dy);
-          }
-          let orphans = std::mem::take(&mut self.pending_output_orphans);
-          if !orphans.is_empty() {
-              for (window_id, dead_area) in orphans {
-                  self.migrate_orphaned_window(window_id, dead_area);
-              }
-              self.mark_all_desktops_dirty(); // icons follow their window
-          }
+        for (output_id, dx, dy) in shifts {
+            self.apply_output_shift(output_id, dx, dy);
+        }
+        let orphans = std::mem::take(&mut self.pending_output_orphans);
+        if !orphans.is_empty() {
+            for (window_id, dead_area) in orphans {
+                self.migrate_orphaned_window(window_id, dead_area);
+            }
+            self.mark_all_desktops_dirty(); // icons follow their window
+        }
 
         self.run_share_nudges();
 
@@ -3125,6 +3125,7 @@ impl Context {
 
         seat.borrow_mut().set_cursor_shape(shape);
     }
+
     /// Windows anchored to an output that moved keep their position relative
     /// to it (river re-anchors remaining outputs on unplug, which would
     /// otherwise strand them at stale global coordinates).
@@ -3213,20 +3214,37 @@ impl Context {
                     height: w.height,
                 }
             };
-            (rect, w.snap_state, w.maximized, w.pre_snap, stale_fullscreen)
+            (
+                rect,
+                w.snap_state,
+                w.maximized,
+                w.pre_snap,
+                stale_fullscreen,
+            )
         };
 
         let force_resize = snap_state.is_some() || maximized;
         let needs_resize =
             force_resize || rect.width.max(1) > new_area.2 || rect.height.max(1) > new_area.3;
         let (new_x, new_y, new_w, new_h) = map_rect_between_areas(
-            rect.x, rect.y, rect.width, rect.height, dead_area, new_area, needs_resize,
+            rect.x,
+            rect.y,
+            rect.width,
+            rect.height,
+            dead_area,
+            new_area,
+            needs_resize,
         );
         let mapped_pre_snap = if snap_state.is_some() {
             pre_snap.map(|s| {
                 let (px, py, pw, ph) =
                     map_rect_between_areas(s.x, s.y, s.width, s.height, dead_area, new_area, true);
-                super::window::SavedGeometry { x: px, y: py, width: pw, height: ph }
+                super::window::SavedGeometry {
+                    x: px,
+                    y: py,
+                    width: pw,
+                    height: ph,
+                }
             })
         } else {
             None
@@ -3421,8 +3439,16 @@ fn map_rect_between_areas(
     let rect_h = h.max(1);
     let ratio_w = rect_w as f32 / ow as f32;
     let ratio_h = rect_h as f32 / oh as f32;
-    let mut new_w = if resize { (ratio_w * nw as f32).round() as i32 } else { rect_w };
-    let mut new_h = if resize { (ratio_h * nh as f32).round() as i32 } else { rect_h };
+    let mut new_w = if resize {
+        (ratio_w * nw as f32).round() as i32
+    } else {
+        rect_w
+    };
+    let mut new_h = if resize {
+        (ratio_h * nh as f32).round() as i32
+    } else {
+        rect_h
+    };
     new_w = new_w.max(1).min(nw);
     new_h = new_h.max(1).min(nh);
 
