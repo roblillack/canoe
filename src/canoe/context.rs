@@ -102,6 +102,8 @@ pub struct Context {
     pub pending_output_shifts: Vec<(OutputId, i32, i32)>,
     /// Windows anchored to a removed output: (window_id, dead usable area).
     pub pending_output_orphans: Vec<(WindowId, (i32, i32, i32, i32))>,
+    /// Windows fullscreen on a removed output they are not anchored to.
+    pending_fullscreen_exits: Vec<WindowId>,
 }
 
 impl Context {
@@ -159,6 +161,7 @@ impl Context {
 
             pending_output_shifts: Vec::new(),
             pending_output_orphans: Vec::new(),
+            pending_fullscreen_exits: Vec::new(),
         }
     }
 
@@ -290,6 +293,10 @@ impl Context {
                 if anchored {
                     self.pending_output_orphans.push((window_id, dead_area));
                     window.borrow_mut().output = None;
+                } else if window.borrow().is_fullscreen_on(output_id) {
+                    // Fullscreen here at a client's request while anchored
+                    // elsewhere: only the fullscreen state needs undoing.
+                    self.pending_fullscreen_exits.push(window_id);
                 }
             }
         }
@@ -1987,6 +1994,9 @@ impl Context {
             }
             self.mark_all_desktops_dirty(); // icons follow their window
         }
+        for window_id in std::mem::take(&mut self.pending_fullscreen_exits) {
+            self.restore_from_stale_fullscreen(window_id);
+        }
 
         self.run_share_nudges();
 
@@ -3164,6 +3174,39 @@ impl Context {
         }
     }
 
+    /// Restore the windowed geometry of a window that was fullscreen on a
+    /// removed output while anchored to a remaining one.
+    fn restore_from_stale_fullscreen(&mut self, window_id: WindowId) {
+        let Some(window) = self.windows.get(&window_id) else {
+            return;
+        };
+        let mut w = window.borrow_mut();
+        if !w.clear_stale_fullscreen() {
+            return;
+        }
+        // Leaving fullscreen leaves position and dimensions undefined until
+        // both are proposed.
+        if let Some(saved) = w.pre_fullscreen {
+            w.set_position(saved.x, saved.y);
+            w.propose_dimensions(saved.width, saved.height);
+        } else {
+            // No windowed geometry to go back to: let the client pick its
+            // size, at the top-left of the output it's anchored to.
+            let origin = w
+                .output
+                .as_ref()
+                .and_then(|output| output.upgrade())
+                .map(|output| {
+                    let (x, y, _, _) = output.borrow().usable_area();
+                    (x, y)
+                });
+            if let Some((x, y)) = origin {
+                w.set_position(x, y);
+            }
+            w.propose_preferred_dimensions();
+        }
+    }
+
     /// Move a window from a removed output onto a remaining one, mapping its
     /// geometry proportionally. Maximized/snapped state is preserved (saved
     /// geometries remapped too); fullscreen-on-the-dead-output degrades to
@@ -3192,20 +3235,8 @@ impl Context {
             };
             let mut w = window.borrow_mut();
 
-            // Per river_window_v1.fullscreen: river implicitly exits
-            // fullscreen when the fullscreen output is removed. Sync local
-            // state and use the pre-fullscreen geometry as migration base.
-            let mut stale_fullscreen = false;
-            if let super::window::FullscreenState::Output(weak) = &w.fullscreen {
-                if weak.upgrade().is_none() {
-                    if let Some(ref rwm_window) = w.rwm_window {
-                        rwm_window.inform_not_fullscreen();
-                    }
-                    w.fullscreen = super::window::FullscreenState::None;
-                    w.pending_unfullscreen_restore = false;
-                    stale_fullscreen = true;
-                }
-            }
+            // Use the pre-fullscreen geometry as migration base.
+            let stale_fullscreen = w.clear_stale_fullscreen();
             let rect = if stale_fullscreen {
                 w.pre_fullscreen.unwrap_or(super::window::SavedGeometry {
                     x: w.x,
@@ -3612,5 +3643,28 @@ mod tests {
         let pre_fullscreen = w.pre_fullscreen.unwrap();
         assert_eq!((pre_fullscreen.width, pre_fullscreen.height), (800, 600));
         assert_eq!((w.x, w.y), (90, 50));
+    }
+
+    #[test]
+    fn removed_output_exits_fullscreen_of_window_anchored_elsewhere() {
+        let mut ctx = context_with_outputs(&[(1, 0, 0, 1920, 1080), (2, 1920, 0, 3840, 2160)]);
+        add_window(&mut ctx, 10, 1, (100, 100, 800, 600));
+        {
+            let output = Rc::downgrade(&ctx.outputs[&2]);
+            let mut w = ctx.windows[&10].borrow_mut();
+            w.fullscreen = super::super::window::FullscreenState::Output(output);
+            w.update_dimensions(3840, 2160);
+        }
+
+        ctx.destroy_output(2);
+        ctx.handle_manage_start();
+
+        let w = ctx.windows[&10].borrow();
+        assert!(matches!(
+            w.fullscreen,
+            super::super::window::FullscreenState::None
+        ));
+        assert_eq!((w.x, w.y), (100, 100));
+        assert_eq!(w.proposed_dimensions(), (800, 600));
     }
 }

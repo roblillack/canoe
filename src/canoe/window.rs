@@ -474,6 +474,35 @@ impl Window {
         self.fullscreen = FullscreenState::None;
     }
 
+    /// Whether the window is fullscreen on the output with the given id
+    pub fn is_fullscreen_on(&self, output_id: super::OutputId) -> bool {
+        match &self.fullscreen {
+            FullscreenState::Output(output) => output
+                .upgrade()
+                .is_some_and(|output| output.borrow().id == output_id),
+            _ => false,
+        }
+    }
+
+    /// River implicitly exits fullscreen when the fullscreen output is
+    /// removed (see river_window_v1.fullscreen). Sync our state and tell the
+    /// client. Returns whether the window was fullscreen on a removed output;
+    /// the caller must then propose a position and dimensions.
+    pub fn clear_stale_fullscreen(&mut self) -> bool {
+        let FullscreenState::Output(ref output) = self.fullscreen else {
+            return false;
+        };
+        if output.upgrade().is_some() {
+            return false;
+        }
+        if let Some(ref rwm_window) = self.rwm_window {
+            rwm_window.inform_not_fullscreen();
+        }
+        self.fullscreen = FullscreenState::None;
+        self.pending_unfullscreen_restore = false;
+        true
+    }
+
     /// Inform window it's maximized
     pub fn inform_maximized(&self) {
         if let Some(ref rwm_window) = self.rwm_window {
