@@ -3462,3 +3462,45 @@ fn map_rect_between_areas(
     new_y = new_y.clamp(ny, max_y);
     (new_x, new_y, new_w, new_h)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn map_rect_keeps_size_and_relative_position() {
+        let old = (1920, 0, 1920, 1080);
+        let new = (0, 0, 1280, 720);
+        // Top-left at 25% / 50% of the old area, size fits the new one.
+        assert_eq!(
+            map_rect_between_areas(2400, 540, 400, 300, old, new, false),
+            (320, 360, 400, 300)
+        );
+    }
+
+    #[test]
+    fn map_rect_scales_when_resizing() {
+        let old = (0, 0, 2000, 1000);
+        let new = (0, 0, 1000, 500);
+        assert_eq!(
+            map_rect_between_areas(1000, 0, 1000, 1000, old, new, true),
+            (500, 0, 500, 500)
+        );
+    }
+
+    #[test]
+    fn map_rect_clamps_into_new_area() {
+        let old = (0, 0, 2000, 1000);
+        let new = (100, 50, 1000, 500);
+        // Too large without resizing: clamped to the area and pinned to it.
+        assert_eq!(
+            map_rect_between_areas(1900, 900, 1500, 800, old, new, false),
+            (100, 50, 1000, 500)
+        );
+        // Starting off the old area's right edge: kept inside the new one.
+        assert_eq!(
+            map_rect_between_areas(2500, 0, 200, 100, old, new, false),
+            (900, 50, 200, 100)
+        );
+    }
+}
