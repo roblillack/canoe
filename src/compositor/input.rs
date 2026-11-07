@@ -114,9 +114,9 @@ impl State {
                 let mut frame = AxisFrame::new(event.time_msec()).source(source);
                 for axis in [Axis::Horizontal, Axis::Vertical] {
                     let amount = factor
-                        * event
-                            .amount(axis)
-                            .unwrap_or_else(|| event.amount_v120(axis).unwrap_or(0.0) * 15.0 / 120.0);
+                        * event.amount(axis).unwrap_or_else(|| {
+                            event.amount_v120(axis).unwrap_or(0.0) * 15.0 / 120.0
+                        });
                     if amount != 0.0 {
                         frame = frame.value(axis, amount);
                         if let Some(v120) = event.amount_v120(axis) {
