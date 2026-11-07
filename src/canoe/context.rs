@@ -316,6 +316,12 @@ impl Context {
         if self.current_output == Some(output_id) {
             self.current_output = dead_rect.and_then(|rect| self.nearest_output(rect, output_id));
         }
+        // New windows open on the last focused output while nothing has
+        // focus, so it must not keep naming the removed one.
+        if self.last_focused_output == Some(output_id) {
+            self.last_focused_output =
+                dead_rect.and_then(|rect| self.nearest_output(rect, output_id));
+        }
         // River forgets the default when its output goes away; the next
         // manage sequence announces the new one.
         if self.layer_shell_default_output == Some(output_id) {
@@ -3974,6 +3980,18 @@ mod tests {
         ));
         assert_eq!((w.x, w.y), (100, 100));
         assert_eq!(w.proposed_dimensions(), (800, 600));
+    }
+
+    #[test]
+    fn removed_output_is_not_kept_as_last_focused() {
+        let mut ctx = context_with_outputs(&[(1, 0, 0, 1920, 1080), (2, 1920, 0, 1920, 1080)]);
+        ctx.current_output = Some(1);
+        ctx.last_focused_output = Some(2);
+
+        ctx.destroy_output(2);
+
+        assert_eq!(ctx.last_focused_output, Some(1));
+        assert_eq!(ctx.current_output_for_new_window(), Some(1));
     }
 
     #[test]
