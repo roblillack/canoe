@@ -7,6 +7,22 @@ license = "MIT"
 repository = "https://github.com/roblillack/canoe"
 homepage = "https://github.com/roblillack/canoe"
 
+[package.metadata.release]
+# Only ever cut a release from `main`.
+allow-branch = ["main"]
+pre-release-replacements = [
+    # Roll CHANGELOG's [Unreleased] over to the new version and re-seed a fresh
+    # [Unreleased] above it (the Keep a Changelog + cargo-release marker idiom).
+    # Order matters: the version/date/compare substitutions run first, *then*
+    # the markers re-insert the literal "Unreleased"/"ReleaseDate" tokens so the
+    # next release finds them again.
+    { file = "CHANGELOG.md", search = "Unreleased", replace = "{{version}}" },
+    { file = "CHANGELOG.md", search = '\.\.\.HEAD', replace = "...{{tag_name}}", exactly = 1 },
+    { file = "CHANGELOG.md", search = "ReleaseDate", replace = "{{date}}" },
+    { file = "CHANGELOG.md", search = "<!-- next-header -->", replace = "<!-- next-header -->\n\n## [Unreleased] - ReleaseDate", exactly = 1 },
+    { file = "CHANGELOG.md", search = "<!-- next-url -->", replace = "<!-- next-url -->\n[Unreleased]: https://github.com/roblillack/canoe/compare/{{tag_name}}...HEAD", exactly = 1 },
+]
+
 [dependencies]
 # Wayland client bindings
 wayland-client = "0.31"

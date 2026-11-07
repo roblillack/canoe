@@ -1,0 +1,55 @@
+name: Release
+
+# cargo-release pushes the tag; this turns that tag into a GitHub release whose
+# notes are lifted out of CHANGELOG.md.
+on:
+  push:
+    tags: ["v[0-9]+.*"]
+
+jobs:
+  # `v0.6.0` and friends: the release body is the matching `## [0.6.0]` section
+  # of CHANGELOG.md, which create-gh-release-action extracts with
+  # parse-changelog. A tag whose version has no changelog section fails the job
+  # rather than publishing an empty release. The pre-release-replacements in
+  # Cargo.toml are what fill that section in, so a failure here means the
+  # [Unreleased] rollover did not happen.
+  release:
+    name: Publish release notes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          # The whole history with tags, to find the previous release and
+          # the commits since then.
+          fetch-depth: 0
+
+      # CHANGELOG.md is wrapped at 80 columns, but GitHub renders each newline
+      # of a release body as a hard line break. Unwrap paragraphs and list
+      # items in the runner's copy before the notes are lifted out of it.
+      - name: Unwrap changelog lines
+        run: |
+          perl .github/scripts/unwrap-markdown.pl < CHANGELOG.md > "$RUNNER_TEMP/CHANGELOG.md"
+          mv "$RUNNER_TEMP/CHANGELOG.md" CHANGELOG.md
+
+      # Credit everyone who (co-)authored a commit of this release, most
+      # commits first. The @mentions also make GitHub show the release's
+      # contributors with their avatars.
+      - name: Add contributors to the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          line=$(bash .github/scripts/contributors.sh "$TAG")
+          if [ -n "$line" ]; then
+            perl .github/scripts/append-to-section.pl "${TAG#v}" "$line" < CHANGELOG.md > "$RUNNER_TEMP/CHANGELOG.md"
+            mv "$RUNNER_TEMP/CHANGELOG.md" CHANGELOG.md
+          fi
+
+      - name: Create GitHub release with changelog notes
+        uses: taiki-e/create-gh-release-action@v1
+        with:
+          changelog: CHANGELOG.md
+          token: ${{ secrets.GITHUB_TOKEN }}
