@@ -9,7 +9,8 @@ A stacking window manager for the River Wayland compositor, written in Rust.
 - Stacking window management
 - Server-side decorations with classic window borders & titlebars
 - Titlebar/edge window movement and resizing (Super+Drag anywhere)
-- Multihead support (focus/send windows across outputs)
+- Multihead support (focus/send windows across outputs, windows follow
+  output layout changes and move off unplugged outputs)
 - Window switcher (keyboard cycle + desktop right-click menu)
 - Window focus follows click
 - Minimized windows shown as icons on the desktop (can be disabled)
@@ -68,6 +69,21 @@ cargo build --release
 | Drag window edges | Resize window |
 | `Super+Left Drag` | Move window (anywhere) |
 | `Super+Right Drag` | Resize window (anywhere) |
+
+## Multiple Outputs
+
+Windows belong to the output they were opened or last moved on, and keep
+their place on it when the output layout changes:
+
+- When an output moves, e.g. because one next to it was unplugged or
+  rearranged with a tool like `wdisplays` or `kanshi`, its windows move with it.
+- When an output is unplugged, its windows move to the output you are working
+  on, or to the nearest remaining one if you were working on the unplugged
+  output. They keep their relative position and are shrunk only if they don't
+  fit. Snapped and maximized windows are snapped the same way on their new
+  output, and fullscreen windows go back to their windowed size.
+
+Sending a window to another output with `Super+Alt+Arrow` works the same way.
 
 ## Screen Sharing
 
