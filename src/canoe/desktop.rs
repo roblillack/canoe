@@ -12,7 +12,7 @@ use wayland_client::protocol::{
 use wayland_client::QueueHandle;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 
-use super::render::Renderer;
+use super::render::{ColorGlyphs, Renderer};
 use super::scale::{FractionalSurface, Origin, Scale};
 use super::{shmfile, OutputId, WindowId};
 
@@ -303,6 +303,11 @@ impl DesktopSurface {
             let icon = &desktop_icons[i];
             let layout = &self.icons[i];
             let is_selected = selected == Some(icon.window_id);
+            let color_glyphs = if is_selected {
+                ColorGlyphs::Natural
+            } else {
+                ColorGlyphs::Tinted
+            };
 
             let icon_bg = if is_selected {
                 rgba_to_argb(theme.highlight_bg)
@@ -374,6 +379,7 @@ impl DesktopSurface {
                     icon_px,
                     scale.factor(),
                     icon_text,
+                    color_glyphs,
                     font_size,
                     font_name,
                     0,
@@ -418,6 +424,7 @@ impl DesktopSurface {
                 label_h,
                 scale.factor(),
                 label_text,
+                color_glyphs,
                 label_font_size,
                 label_font_name,
                 0,
@@ -563,19 +570,22 @@ fn truncate_with_ellipsis(
         return ELLIPSIS.to_string();
     }
     let target = max_width - ell_w;
-    let chars: Vec<char> = text.chars().collect();
+    // Cut only between clusters, so emoji sequences and combining marks
+    // are never split. `ends[n]` is the byte length of the first n clusters.
+    let ends: Vec<usize> = std::iter::once(0)
+        .chain(super::font::clusters(text).into_iter().map(|c| c.end))
+        .collect();
     let mut lo = 0usize;
-    let mut hi = chars.len();
+    let mut hi = ends.len() - 1;
     while lo < hi {
         let mid = lo + (hi - lo).div_ceil(2);
-        let candidate: String = chars[..mid].iter().collect();
-        if measure(&candidate) <= target {
+        if measure(&text[..ends[mid]]) <= target {
             lo = mid;
         } else {
             hi = mid - 1;
         }
     }
-    let mut out: String = chars[..lo].iter().collect();
+    let mut out = text[..ends[lo]].to_string();
     out.push_str(ELLIPSIS);
     out
 }

@@ -19,6 +19,7 @@ A stacking window manager for the River Wayland compositor, written in Rust.
 - Optional forcing server-side decorations via per-window rules
 - Optional "swallowing" of client-side decoration via per-window rules
 - Screen sharing of whole screens or individual windows, picked by clicking them
+- Shaped text with font fallback and color emoji in titles, menus and icon labels
 
 ## Installation
 
@@ -395,6 +396,7 @@ swallow_top = 48
 - fuzzel (for Super+Space launcher)
 - swaylock (for Super+L screen lock)
 - xdg-desktop-portal-wlr (for screen sharing)
+- A color emoji font such as Noto Color Emoji (optional, for emoji in window titles; without one, emoji are drawn in monochrome if any installed font has them)
 
 ## License
 

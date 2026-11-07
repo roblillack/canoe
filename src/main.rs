@@ -2170,7 +2170,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                 }
             }
             Event::SessionUnlocked => {
-                state.context.borrow_mut().session_locked = false;
+                state.context.borrow_mut().handle_session_unlocked();
                 // Switch back to default mode
                 if let Some(seat_id) = state.context.borrow().current_seat {
                     if let Some(seat) = state.context.borrow().seats.get(&seat_id) {

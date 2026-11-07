@@ -70,6 +70,9 @@ pub struct Context {
     // Runtime state
     pub running: bool,
     pub session_locked: bool,
+    /// Set when the session is unlocked. The compositor drops keyboard focus
+    /// on unlock, so the next manage sequence has to send it again.
+    pending_unlock_focus: bool,
     startup_unminimize_done: bool,
 
     /// Output with active icon keyboard focus
@@ -143,6 +146,7 @@ impl Context {
 
             running: true,
             session_locked: false,
+            pending_unlock_focus: false,
             startup_unminimize_done: false,
 
             icon_focus_output: None,
@@ -242,18 +246,9 @@ impl Context {
 
     /// Remove a window from context
     pub fn destroy_window(&mut self, window_id: WindowId) {
-        // Remove from focus stack
+        let was_focused = self.focused_window == Some(window_id);
+
         self.focus_stack.retain(|&id| id != window_id);
-
-        // Update focused window if necessary
-        if self.focused_window == Some(window_id) {
-            if let Some(&next_id) = self.focus_stack.first() {
-                self.focus(next_id);
-            } else {
-                self.clear_keyboard_focus();
-            }
-        }
-
         self.windows.remove(&window_id);
 
         if let Some(picker) = self.share_picker.as_mut() {
@@ -261,6 +256,11 @@ impl Context {
         }
         self.share_nudges.retain(|n| n.window != window_id);
         self.forget_share_choice(super::share_picker::ShareTarget::Window(window_id));
+
+        if was_focused {
+            self.focused_window = None;
+            self.restore_focus_from_stack();
+        }
     }
 
     /// Create a new output and add to context
@@ -1192,6 +1192,41 @@ impl Context {
         }
     }
 
+    /// Record that the session was unlocked. Focus is sent again in the next
+    /// manage sequence, which the compositor starts right after the event.
+    pub fn handle_session_unlocked(&mut self) {
+        self.session_locked = false;
+        self.pending_unlock_focus = true;
+    }
+
+    /// River clears every seat's keyboard focus when the session is unlocked
+    /// and leaves it to the window manager to pick a new target. Send focus to
+    /// the window that had it before the lock, or to the next visible window
+    /// if that one went away or was minimized in the meantime.
+    fn restore_focus_after_unlock(&mut self) {
+        // Unlocking switches the seat back to the default binding mode, so a
+        // desktop icon selection from before the lock can't be driven anymore.
+        if self.icon_focus_output.is_some() {
+            if let Some(seat_id) = self.current_seat {
+                self.exit_icon_focus(seat_id);
+            }
+        }
+
+        let previous = self.focused_window.filter(|id| {
+            self.windows
+                .get(id)
+                .is_some_and(|window| !window.borrow().hidden)
+        });
+
+        match previous {
+            Some(window_id) => self.focus(window_id),
+            None => {
+                self.focused_window = None;
+                self.restore_focus_from_stack();
+            }
+        }
+    }
+
     fn restore_focus_from_stack(&mut self) {
         if self.focused_window.is_some() {
             return;
@@ -1966,6 +2001,10 @@ impl Context {
             for event in events {
                 self.handle_window_event(window_id, event);
             }
+        }
+
+        if std::mem::take(&mut self.pending_unlock_focus) {
+            self.restore_focus_after_unlock();
         }
 
         // Keep window output association in sync with window positions.
@@ -4198,5 +4237,145 @@ mod tests {
             assert!(w.x >= 0 && w.x + w.width <= 1366, "x = {}", w.x);
             assert!(w.y >= 0 && w.y + w.height <= 768, "y = {}", w.y);
         }
+    }
+
+    fn context_with_output_ids(output_ids: &[OutputId]) -> Context {
+        let mut ctx = Context::new(true);
+        for &id in output_ids {
+            ctx.outputs
+                .insert(id, Rc::new(RefCell::new(Output::new(id))));
+        }
+        ctx.current_output = output_ids.first().copied();
+        ctx
+    }
+
+    /// Adds a window on `output_id` and pushes it to the back of the focus
+    /// stack, so windows added later are less recently focused.
+    fn add_stacked_window(ctx: &mut Context, id: WindowId, output_id: OutputId, hidden: bool) {
+        let mut window = Window::new(id);
+        window.output = Some(Rc::downgrade(&ctx.outputs[&output_id]));
+        window.hidden = hidden;
+        ctx.windows.insert(id, Rc::new(RefCell::new(window)));
+        ctx.focus_stack.push(id);
+    }
+
+    #[test]
+    fn destroying_focused_window_focuses_most_recent_remaining_window() {
+        let mut ctx = context_with_output_ids(&[1]);
+        add_stacked_window(&mut ctx, 10, 1, false);
+        add_stacked_window(&mut ctx, 11, 1, false);
+        add_stacked_window(&mut ctx, 12, 1, false);
+        ctx.focus(10);
+
+        ctx.destroy_window(10);
+
+        assert_eq!(ctx.focused_window, Some(11));
+        assert_eq!(ctx.focus_stack, vec![11, 12]);
+        assert!(!ctx.windows.contains_key(&10));
+    }
+
+    #[test]
+    fn destroying_focused_window_skips_minimized_windows() {
+        let mut ctx = context_with_output_ids(&[1]);
+        add_stacked_window(&mut ctx, 10, 1, false);
+        add_stacked_window(&mut ctx, 11, 1, true);
+        add_stacked_window(&mut ctx, 12, 1, false);
+        ctx.focus(10);
+
+        ctx.destroy_window(10);
+
+        assert_eq!(ctx.focused_window, Some(12));
+    }
+
+    #[test]
+    fn destroying_focused_window_prefers_windows_on_the_same_output() {
+        let mut ctx = context_with_output_ids(&[1, 2]);
+        add_stacked_window(&mut ctx, 10, 1, false);
+        add_stacked_window(&mut ctx, 11, 2, false);
+        add_stacked_window(&mut ctx, 12, 1, false);
+        ctx.focus(10);
+
+        ctx.destroy_window(10);
+
+        assert_eq!(ctx.focused_window, Some(12));
+    }
+
+    #[test]
+    fn destroying_unfocused_window_keeps_focus() {
+        let mut ctx = context_with_output_ids(&[1]);
+        add_stacked_window(&mut ctx, 10, 1, false);
+        add_stacked_window(&mut ctx, 11, 1, false);
+        ctx.focus(11);
+
+        ctx.destroy_window(10);
+
+        assert_eq!(ctx.focused_window, Some(11));
+        assert_eq!(ctx.focus_stack, vec![11]);
+    }
+
+    #[test]
+    fn destroying_last_visible_window_clears_focus() {
+        let mut ctx = context_with_output_ids(&[1]);
+        add_stacked_window(&mut ctx, 10, 1, false);
+        add_stacked_window(&mut ctx, 11, 1, true);
+        ctx.focus(10);
+
+        ctx.destroy_window(10);
+
+        assert_eq!(ctx.focused_window, None);
+        assert_eq!(ctx.focus_stack, vec![11]);
+    }
+
+    #[test]
+    fn unlocking_restores_focus_to_previously_focused_window() {
+        let mut ctx = context_with_output_ids(&[1]);
+        add_stacked_window(&mut ctx, 10, 1, false);
+        add_stacked_window(&mut ctx, 11, 1, false);
+        ctx.focus(11);
+        ctx.session_locked = true;
+
+        ctx.handle_session_unlocked();
+        assert!(!ctx.session_locked);
+        ctx.handle_manage_start();
+
+        assert_eq!(ctx.focused_window, Some(11));
+        assert_eq!(ctx.focus_stack, vec![11, 10]);
+        assert!(!ctx.pending_unlock_focus);
+    }
+
+    #[test]
+    fn unlocking_focuses_next_window_when_previous_was_minimized() {
+        let mut ctx = context_with_output_ids(&[1]);
+        add_stacked_window(&mut ctx, 10, 1, false);
+        add_stacked_window(&mut ctx, 11, 1, false);
+        ctx.focus(10);
+        ctx.windows[&10].borrow_mut().hidden = true;
+
+        ctx.handle_session_unlocked();
+        ctx.handle_manage_start();
+
+        assert_eq!(ctx.focused_window, Some(11));
+    }
+
+    #[test]
+    fn unlocking_focuses_most_recent_window_when_nothing_was_focused() {
+        let mut ctx = context_with_output_ids(&[1]);
+        add_stacked_window(&mut ctx, 10, 1, false);
+        add_stacked_window(&mut ctx, 11, 1, false);
+
+        ctx.handle_session_unlocked();
+        ctx.handle_manage_start();
+
+        assert_eq!(ctx.focused_window, Some(10));
+    }
+
+    #[test]
+    fn manage_start_without_unlock_leaves_focus_alone() {
+        let mut ctx = context_with_output_ids(&[1]);
+        add_stacked_window(&mut ctx, 10, 1, false);
+
+        ctx.handle_manage_start();
+
+        assert_eq!(ctx.focused_window, None);
     }
 }
