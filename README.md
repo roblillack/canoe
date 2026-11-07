@@ -436,9 +436,10 @@ ext-session-lock, wlr-screencopy and ext-image-copy-capture (outputs and
 single windows), ext-foreign-toplevel-list, wlr-output-management,
 fractional scaling and viewporter, cursor-shape, data device, primary
 selection and wlr-data-control, xdg-activation, presentation-time,
-idle-notify and idle-inhibit, pointer constraints and relative pointer,
-virtual keyboard and pointer, linux-dmabuf, and X11 programs through
-Xwayland (with clipboard and primary selection shared both ways).
+idle-notify and idle-inhibit, wlr-output-power-management, pointer
+constraints and relative pointer, virtual keyboard and pointer, linux-dmabuf,
+and X11 programs through Xwayland (with clipboard and primary selection
+shared both ways).
 
 Missing or untested:
 

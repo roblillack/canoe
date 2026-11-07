@@ -162,7 +162,7 @@ fn render_all(state: &mut State) {
     let outputs: Vec<Output> = state
         .outputs
         .iter()
-        .filter(|o| o.enabled && o.redraw_needed)
+        .filter(|o| o.displayed() && o.redraw_needed)
         .map(|o| o.output.clone())
         .collect();
     for output in outputs {

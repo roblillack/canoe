@@ -554,6 +554,7 @@ impl State {
             reported_usable: None,
             lock_surface: None,
             global: Some(global),
+            powered: true,
             redraw_needed: true,
             frame_pending: false,
         });
@@ -570,6 +571,7 @@ impl State {
             self.display_handle.remove_global::<State>(global);
         }
         self.output_management_state.remove_head(output);
+        self.output_power_state.output_removed(output);
         self.screencopy_state.output_removed(output);
         self.image_capture_state.output_removed(output);
         self.output_management_state.update::<State>();

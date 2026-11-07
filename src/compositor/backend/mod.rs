@@ -68,9 +68,13 @@ impl Backend {
         }
     }
 
-    pub fn output_enabled(state: &mut State, output: &Output, enabled: bool) {
-        if let Backend::Udev(_) = state.backend {
-            udev::output_enabled(state, output, enabled);
+    /// An output was enabled or disabled, or powered on or off: show it, or
+    /// turn the monitor off (see `ManagedOutput::displayed`).
+    pub fn update_output_power(state: &mut State, output: &Output) {
+        match state.backend {
+            Backend::Udev(_) => udev::update_output_power(state, output),
+            // Nothing to switch: such outputs are just not drawn.
+            _ => state.queue_redraw_all(),
         }
     }
 }

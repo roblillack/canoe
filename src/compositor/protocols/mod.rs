@@ -3,6 +3,7 @@
 pub mod capture_render;
 pub mod image_capture;
 pub mod output_management;
+pub mod output_power;
 pub mod screencopy;
 pub mod virtual_keyboard;
 pub mod virtual_pointer;

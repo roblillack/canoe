@@ -7,6 +7,9 @@ use super::protocols::output_management::{
     delegate_output_management, HeadConfiguration, ModeConfiguration, OutputManagementHandler,
     OutputManagementState,
 };
+use super::protocols::output_power::{
+    delegate_output_power, Mode as PowerMode, OutputPowerHandler, OutputPowerManagerState,
+};
 use super::protocols::virtual_pointer::{
     delegate_virtual_pointer, VirtualPointer, VirtualPointerEvent, VirtualPointerHandler,
 };
@@ -77,6 +80,9 @@ impl State {
         self.outputs[index].enabled = enabled;
         self.output_management_state.set_enabled(output, enabled);
         if enabled {
+            // Enabling an output turns it on.
+            self.outputs[index].powered = true;
+            self.outputs[index].frame_pending = false;
             let key = self.outputs[index].key;
             let handle = OutputHandle::new(key, self.requests.clone());
             let id = self.context.borrow_mut().create_output(handle).borrow().id;
@@ -86,6 +92,7 @@ impl State {
             self.outputs[index].global = Some(output.create_global::<State>(&self.display_handle));
             self.output_changed(output);
         } else {
+            self.output_power_state.output_removed(output);
             let id = self.outputs[index].id;
             let layers: Vec<_> = smithay::desktop::layer_map_for_output(output)
                 .layers()
@@ -104,7 +111,44 @@ impl State {
             self.context.borrow_mut().destroy_output(id);
             self.schedule_wm();
         }
-        super::backend::Backend::output_enabled(self, output, enabled);
+        super::backend::Backend::update_output_power(self, output);
+    }
+
+    /// Turn an enabled output's monitor off or back on. It stays in the
+    /// layout; while off nothing is drawn on it.
+    pub fn set_output_power(&mut self, output: &smithay::output::Output, on: bool) {
+        let Some(managed) = self.outputs.iter_mut().find(|o| &o.output == output) else {
+            return;
+        };
+        if !managed.enabled || managed.powered == on {
+            return;
+        }
+        managed.powered = on;
+        // A frame queued before blanking never completes.
+        managed.frame_pending = false;
+        super::backend::Backend::update_output_power(self, output);
+        let mode = if on { PowerMode::On } else { PowerMode::Off };
+        self.output_power_state.mode_changed(output, mode);
+    }
+}
+
+impl OutputPowerHandler for State {
+    fn output_power_state(&mut self) -> &mut OutputPowerManagerState {
+        &mut self.output_power_state
+    }
+
+    fn output_power_mode(&self, output: &smithay::output::Output) -> Option<PowerMode> {
+        let managed = self.managed_output(output).filter(|o| o.enabled)?;
+        Some(if managed.powered {
+            PowerMode::On
+        } else {
+            PowerMode::Off
+        })
+    }
+
+    fn set_output_power_mode(&mut self, output: &smithay::output::Output, mode: PowerMode) -> bool {
+        self.set_output_power(output, mode == PowerMode::On);
+        true
     }
 }
 
@@ -179,3 +223,4 @@ impl OutputManagementHandler for State {
 
 delegate_virtual_pointer!(State);
 delegate_output_management!(State);
+delegate_output_power!(State);

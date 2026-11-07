@@ -46,7 +46,33 @@ struct Surface {
     drm_output: CanoeDrmOutput,
     /// The connector's modes, for mode changes.
     modes: Vec<smithay::reexports::drm::control::Mode>,
-    enabled: bool,
+    /// The CRTC shows the output. False while the output is disabled or
+    /// powered off: the CRTC is then blank (DPMS off) until the next frame
+    /// is queued after it lights up again.
+    lit: bool,
+}
+
+impl Surface {
+    /// Light the CRTC up or blank it.
+    fn set_lit(&mut self, lit: bool) {
+        if self.lit == lit {
+            return;
+        }
+        self.lit = lit;
+        if lit {
+            // Nothing on screen to build on: draw the next frame in full.
+            // Queueing it turns the CRTC back on.
+            self.drm_output.reset_buffers();
+        } else {
+            self.blank();
+        }
+    }
+
+    fn blank(&mut self) {
+        if let Err(err) = self.drm_output.with_compositor(|c| c.clear()) {
+            eprintln!("canoe: turning off {} failed: {err}", self.output.name());
+        }
+    }
 }
 
 pub struct UdevData {
@@ -211,6 +237,10 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
                     if let Err(err) = data.manager.activate(false) {
                         eprintln!("canoe: failed to resume DRM: {err}");
                     }
+                    // Whoever had the display meanwhile may have lit them.
+                    for surface in data.surfaces.values_mut().filter(|s| !s.lit) {
+                        surface.blank();
+                    }
                 }
                 for output in &mut state.outputs {
                     output.frame_pending = false;
@@ -350,7 +380,7 @@ fn connector_connected(state: &mut State, info: connector::Info, crtc: crtc::Han
             connector: info.handle(),
             drm_output,
             modes: info.modes().to_vec(),
-            enabled: true,
+            lit: true,
         },
     );
     state.add_output(output);
@@ -367,7 +397,7 @@ pub fn schedule_redraws(state: &mut State) {
     let due: Vec<(Output, crtc::Handle)> = state
         .outputs
         .iter()
-        .filter(|o| o.enabled && o.redraw_needed && !o.frame_pending)
+        .filter(|o| o.displayed() && o.redraw_needed && !o.frame_pending)
         .filter_map(|o| Some((o.output.clone(), data.crtc_for(&o.output)?)))
         .collect();
     for (output, crtc) in due {
@@ -393,7 +423,7 @@ fn render(state: &mut State, crtc: crtc::Handle) {
         let UdevData {
             surfaces, renderer, ..
         } = &mut data;
-        if let Some(surface) = surfaces.get_mut(&crtc).filter(|s| s.enabled) {
+        if let Some(surface) = surfaces.get_mut(&crtc).filter(|s| s.lit) {
             match surface.drm_output.render_frame(
                 renderer,
                 &elements,
@@ -493,11 +523,12 @@ pub fn set_mode(state: &mut State, output: &Output, mode: Mode) -> bool {
     ok
 }
 
-/// An output turned off keeps its CRTC but isn't drawn to anymore.
-pub fn output_enabled(state: &mut State, output: &Output, enabled: bool) {
+/// An output that is disabled or powered off keeps its CRTC, blanked.
+pub fn update_output_power(state: &mut State, output: &Output) {
+    let lit = state.managed_output(output).is_some_and(|o| o.displayed());
     if let Backend::Udev(ref mut data) = state.backend {
         if let Some(surface) = data.surfaces.values_mut().find(|s| &s.output == output) {
-            surface.enabled = enabled;
+            surface.set_lit(lit);
         }
     }
     state.queue_redraw_all();

@@ -171,8 +171,19 @@ pub struct ManagedOutput {
     pub lock_surface: Option<LockSurface>,
     /// The wl_output global, while the output is enabled.
     pub global: Option<smithay::reexports::wayland_server::backend::GlobalId>,
+    /// Not turned off through output power management. Only meaningful
+    /// while enabled; a disabled output is powered on again when enabled.
+    pub powered: bool,
     pub redraw_needed: bool,
     pub frame_pending: bool,
+}
+
+impl ManagedOutput {
+    /// Whether the output is drawn: part of the layout and powered on.
+    /// Clients on an output that isn't drawn get no frame callbacks.
+    pub fn displayed(&self) -> bool {
+        self.enabled && self.powered
+    }
 }
 
 /// A pointer operation in progress (an interactive move or resize the
@@ -234,6 +245,7 @@ pub struct State {
     pub screencopy_state: protocols::screencopy::ScreencopyManagerState,
     pub image_capture_state: protocols::image_capture::ImageCopyCaptureState,
     pub output_management_state: protocols::output_management::OutputManagementState,
+    pub output_power_state: protocols::output_power::OutputPowerManagerState,
     pub virtual_pointer_state: protocols::virtual_pointer::VirtualPointerManagerState,
     pub dmabuf: Option<handlers::DmabufGlobal>,
     pub popups: PopupManager,
@@ -358,6 +370,8 @@ impl State {
             protocols::image_capture::ImageCopyCaptureState::new::<State>(&dh);
         let output_management_state =
             protocols::output_management::OutputManagementState::new::<State>(&dh);
+        let output_power_state =
+            protocols::output_power::OutputPowerManagerState::new::<State>(&dh);
         let virtual_pointer_state =
             protocols::virtual_pointer::VirtualPointerManagerState::new::<State, _>(&dh, |_| true);
         protocols::virtual_keyboard::VirtualKeyboardManagerState::new::<State>(&dh);
@@ -435,6 +449,7 @@ impl State {
             screencopy_state,
             image_capture_state,
             output_management_state,
+            output_power_state,
             virtual_pointer_state,
             dmabuf: None,
             popups: PopupManager::default(),

@@ -115,6 +115,8 @@ fn render(state: &mut State) {
         return;
     };
     let output = data.output.clone();
+    // Powered off: the window shows black.
+    let displayed = state.managed_output(&output).is_some_and(|o| o.displayed());
     let mut frame_damage = Vec::new();
     let rendered = {
         let WinitData {
@@ -125,7 +127,11 @@ fn render(state: &mut State) {
         let age = backend.buffer_age().unwrap_or(0);
         let damage = match backend.bind() {
             Ok((renderer, mut framebuffer)) => {
-                let elements = state.output_elements(renderer, &output);
+                let elements = if displayed {
+                    state.output_elements(renderer, &output)
+                } else {
+                    Vec::new()
+                };
                 damage_tracker
                     .render_output(renderer, &mut framebuffer, age, &elements, CLEAR_COLOR)
                     .ok()
@@ -143,6 +149,9 @@ fn render(state: &mut State) {
     if rendered {
         if let Some(managed) = state.outputs.iter_mut().find(|o| o.output == output) {
             managed.redraw_needed = false;
+        }
+        if !displayed {
+            return;
         }
         state.post_render(&output);
         state.capture_damage(&output, &frame_damage);
