@@ -101,7 +101,7 @@ pub struct Context {
     /// Outputs that moved since the last manage sequence: (id, dx, dy).
     pub pending_output_shifts: Vec<(OutputId, i32, i32)>,
     /// Windows anchored to a removed output: (window_id, dead usable area).
-    pub pending_output_orphans: Vec<(WindowId, (i32, i32, i32, i32))>,
+    pending_output_orphans: Vec<(WindowId, (i32, i32, i32, i32))>,
     /// Windows fullscreen on a removed output they are not anchored to.
     pending_fullscreen_exits: Vec<WindowId>,
 }
