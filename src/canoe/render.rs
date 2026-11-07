@@ -2,6 +2,20 @@ use resvg::tiny_skia;
 
 use super::font;
 
+/// How color glyphs (emoji) are drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ColorGlyphs {
+    /// In their own colors, for the active titlebar and selected items.
+    Natural,
+    /// Desaturated and blended with the text color, so they recede along
+    /// with the text of inactive titlebars and unselected items.
+    Tinted,
+}
+
+/// How far tinted color glyphs are pulled from their grayscale version
+/// toward the text color.
+const TINT_STRENGTH: f32 = 0.5;
+
 pub struct Renderer<'a> {
     pixmap: tiny_skia::PixmapMut<'a>,
 }
@@ -149,6 +163,7 @@ impl<'a> Renderer<'a> {
         area_height: i32,
         scale: f32,
         text_argb: u32,
+        color_glyphs: ColorGlyphs,
         font_size: f32,
         font_name: Option<&str>,
         padding_x: i32,
@@ -192,15 +207,11 @@ impl<'a> Renderer<'a> {
                 };
                 let glyph_x = start_x + (placed.x + placed.x_offset).round() as i32 + glyph.left;
                 let glyph_y = baseline_y - placed.y_offset.round() as i32 - glyph.top;
-                draw_glyph(
-                    pixels,
-                    buffer_width,
-                    &clip,
-                    &glyph,
-                    glyph_x,
-                    glyph_y,
+                let paint = Paint {
                     text_argb,
-                );
+                    color_glyphs,
+                };
+                draw_glyph(pixels, buffer_width, &clip, &glyph, glyph_x, glyph_y, paint);
             }
         });
     }
@@ -214,10 +225,39 @@ struct Clip {
     y1: i32,
 }
 
+/// How to color the glyphs of a text draw.
+#[derive(Clone, Copy)]
+struct Paint {
+    text_argb: u32,
+    color_glyphs: ColorGlyphs,
+}
+
+impl Paint {
+    /// The premultiplied (r, g, b, a) to composite for a color glyph pixel
+    /// given as premultiplied (b, g, r, a). Color glyphs take on the text
+    /// color's alpha, so translucent text fades emoji along with it.
+    fn color_pixel(self, b: u8, g: u8, r: u8, a: u8) -> (u8, u8, u8, u8) {
+        let text_alpha = (self.text_argb >> 24) as f32 / 255.0;
+        let q = |v: f32| (v * text_alpha).round().clamp(0.0, 255.0) as u8;
+        match self.color_glyphs {
+            ColorGlyphs::Natural => (q(r as f32), q(g as f32), q(b as f32), q(a as f32)),
+            ColorGlyphs::Tinted => {
+                // The luma of a premultiplied color is the premultiplied luma.
+                let gray = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
+                let coverage = a as f32 / 255.0;
+                let mix = |shift: u32| {
+                    let text = ((self.text_argb >> shift) & 0xff) as f32 * coverage;
+                    q(gray * (1.0 - TINT_STRENGTH) + text * TINT_STRENGTH)
+                };
+                (mix(16), mix(8), mix(0), q(a as f32))
+            }
+        }
+    }
+}
+
 /// Composite one glyph bitmap with its top-left corner at (`x`, `y`).
-/// Coverage glyphs are tinted with `text_argb`; color glyphs keep their own
-/// colors but take on the text color's alpha, so translucent text fades
-/// emoji along with it.
+/// Coverage glyphs are drawn in the text color, color glyphs as described
+/// by [`Paint::color_pixel`].
 fn draw_glyph(
     pixels: &mut [u8],
     buffer_width: i32,
@@ -225,9 +265,8 @@ fn draw_glyph(
     glyph: &font::GlyphBitmap<'_>,
     x: i32,
     y: i32,
-    text_argb: u32,
+    paint: Paint,
 ) {
-    let text_alpha = (text_argb >> 24) as u16;
     let abs_pitch = glyph.pitch.unsigned_abs() as usize;
     let bpp = glyph.pixel_mode.bytes_per_pixel();
     let rows = (clip.y0 - y).max(0)..(clip.y1 - y).min(glyph.rows);
@@ -252,15 +291,15 @@ fn draw_glyph(
             match glyph.pixel_mode {
                 font::GlyphPixelMode::Gray => {
                     if src[0] > 0 {
-                        blend_pixel(dst, text_argb, src[0]);
+                        blend_pixel(dst, paint.text_argb, src[0]);
                     }
                 }
                 font::GlyphPixelMode::Bgra => {
                     if src[3] == 0 {
                         continue;
                     }
-                    let fade = |c: u8| ((c as u16 * text_alpha) / 255) as u8;
-                    blend_pixel_premul(dst, fade(src[2]), fade(src[1]), fade(src[0]), fade(src[3]));
+                    let (r, g, b, a) = paint.color_pixel(src[0], src[1], src[2], src[3]);
+                    blend_pixel_premul(dst, r, g, b, a);
                 }
             }
         }
@@ -363,6 +402,10 @@ mod text_tests {
     }
 
     fn draw(glyph: &font::GlyphBitmap<'_>, text_argb: u32) -> u32 {
+        draw_with(glyph, text_argb, ColorGlyphs::Natural)
+    }
+
+    fn draw_with(glyph: &font::GlyphBitmap<'_>, text_argb: u32, color_glyphs: ColorGlyphs) -> u32 {
         let mut px = [0u8; 4];
         let clip = Clip {
             x0: 0,
@@ -370,7 +413,11 @@ mod text_tests {
             x1: 1,
             y1: 1,
         };
-        draw_glyph(&mut px, 1, &clip, glyph, 0, 0, text_argb);
+        let paint = Paint {
+            text_argb,
+            color_glyphs,
+        };
+        draw_glyph(&mut px, 1, &clip, glyph, 0, 0, paint);
         u32::from_ne_bytes(px)
     }
 
@@ -382,6 +429,22 @@ mod text_tests {
         assert_eq!(draw(&bgra_glyph(&orange), 0xFFFFFFFF), 0xFFFF8000);
         assert_eq!(draw(&bgra_glyph(&orange), 0x80000000), 0x80804000);
         assert_eq!(draw(&bgra_glyph(&orange), 0x00000000), 0x00000000);
+    }
+
+    #[test]
+    fn tinted_color_glyphs_are_gray_blended_with_the_text_color() {
+        let tinted = |px: &[u8], text| draw_with(&bgra_glyph(px), text, ColorGlyphs::Tinted);
+        // Opaque orange has a luma of ~146, halfway to the text color.
+        let orange = [0x00, 0x80, 0xFF, 0xFF];
+        assert_eq!(tinted(&orange, 0xFF000000), 0xFF494949);
+        assert_eq!(tinted(&orange, 0xFFFFFFFF), 0xFFC8C8C8);
+        assert_eq!(tinted(&orange, 0xFFFF0000), 0xFFC84949);
+        // The text alpha still applies.
+        assert_eq!(tinted(&orange, 0x80000000), 0x80252525);
+        // Partially covered pixels stay premultiplied.
+        let half_orange = [0x00, 0x40, 0x80, 0x80];
+        assert_eq!(tinted(&half_orange, 0xFF000000), 0x80242424);
+        assert_eq!(tinted(&half_orange, 0xFFFFFFFF), 0x80646464);
     }
 
     /// Text measured with `font::measure_text` must render completely when
@@ -399,7 +462,17 @@ mod text_tests {
             let mut px = vec![0u8; (width * height * 4) as usize];
             let mut r = Renderer::new(&mut px, width, height).unwrap();
             r.render_text(
-                text, 0, 0, area_width, height, 1.0, 0xFF000000, size, None, 0,
+                text,
+                0,
+                0,
+                area_width,
+                height,
+                1.0,
+                0xFF000000,
+                ColorGlyphs::Natural,
+                size,
+                None,
+                0,
             );
             px
         };

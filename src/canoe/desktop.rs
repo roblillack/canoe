@@ -12,7 +12,7 @@ use wayland_client::protocol::{
 use wayland_client::QueueHandle;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 
-use super::render::Renderer;
+use super::render::{ColorGlyphs, Renderer};
 use super::scale::{FractionalSurface, Origin, Scale};
 use super::{shmfile, OutputId, WindowId};
 
@@ -303,6 +303,11 @@ impl DesktopSurface {
             let icon = &desktop_icons[i];
             let layout = &self.icons[i];
             let is_selected = selected == Some(icon.window_id);
+            let color_glyphs = if is_selected {
+                ColorGlyphs::Natural
+            } else {
+                ColorGlyphs::Tinted
+            };
 
             let icon_bg = if is_selected {
                 rgba_to_argb(theme.highlight_bg)
@@ -374,6 +379,7 @@ impl DesktopSurface {
                     icon_px,
                     scale.factor(),
                     icon_text,
+                    color_glyphs,
                     font_size,
                     font_name,
                     0,
@@ -418,6 +424,7 @@ impl DesktopSurface {
                 label_h,
                 scale.factor(),
                 label_text,
+                color_glyphs,
                 label_font_size,
                 label_font_name,
                 0,
