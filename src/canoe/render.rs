@@ -217,15 +217,43 @@ impl<'a> Renderer<'a> {
                             && py >= 0
                             && py < buffer_height
                         {
-                            let idx = row_offset + col as usize;
-                            if idx >= glyph.buffer.len() {
+                            let offset = ((py * buffer_width + px) * 4) as usize;
+                            if offset + 4 > pixels.len() {
                                 continue;
                             }
-                            let alpha = glyph.buffer[idx];
-                            if alpha > 0 {
-                                let offset = ((py * buffer_width + px) * 4) as usize;
-                                if offset + 4 <= pixels.len() {
-                                    blend_pixel(&mut pixels[offset..offset + 4], text_argb, alpha);
+                            match glyph.pixel_mode {
+                                font::GlyphPixelMode::Gray => {
+                                    let idx = row_offset + col as usize;
+                                    if idx >= glyph.buffer.len() {
+                                        continue;
+                                    }
+                                    let alpha = glyph.buffer[idx];
+                                    if alpha > 0 {
+                                        blend_pixel(
+                                            &mut pixels[offset..offset + 4],
+                                            text_argb,
+                                            alpha,
+                                        );
+                                    }
+                                }
+                                font::GlyphPixelMode::Bgra => {
+                                    let idx = row_offset + col as usize * 4;
+                                    if idx + 4 > glyph.buffer.len() {
+                                        continue;
+                                    }
+                                    let b = glyph.buffer[idx];
+                                    let g = glyph.buffer[idx + 1];
+                                    let r = glyph.buffer[idx + 2];
+                                    let a = glyph.buffer[idx + 3];
+                                    if a > 0 {
+                                        blend_pixel_premul(
+                                            &mut pixels[offset..offset + 4],
+                                            r,
+                                            g,
+                                            b,
+                                            a,
+                                        );
+                                    }
                                 }
                             }
                         }

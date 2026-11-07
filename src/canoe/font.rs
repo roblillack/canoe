@@ -52,7 +52,7 @@ impl LoadedFont {
         if self.size_px == size_px {
             return true;
         }
-        let ok = unsafe { freetype::succeeded(ft::FT_Set_Pixel_Sizes(self.face, 0, size_px)) };
+        let ok = set_pixel_size(self.face, size_px);
         if ok {
             self.size_px = size_px;
         }
@@ -99,9 +99,8 @@ impl FontSet {
         if !self.primary.set_size(size_px) {
             return false;
         }
-        // Fallback faces that cannot be resized (e.g. bitmap-only fonts
-        // without a matching strike) are dropped and will be looked up again
-        // on demand.
+        // Fallback faces that cannot be resized are dropped and will be
+        // looked up again on demand.
         self.fallbacks
             .retain_mut(|fallback| fallback.set_size(size_px));
         true
@@ -235,7 +234,7 @@ impl FaceHandle<'_> {
             freetype::succeeded(ft::FT_Load_Char(
                 face,
                 ch as ft::FT_ULong,
-                ft::FT_LOAD_RENDER as ft::FT_Int32,
+                (ft::FT_LOAD_RENDER | ft::FT_LOAD_COLOR) as ft::FT_Int32,
             ))
         };
         if !ok {
@@ -258,15 +257,18 @@ impl FaceHandle<'_> {
                     width,
                     rows,
                     pitch,
+                    pixel_mode: GlyphPixelMode::Gray,
                     buffer: &[],
                     left: (*glyph).bitmap_left,
                     top: (*glyph).bitmap_top,
                     advance: ((*glyph).advance.x >> 6) as i32,
                 });
             }
-            if bitmap.pixel_mode != ft::FT_Pixel_Mode::FT_PIXEL_MODE_GRAY as u8 {
-                return None;
-            }
+            let pixel_mode = match bitmap.pixel_mode {
+                mode if mode == ft::FT_Pixel_Mode::FT_PIXEL_MODE_GRAY as u8 => GlyphPixelMode::Gray,
+                mode if mode == ft::FT_Pixel_Mode::FT_PIXEL_MODE_BGRA as u8 => GlyphPixelMode::Bgra,
+                _ => return None,
+            };
             if bitmap.buffer.is_null() {
                 return None;
             }
@@ -276,6 +278,7 @@ impl FaceHandle<'_> {
                 width,
                 rows,
                 pitch,
+                pixel_mode,
                 buffer,
                 left: (*glyph).bitmap_left,
                 top: (*glyph).bitmap_top,
@@ -290,10 +293,20 @@ pub struct LineMetrics {
     pub descender: i32,
 }
 
+/// Pixel format of a rasterized glyph.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum GlyphPixelMode {
+    /// One coverage byte per pixel, to be tinted with the text color.
+    Gray,
+    /// Premultiplied BGRA color pixels (e.g. color emoji).
+    Bgra,
+}
+
 pub struct GlyphBitmap<'a> {
     pub width: i32,
     pub rows: i32,
     pub pitch: i32,
+    pub pixel_mode: GlyphPixelMode,
     pub buffer: &'a [u8],
     pub left: i32,
     pub top: i32,
@@ -379,6 +392,36 @@ fn match_font(pattern: &str, ch: Option<char>) -> Option<FontMatch> {
             path: PathBuf::from(path),
             index,
         })
+    }
+}
+
+/// Set the pixel size of `face`. Bitmap-only fonts (such as color emoji
+/// fonts that ship a single fixed strike) cannot be scaled; for those the
+/// strike closest to the requested size is selected instead.
+fn set_pixel_size(face: ft::FT_Face, size_px: u32) -> bool {
+    if unsafe { freetype::succeeded(ft::FT_Set_Pixel_Sizes(face, 0, size_px)) } {
+        return true;
+    }
+
+    unsafe {
+        let count = (*face).num_fixed_sizes;
+        let sizes = (*face).available_sizes;
+        if count <= 0 || sizes.is_null() {
+            return false;
+        }
+
+        let mut best = 0;
+        let mut best_delta = i64::MAX;
+        for i in 0..count {
+            let size = *sizes.add(i as usize);
+            let y_px = ((size.y_ppem + 32) >> 6).max(size.height as i64);
+            let delta = (y_px - size_px as i64).abs();
+            if delta < best_delta {
+                best = i;
+                best_delta = delta;
+            }
+        }
+        freetype::succeeded(ft::FT_Select_Size(face, best))
     }
 }
 
