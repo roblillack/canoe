@@ -204,6 +204,32 @@ QT_QPA_PLATFORM = "wayland"
 All values must be strings: `MOZ_ENABLE_WAYLAND = 1` is a type error, which
 makes Canoe ignore the whole configuration file.
 
+### Cursor theme
+
+`xcursor_theme` and `xcursor_size` set the XCursor theme and cursor size (in
+logical pixels) for cursors that River draws: on the desktop, titlebars and
+borders, and while moving or resizing windows. Canoe also sets
+`XCURSOR_THEME` and `XCURSOR_SIZE` for the programs it launches, so their
+cursors match.
+
+```toml
+xcursor_theme = "Adwaita"
+xcursor_size = 32
+```
+
+The theme and size are looked up separately: first in `canoe.toml`, then
+`XCURSOR_THEME`/`XCURSOR_SIZE` in the [`[env]`](#environment-variables) table,
+then Canoe's own environment. If none of them sets a value, River uses the
+`default` theme at size 24, and launched programs get no `XCURSOR_*` variable,
+so they pick their own default.
+
+A `SIGHUP` reload changes the cursors River draws right away. Programs that are
+already running keep the theme they started with.
+
+GTK apps usually ignore these variables and take their cursor theme from
+GNOME's settings instead (`gsettings set org.gnome.desktop.interface
+cursor-theme Adwaita`, and `cursor-size` for the size).
+
 ### Hotkeys
 
 Bind arbitrary key chords to commands under the `[hotkeys]` table. Each key is a

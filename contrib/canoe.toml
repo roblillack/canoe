@@ -23,6 +23,13 @@
 # Programs launched once when Canoe starts (not on reload). Empty by default.
 #startup_cmds = ["kanshi", "mako", ["swaybg", "-i", "/home/me/bg.png"]]
 
+# Cursor theme and size (in logical pixels) for cursors River draws, also set
+# as XCURSOR_THEME and XCURSOR_SIZE for programs Canoe launches. Unset by
+# default: Canoe then uses XCURSOR_THEME/XCURSOR_SIZE from [env] or from its
+# own environment, falling back to the "default" theme at size 24.
+#xcursor_theme = "Adwaita"
+#xcursor_size = 24
+
 # Export WAYLAND_DISPLAY, XDG_CURRENT_DESKTOP and, if set, XCURSOR_THEME and
 # XCURSOR_SIZE to the systemd user manager and D-Bus activation environment on
 # startup (needed for screen sharing).
