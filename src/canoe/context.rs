@@ -280,6 +280,11 @@ impl Context {
 
     /// Remove an output from context
     pub fn destroy_output(&mut self, output_id: OutputId) {
+        let dead_rect = self.outputs.get(&output_id).map(|output| {
+            let output = output.borrow();
+            (output.x, output.y, output.width, output.height)
+        });
+
         if let Some(output) = self.outputs.get(&output_id) {
             let dead_area = output.borrow().usable_area();
             for (&window_id, window) in &self.windows {
@@ -302,8 +307,10 @@ impl Context {
         }
 
         // Update current output if necessary
+        // Update current output if necessary. Windows orphaned by the removal
+        // move to the current output, so prefer the removed one's neighbour.
         if self.current_output == Some(output_id) {
-            self.current_output = self.outputs.keys().find(|&&id| id != output_id).copied();
+            self.current_output = dead_rect.and_then(|rect| self.nearest_output(rect, output_id));
         }
         // River forgets the default when its output goes away; the next
         // manage sequence announces the new one.
@@ -3174,6 +3181,28 @@ impl Context {
         }
     }
 
+    /// The output other than `exclude` whose center is closest to the center
+    /// of `rect` (x, y, width, height); ties go to the lowest id.
+    fn nearest_output(&self, rect: (i32, i32, i32, i32), exclude: OutputId) -> Option<OutputId> {
+        let center = |x: i32, y: i32, w: i32, h: i32| {
+            (
+                i64::from(x) * 2 + i64::from(w),
+                i64::from(y) * 2 + i64::from(h),
+            )
+        };
+        let (cx, cy) = center(rect.0, rect.1, rect.2, rect.3);
+        self.outputs
+            .iter()
+            .filter(|(&id, _)| id != exclude)
+            .map(|(&id, output)| {
+                let output = output.borrow();
+                let (ox, oy) = center(output.x, output.y, output.width, output.height);
+                ((ox - cx).pow(2) + (oy - cy).pow(2), id)
+            })
+            .min()
+            .map(|(_, id)| id)
+    }
+
     /// Restore the windowed geometry of a window that was fullscreen on a
     /// removed output while anchored to a remaining one.
     fn restore_from_stale_fullscreen(&mut self, window_id: WindowId) {
@@ -3215,7 +3244,7 @@ impl Context {
         let target_id = self
             .current_output
             .filter(|id| self.outputs.contains_key(id))
-            .or_else(|| self.outputs.keys().next().copied());
+            .or_else(|| self.outputs.keys().min().copied());
         let Some(target_id) = target_id else {
             self.pending_output_orphans.push((window_id, dead_area));
             return;
@@ -3690,5 +3719,54 @@ mod tests {
         assert!(w.position_undefined);
         let anchor = w.output.as_ref().and_then(|o| o.upgrade()).unwrap();
         assert_eq!(anchor.borrow().id, 1);
+    }
+
+    #[test]
+    fn removed_current_output_hands_over_to_nearest_output() {
+        // Narrow output 1 on the left, removed output 2, output 3 on the right.
+        let layout = [
+            (1, 0, 0, 1280, 1024),
+            (2, 1280, 0, 1920, 1080),
+            (3, 3200, 0, 1920, 1080),
+        ];
+        let mut ctx = context_with_outputs(&layout);
+        ctx.current_output = Some(2);
+        add_window(&mut ctx, 10, 2, (1380, 100, 800, 600));
+        ctx.destroy_output(2);
+        ctx.handle_manage_start();
+        assert_eq!(ctx.current_output, Some(1));
+        let w = ctx.windows[&10].borrow();
+        let anchor = w.output.as_ref().and_then(|o| o.upgrade()).unwrap();
+        assert_eq!(anchor.borrow().id, 1);
+        drop(anchor);
+        drop(w);
+
+        // Mirrored: now output 3 is closer.
+        let layout = [
+            (1, 0, 0, 1920, 1080),
+            (2, 1920, 0, 1920, 1080),
+            (3, 3840, 0, 1280, 1024),
+        ];
+        let mut ctx = context_with_outputs(&layout);
+        ctx.current_output = Some(2);
+        ctx.destroy_output(2);
+        assert_eq!(ctx.current_output, Some(3));
+    }
+
+    #[test]
+    fn orphans_follow_surviving_current_output() {
+        let layout = [
+            (1, 0, 0, 1920, 1080),
+            (2, 1920, 0, 1920, 1080),
+            (3, 3840, 0, 1920, 1080),
+        ];
+        let mut ctx = context_with_outputs(&layout);
+        ctx.current_output = Some(3);
+        add_window(&mut ctx, 10, 2, (2000, 100, 800, 600));
+        ctx.destroy_output(2);
+        ctx.handle_manage_start();
+        let w = ctx.windows[&10].borrow();
+        let anchor = w.output.as_ref().and_then(|o| o.upgrade()).unwrap();
+        assert_eq!(anchor.borrow().id, 3);
     }
 }
