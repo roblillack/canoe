@@ -14,6 +14,8 @@ While pre-1.0, the minor version is bumped for breaking changes.
 
 - Maximized and snapped windows no longer land offset to the side on outputs
   that are not at the origin, e.g. after kanshi moves an output. (#64)
+- Snapped and maximized windows follow when a bar is started, stopped or
+  resized, instead of covering it or leaving a gap. (#65)
 
 ## [0.6.0] - 2026-11-07
 
