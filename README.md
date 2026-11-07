@@ -372,12 +372,14 @@ it: when you restart Canoe, when you plug in a monitor, or when the wallpaper
 is started outside of Canoe (e.g. from River's init). With `"transparent"`
 there is nothing to hide the wallpaper, whatever the order.
 
-By default the icon surface takes pointer input across the whole output:
-right-clicking the empty desktop opens the window menu, and left-clicking it
-unfocuses the current window and deselects icons. With `desktop_menu = false`,
-only the icons take input and every other click goes to whatever is below,
-e.g. an interactive wallpaper like `shaderbg`. Canoe then no longer sees clicks
-on the empty desktop, so they neither open the menu nor unfocus windows.
+By default the icon surface takes pointer input across the whole output,
+except where bars and panels reserve space (their exclusive zones), so clicks
+on them always reach them: right-clicking the empty desktop opens the window
+menu, and left-clicking it unfocuses the current window and deselects icons.
+With `desktop_menu = false`, only the icons take input and every other click
+goes to whatever is below, e.g. an interactive wallpaper like `shaderbg`.
+Canoe then no longer sees clicks on the empty desktop, so they neither open
+the menu nor unfocus windows.
 
 ### Rule Matching
 

@@ -1101,7 +1101,7 @@ fn render_desktop_background(
 
     background.ensure_solid_buffer(shm, qh);
     background.render(bg_color);
-    background.update_input_region(compositor, qh, false);
+    background.update_input_region(compositor, qh, None);
     background.commit();
     background.dirty = false;
 }
@@ -1191,12 +1191,19 @@ fn render_desktop_surface(
     };
 
     let mut out = output.borrow_mut();
+    let usable_area = out.usable_area();
+    let output_origin = (out.x, out.y);
     let Some(desktop) = out.desktop_surface.as_mut() else {
         return;
     };
     if !desktop.configured {
         return;
     }
+    let desktop_area = desktop_menu
+        .then(|| {
+            canoe::desktop_input_area(usable_area, output_origin, (desktop.width, desktop.height))
+        })
+        .flatten();
 
     if icons.is_empty() {
         // Nothing to draw: a single transparent pixel covers the output.
@@ -1213,7 +1220,7 @@ fn render_desktop_surface(
         Some(label_font_name.as_str()),
         label_font_size,
     );
-    desktop.update_input_region(compositor, qh, desktop_menu);
+    desktop.update_input_region(compositor, qh, desktop_area);
     desktop.commit();
     desktop.dirty = false;
 }
@@ -2831,6 +2838,11 @@ impl Dispatch<RiverLayerShellOutputV1, canoe::OutputId> for AppState {
                     (x + out.x, y + out.y)
                 };
                 out.update_exclusive_area(global_x, global_y, width, height);
+                // The desktop surface's input region leaves exclusive zones
+                // out; it is redrawn at the end of the next manage sequence.
+                if let Some(desktop) = out.desktop_surface.as_mut() {
+                    desktop.dirty = true;
+                }
             }
         }
     }

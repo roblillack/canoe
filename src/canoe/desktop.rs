@@ -465,11 +465,10 @@ impl DesktopSurface {
         self.icons.len()
     }
 
-    /// With `full = true` the whole surface accepts input (legacy behavior:
-    /// right-click anywhere opens the window menu). With `full = false` only
-    /// the minimized-icon cells accept input and everything else falls
-    /// through to clients below (e.g. shaderbg). No icons + `full = false`
-    /// = fully click-through.
+    /// The minimized-icon cells always accept input. With `desktop_area`,
+    /// so does that surface-local rectangle (right-click opens the window
+    /// menu, left-click unfocuses); everything else falls through to clients
+    /// below (e.g. shaderbg). No icons and no area = fully click-through.
     ///
     /// Never pass `None` to set_input_region here: `None` means an
     /// *infinite* region; an empty region means "no input".
@@ -477,7 +476,7 @@ impl DesktopSurface {
         &self,
         compositor: &wl_compositor::WlCompositor,
         qh: &QueueHandle<D>,
-        full: bool,
+        desktop_area: Option<(i32, i32, i32, i32)>,
     ) where
         D: 'static + wayland_client::Dispatch<wl_region::WlRegion, ()>,
     {
@@ -486,20 +485,19 @@ impl DesktopSurface {
         }
 
         let region = compositor.create_region(qh, ());
-        if full {
-            region.add(0, 0, self.width, self.height);
-        } else {
-            // Layouts are in buffer pixels; the input region is in
-            // surface-local logical pixels. Round outwards so the region
-            // covers every device pixel of the cell.
-            let device = self.scale.device();
-            for layout in &self.icons {
-                let x0 = (layout.x as f64 / device).floor() as i32;
-                let y0 = (layout.y as f64 / device).floor() as i32;
-                let x1 = ((layout.x + layout.width) as f64 / device).ceil() as i32;
-                let y1 = ((layout.y + layout.height) as f64 / device).ceil() as i32;
-                region.add(x0, y0, x1 - x0, y1 - y0);
-            }
+        if let Some((x, y, width, height)) = desktop_area {
+            region.add(x, y, width, height);
+        }
+        // Layouts are in buffer pixels; the input region is in surface-local
+        // logical pixels. Round outwards so the region covers every device
+        // pixel of the cell.
+        let device = self.scale.device();
+        for layout in &self.icons {
+            let x0 = (layout.x as f64 / device).floor() as i32;
+            let y0 = (layout.y as f64 / device).floor() as i32;
+            let x1 = ((layout.x + layout.width) as f64 / device).ceil() as i32;
+            let y1 = ((layout.y + layout.height) as f64 / device).ceil() as i32;
+            region.add(x0, y0, x1 - x0, y1 - y0);
         }
         self.surface.set_input_region(Some(&region));
         region.destroy();
@@ -513,6 +511,27 @@ impl DesktopSurface {
             self.surface.commit();
         }
     }
+}
+
+/// The part of a desktop surface of `surface_size` on an output at
+/// `output_origin` that takes clicks on the empty desktop: the output's usable
+/// area (global coordinates), made surface-local.
+///
+/// Bars and panels on the bottom layer sit in the exclusive zones left out of
+/// the usable area. River stacks surfaces of a layer in creation order, so a
+/// bar created before the desktop surface (e.g. when Canoe restarts while the
+/// bar keeps running) is below it and would otherwise get none of its clicks.
+pub fn desktop_input_area(
+    usable_area: (i32, i32, i32, i32),
+    output_origin: (i32, i32),
+    surface_size: (i32, i32),
+) -> Option<(i32, i32, i32, i32)> {
+    let (x, y, width, height) = usable_area;
+    let x0 = (x - output_origin.0).max(0);
+    let y0 = (y - output_origin.1).max(0);
+    let x1 = (x - output_origin.0 + width).min(surface_size.0);
+    let y1 = (y - output_origin.1 + height).min(surface_size.1);
+    (x1 > x0 && y1 > y0).then_some((x0, y0, x1 - x0, y1 - y0))
 }
 
 /// Build a regular-weight fontconfig query from a base UI font name.
@@ -854,7 +873,28 @@ impl Drop for DesktopSurface {
 
 #[cfg(test)]
 mod tests {
-    use super::rgba_to_premultiplied_argb;
+    use super::{desktop_input_area, rgba_to_premultiplied_argb};
+
+    #[test]
+    fn desktop_input_area_leaves_out_exclusive_zones() {
+        // A 30px bar at the top of an output at (1920, 0).
+        assert_eq!(
+            desktop_input_area((1920, 30, 1920, 1050), (1920, 0), (1920, 1080)),
+            Some((0, 30, 1920, 1050))
+        );
+        // No exclusive zones: the whole surface.
+        assert_eq!(
+            desktop_input_area((0, 0, 1920, 1080), (0, 0), (1920, 1080)),
+            Some((0, 0, 1920, 1080))
+        );
+        // Clamped to the surface, e.g. while the output's size changes.
+        assert_eq!(
+            desktop_input_area((0, 0, 2560, 1440), (0, 0), (1920, 1080)),
+            Some((0, 0, 1920, 1080))
+        );
+        // Nothing left.
+        assert_eq!(desktop_input_area((0, 0, 0, 0), (0, 0), (1920, 1080)), None);
+    }
 
     #[test]
     fn premultiplies_fill_color() {
