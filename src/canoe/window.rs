@@ -359,6 +359,12 @@ impl Window {
         }
     }
 
+    /// The dimensions last proposed to the compositor
+    #[cfg(test)]
+    pub fn proposed_dimensions(&self) -> (i32, i32) {
+        (self.proposed_width, self.proposed_height)
+    }
+
     /// Set window position
     pub fn set_position(&mut self, x: i32, y: i32) {
         self.x = x;

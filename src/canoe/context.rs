@@ -3263,12 +3263,19 @@ impl Context {
             if let Some(saved) = mapped_pre_snap {
                 w.pre_snap = Some(saved);
             }
-            if stale_fullscreen {
-                w.pre_fullscreen = None;
-            }
             w.set_position(new_x, new_y);
-            if needs_resize {
+            // Leaving fullscreen leaves position and dimensions undefined
+            // until both are proposed, so always propose the windowed size.
+            if needs_resize || stale_fullscreen {
                 w.propose_dimensions(new_w, new_h);
+            }
+            if stale_fullscreen {
+                w.pre_fullscreen = Some(super::window::SavedGeometry {
+                    x: new_x,
+                    y: new_y,
+                    width: new_w,
+                    height: new_h,
+                });
             }
         }
         if maximized {
@@ -3579,5 +3586,31 @@ mod tests {
         let w = ctx.windows[&10].borrow();
         let pre_fullscreen = w.pre_fullscreen.unwrap();
         assert_eq!((pre_fullscreen.x, pre_fullscreen.y), (80, 100));
+    }
+
+    #[test]
+    fn removed_fullscreen_output_restores_windowed_geometry() {
+        let mut ctx = context_with_outputs(&[(1, 0, 0, 1920, 1080), (2, 1920, 0, 3840, 2160)]);
+        add_window(&mut ctx, 10, 2, (2100, 100, 800, 600));
+        {
+            let output = Rc::downgrade(&ctx.outputs[&2]);
+            let mut w = ctx.windows[&10].borrow_mut();
+            w.fullscreen = super::super::window::FullscreenState::Output(output);
+            // River reports the fullscreen size while fullscreen.
+            w.update_dimensions(3840, 2160);
+        }
+
+        ctx.destroy_output(2);
+        ctx.handle_manage_start();
+
+        let w = ctx.windows[&10].borrow();
+        assert!(matches!(
+            w.fullscreen,
+            super::super::window::FullscreenState::None
+        ));
+        assert_eq!(w.proposed_dimensions(), (800, 600));
+        let pre_fullscreen = w.pre_fullscreen.unwrap();
+        assert_eq!((pre_fullscreen.width, pre_fullscreen.height), (800, 600));
+        assert_eq!((w.x, w.y), (90, 50));
     }
 }
