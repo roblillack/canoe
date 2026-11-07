@@ -267,10 +267,23 @@ const DEFAULT_XCURSOR_SIZE: u32 = 24;
 
 impl Config {
     /// Resolved XCursor theme. Name and size are resolved independently:
-    /// config file, then `XCURSOR_THEME`/`XCURSOR_SIZE` from the environment,
-    /// then `"default"` and 24.
+    /// config file, then `XCURSOR_THEME`/`XCURSOR_SIZE` as programs launched
+    /// by Canoe see them (the `[env]` table overriding Canoe's own
+    /// environment), then `"default"` and 24.
     pub fn xcursor_theme_resolved(&self) -> XCursorTheme {
-        let env = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+        self.xcursor_theme_resolved_with(|name| std::env::var(name).ok())
+    }
+
+    /// [`Self::xcursor_theme_resolved`] with Canoe's own environment read
+    /// through `lookup`.
+    fn xcursor_theme_resolved_with(&self, lookup: impl Fn(&str) -> Option<String>) -> XCursorTheme {
+        let env = |name: &str| {
+            self.env
+                .get(name)
+                .cloned()
+                .or_else(|| lookup(name))
+                .filter(|value| !value.is_empty())
+        };
         XCursorTheme {
             name: self
                 .xcursor_theme
@@ -954,6 +967,41 @@ mod tests {
             parse("xcursor_theme = \"  \"\nxcursor_size = 0"),
             (None, None)
         );
+    }
+
+    #[test]
+    fn test_xcursor_resolution_order() {
+        let own = |name: &str| match name {
+            "XCURSOR_THEME" => Some("Own".to_string()),
+            "XCURSOR_SIZE" => Some("16".to_string()),
+            _ => None,
+        };
+        let resolve = |config: &Config| {
+            let theme = config.xcursor_theme_resolved_with(own);
+            (theme.name, theme.size)
+        };
+
+        let mut config = Config::default();
+        assert_eq!(resolve(&config), ("Own".to_string(), 16));
+
+        // [env] overrides Canoe's own environment ...
+        config
+            .env
+            .insert("XCURSOR_THEME".to_string(), "Env".to_string());
+        config
+            .env
+            .insert("XCURSOR_SIZE".to_string(), "32".to_string());
+        assert_eq!(resolve(&config), ("Env".to_string(), 32));
+
+        // ... and the config file settings override both.
+        config.xcursor_theme = Some("File".to_string());
+        config.xcursor_size = Some(48);
+        assert_eq!(resolve(&config), ("File".to_string(), 48));
+
+        // Without any of them, the defaults apply.
+        let config = Config::default();
+        let theme = config.xcursor_theme_resolved_with(|_| None);
+        assert_eq!((theme.name.as_str(), theme.size), ("default", 24));
     }
 
     #[test]
