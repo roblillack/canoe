@@ -185,7 +185,7 @@ impl Context {
         // Not manage-sequence-bound; apply immediately.
         let theme = self.config.xcursor_theme_resolved();
         for seat in self.seats.values() {
-            seat.borrow().set_xcursor_theme(&theme.name, theme.size);
+            seat.borrow().set_xcursor_theme(&theme);
         }
 
         // Re-applying rules and re-registering key bindings both send requests
@@ -778,9 +778,14 @@ impl Context {
 
                 // Protocol note: propagate the theme to spawned clients so
                 // client-rendered cursors match compositor-rendered ones.
+                // Unset parts stay unset, leaving clients their own defaults.
                 let theme = self.config.xcursor_theme_resolved();
-                cmd.env("XCURSOR_THEME", &theme.name);
-                cmd.env("XCURSOR_SIZE", theme.size.to_string());
+                if let Some(name) = &theme.name {
+                    cmd.env("XCURSOR_THEME", name);
+                }
+                if let Some(size) = theme.size {
+                    cmd.env("XCURSOR_SIZE", size.to_string());
+                }
 
                 // Make sure child inherits display environment
                 // (WAYLAND_DISPLAY should already be in env)

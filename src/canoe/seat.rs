@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use crate::binding::{Action, PointerBinding, XkbBinding};
-use crate::config::Mode;
+use crate::config::{Mode, XCursorTheme};
 use crate::protocol::{
     RiverLayerShellSeatV1, RiverPointerBindingV1, RiverSeatV1, RiverXkbBindingV1,
 };
@@ -203,11 +203,15 @@ impl Seat {
         }
     }
 
-    /// Set XCursor theme (river-window-management v2+)
-    pub fn set_xcursor_theme(&self, name: &str, size: u32) {
+    /// Set the XCursor theme for compositor-drawn cursors
+    /// (river-window-management v2+), using the defaults for unset parts.
+    pub fn set_xcursor_theme(&self, theme: &XCursorTheme) {
         if let Some(ref rwm_seat) = self.rwm_seat {
             if rwm_seat.version() >= 2 {
-                rwm_seat.set_xcursor_theme(name.to_string(), size);
+                rwm_seat.set_xcursor_theme(
+                    theme.name_or_default().to_string(),
+                    theme.size_or_default(),
+                );
             }
         }
     }

@@ -101,11 +101,24 @@ impl Default for BorderLayers {
     }
 }
 
-/// XCursor theme configuration
-#[derive(Debug, Clone)]
+/// XCursor theme configuration. `name` and `size` are `None` when nothing
+/// sets them.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct XCursorTheme {
-    pub name: String,
-    pub size: u32,
+    pub name: Option<String>,
+    pub size: Option<u32>,
+}
+
+impl XCursorTheme {
+    /// Theme name, falling back to `"default"`.
+    pub fn name_or_default(&self) -> &str {
+        self.name.as_deref().unwrap_or(DEFAULT_XCURSOR_THEME)
+    }
+
+    /// Cursor size, falling back to 24.
+    pub fn size_or_default(&self) -> u32 {
+        self.size.unwrap_or(DEFAULT_XCURSOR_SIZE)
+    }
 }
 
 /// UI theme configuration
@@ -269,7 +282,7 @@ impl Config {
     /// Resolved XCursor theme. Name and size are resolved independently:
     /// config file, then `XCURSOR_THEME`/`XCURSOR_SIZE` as programs launched
     /// by Canoe see them (the `[env]` table overriding Canoe's own
-    /// environment), then `"default"` and 24.
+    /// environment). Either stays `None` if none of these sets it.
     pub fn xcursor_theme_resolved(&self) -> XCursorTheme {
         self.xcursor_theme_resolved_with(|name| std::env::var(name).ok())
     }
@@ -285,16 +298,11 @@ impl Config {
                 .filter(|value| !value.is_empty())
         };
         XCursorTheme {
-            name: self
-                .xcursor_theme
-                .clone()
-                .or_else(|| env("XCURSOR_THEME"))
-                .unwrap_or_else(|| DEFAULT_XCURSOR_THEME.to_string()),
+            name: self.xcursor_theme.clone().or_else(|| env("XCURSOR_THEME")),
             size: self
                 .xcursor_size
                 .or_else(|| env("XCURSOR_SIZE").and_then(|s| s.trim().parse().ok()))
-                .filter(|&size| size > 0)
-                .unwrap_or(DEFAULT_XCURSOR_SIZE),
+                .filter(|&size| size > 0),
         }
     }
 }
@@ -978,7 +986,7 @@ mod tests {
         };
         let resolve = |config: &Config| {
             let theme = config.xcursor_theme_resolved_with(own);
-            (theme.name, theme.size)
+            (theme.name.expect("name"), theme.size.expect("size"))
         };
 
         let mut config = Config::default();
@@ -998,10 +1006,13 @@ mod tests {
         config.xcursor_size = Some(48);
         assert_eq!(resolve(&config), ("File".to_string(), 48));
 
-        // Without any of them, the defaults apply.
-        let config = Config::default();
-        let theme = config.xcursor_theme_resolved_with(|_| None);
-        assert_eq!((theme.name.as_str(), theme.size), ("default", 24));
+        // Without any of them, nothing is set and the defaults apply.
+        let theme = Config::default().xcursor_theme_resolved_with(|_| None);
+        assert_eq!(theme, XCursorTheme::default());
+        assert_eq!(
+            (theme.name_or_default(), theme.size_or_default()),
+            ("default", 24)
+        );
     }
 
     #[test]
