@@ -3149,7 +3149,10 @@ impl Context {
     fn apply_output_shift(&mut self, output_id: OutputId, dx: i32, dy: i32) {
         for window in self.windows.values() {
             let mut w = window.borrow_mut();
-            if w.position_undefined {
+            // A window being moved or resized follows the pointer, whose
+            // global position the layout change doesn't touch; shifting it
+            // would only be undone by the next pointer motion.
+            if w.position_undefined || !matches!(w.operator, super::window::Operator::None) {
                 continue;
             }
             let anchored = w
@@ -3768,5 +3771,23 @@ mod tests {
         let w = ctx.windows[&10].borrow();
         let anchor = w.output.as_ref().and_then(|o| o.upgrade()).unwrap();
         assert_eq!(anchor.borrow().id, 3);
+    }
+
+    #[test]
+    fn output_shift_skips_window_under_pointer_operation() {
+        let mut ctx = context_with_outputs(&[(1, 1920, 0, 1920, 1080)]);
+        add_window(&mut ctx, 10, 1, (2000, 100, 800, 600));
+        ctx.windows[&10]
+            .borrow_mut()
+            .start_move(std::rc::Weak::new());
+
+        ctx.pending_output_shifts.push((1, -1920, 0));
+        ctx.handle_manage_start();
+
+        let mut w = ctx.windows[&10].borrow_mut();
+        assert_eq!((w.x, w.y), (2000, 100));
+        // The next pointer motion places it relative to where the drag began.
+        w.apply_op_delta(10, 0);
+        assert_eq!((w.x, w.y), (2010, 100));
     }
 }
