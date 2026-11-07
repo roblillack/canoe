@@ -3236,3 +3236,95 @@ fn menu_item_from_window(
         active: focused == Some(window_id),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn context_with_outputs(output_ids: &[OutputId]) -> Context {
+        let mut ctx = Context::new(true);
+        for &id in output_ids {
+            ctx.outputs
+                .insert(id, Rc::new(RefCell::new(Output::new(id))));
+        }
+        ctx.current_output = output_ids.first().copied();
+        ctx
+    }
+
+    /// Adds a window on `output_id` and pushes it to the back of the focus
+    /// stack, so windows added later are less recently focused.
+    fn add_window(ctx: &mut Context, id: WindowId, output_id: OutputId, hidden: bool) {
+        let mut window = Window::new(id);
+        window.output = Some(Rc::downgrade(&ctx.outputs[&output_id]));
+        window.hidden = hidden;
+        ctx.windows.insert(id, Rc::new(RefCell::new(window)));
+        ctx.focus_stack.push(id);
+    }
+
+    #[test]
+    fn destroying_focused_window_focuses_most_recent_remaining_window() {
+        let mut ctx = context_with_outputs(&[1]);
+        add_window(&mut ctx, 10, 1, false);
+        add_window(&mut ctx, 11, 1, false);
+        add_window(&mut ctx, 12, 1, false);
+        ctx.focus(10);
+
+        ctx.destroy_window(10);
+
+        assert_eq!(ctx.focused_window, Some(11));
+        assert_eq!(ctx.focus_stack, vec![11, 12]);
+        assert!(!ctx.windows.contains_key(&10));
+    }
+
+    #[test]
+    fn destroying_focused_window_skips_minimized_windows() {
+        let mut ctx = context_with_outputs(&[1]);
+        add_window(&mut ctx, 10, 1, false);
+        add_window(&mut ctx, 11, 1, true);
+        add_window(&mut ctx, 12, 1, false);
+        ctx.focus(10);
+
+        ctx.destroy_window(10);
+
+        assert_eq!(ctx.focused_window, Some(12));
+    }
+
+    #[test]
+    fn destroying_focused_window_prefers_windows_on_the_same_output() {
+        let mut ctx = context_with_outputs(&[1, 2]);
+        add_window(&mut ctx, 10, 1, false);
+        add_window(&mut ctx, 11, 2, false);
+        add_window(&mut ctx, 12, 1, false);
+        ctx.focus(10);
+
+        ctx.destroy_window(10);
+
+        assert_eq!(ctx.focused_window, Some(12));
+    }
+
+    #[test]
+    fn destroying_unfocused_window_keeps_focus() {
+        let mut ctx = context_with_outputs(&[1]);
+        add_window(&mut ctx, 10, 1, false);
+        add_window(&mut ctx, 11, 1, false);
+        ctx.focus(11);
+
+        ctx.destroy_window(10);
+
+        assert_eq!(ctx.focused_window, Some(11));
+        assert_eq!(ctx.focus_stack, vec![11]);
+    }
+
+    #[test]
+    fn destroying_last_visible_window_clears_focus() {
+        let mut ctx = context_with_outputs(&[1]);
+        add_window(&mut ctx, 10, 1, false);
+        add_window(&mut ctx, 11, 1, true);
+        ctx.focus(10);
+
+        ctx.destroy_window(10);
+
+        assert_eq!(ctx.focused_window, None);
+        assert_eq!(ctx.focus_stack, vec![11]);
+    }
+}
