@@ -34,9 +34,9 @@ const EMOJI_FONT_QUERY: &str = "emoji";
 /// stale entries from piling up across config reloads.
 const MAX_FONT_SETS: usize = 8;
 
-/// Upper bound for the per-font-set glyph caches (advances and resampled
-/// bitmaps). Window titles use a small set of glyphs; when the caches grow
-/// past this, they are simply dropped and refilled on demand.
+/// Upper bound for the per-font-set glyph caches (advances and bitmaps).
+/// Window titles use a small set of glyphs; when the caches grow past this,
+/// they are simply dropped and refilled on demand.
 const MAX_CACHED_GLYPHS: usize = 2048;
 
 #[derive(Clone, PartialEq, Eq)]
@@ -202,9 +202,9 @@ fn choose_strike(strikes: &[u32], size_px: u32, color: bool) -> Option<usize> {
     }
 }
 
-/// A rasterized glyph of a color font with a fixed strike, scaled to the
-/// requested size.
-struct ScaledGlyph {
+/// A rasterized glyph, with tightly packed top-down rows. Glyphs of color
+/// fonts with a fixed strike are stored scaled to the requested size.
+struct CachedGlyph {
     width: i32,
     rows: i32,
     pixel_mode: GlyphPixelMode,
@@ -244,7 +244,7 @@ struct FontSet {
     color_only: HashMap<char, usize>,
     /// Hinted advances in pixels.
     advances: HashMap<GlyphKey, f32>,
-    scaled_glyphs: HashMap<GlyphKey, ScaledGlyph>,
+    bitmaps: HashMap<GlyphKey, CachedGlyph>,
 }
 
 impl FontSet {
@@ -257,7 +257,7 @@ impl FontSet {
             no_emoji_font: HashSet::new(),
             color_only: HashMap::new(),
             advances: HashMap::new(),
-            scaled_glyphs: HashMap::new(),
+            bitmaps: HashMap::new(),
         })
     }
 
@@ -281,7 +281,7 @@ impl FontSet {
         if self.fonts.len() != before {
             self.color_only.clear();
             self.advances.clear();
-            self.scaled_glyphs.clear();
+            self.bitmaps.clear();
         }
         true
     }
@@ -372,8 +372,8 @@ impl FontSet {
         if self.advances.len() > MAX_CACHED_GLYPHS {
             self.advances.clear();
         }
-        if self.scaled_glyphs.len() > MAX_CACHED_GLYPHS {
-            self.scaled_glyphs.clear();
+        if self.bitmaps.len() > MAX_CACHED_GLYPHS {
+            self.bitmaps.clear();
         }
     }
 
@@ -481,32 +481,31 @@ impl FontSet {
         advance
     }
 
+    /// Rasterizing is by far the most expensive part of drawing text, so
+    /// every glyph is rendered once per size and then served from cache.
     fn glyph_bitmap(&mut self, glyph: &PlacedGlyph) -> Option<GlyphBitmap<'_>> {
-        let LoadedFont {
-            face, bitmap_scale, ..
-        } = self.fonts[glyph.font];
-        if bitmap_scale == 1.0 {
-            // SAFETY: the slot stays valid until the next load on this
-            // face, which cannot happen while the bitmap borrows `self`.
-            return unsafe { render_glyph(face, glyph.glyph_id) };
-        }
-
-        // Fixed-size color glyphs are decoded and resampled once per size.
         let key = (glyph.font, glyph.glyph_id, self.size_px());
-        if let Entry::Vacant(entry) = self.scaled_glyphs.entry(key) {
-            // SAFETY: the bitmap is only used until it has been scaled.
+        if let Entry::Vacant(entry) = self.bitmaps.entry(key) {
+            let LoadedFont {
+                face, bitmap_scale, ..
+            } = self.fonts[glyph.font];
+            // SAFETY: the slot bitmap is copied before the next glyph load.
             let bitmap = unsafe { render_glyph(face, glyph.glyph_id)? };
-            entry.insert(scale_bitmap(&bitmap, bitmap_scale));
+            entry.insert(if bitmap_scale == 1.0 {
+                copy_bitmap(&bitmap)
+            } else {
+                scale_bitmap(&bitmap, bitmap_scale)
+            });
         }
-        let scaled = self.scaled_glyphs.get(&key)?;
+        let cached = self.bitmaps.get(&key)?;
         Some(GlyphBitmap {
-            width: scaled.width,
-            rows: scaled.rows,
-            pitch: scaled.width * scaled.pixel_mode.bytes_per_pixel() as i32,
-            pixel_mode: scaled.pixel_mode,
-            buffer: &scaled.buffer,
-            left: scaled.left,
-            top: scaled.top,
+            width: cached.width,
+            rows: cached.rows,
+            pitch: cached.width * cached.pixel_mode.bytes_per_pixel() as i32,
+            pixel_mode: cached.pixel_mode,
+            buffer: &cached.buffer,
+            left: cached.left,
+            top: cached.top,
         })
     }
 }
@@ -577,11 +576,39 @@ unsafe fn slot_bitmap<'a>(face: ft::FT_Face) -> Option<GlyphBitmap<'a>> {
     })
 }
 
-fn scale_bitmap(bitmap: &GlyphBitmap<'_>, scale: f32) -> ScaledGlyph {
+/// Copy a glyph slot bitmap into a cache entry, packing the rows top-down.
+fn copy_bitmap(bitmap: &GlyphBitmap<'_>) -> CachedGlyph {
+    let row_len = bitmap.width.max(0) as usize * bitmap.pixel_mode.bytes_per_pixel();
+    let rows = bitmap.rows.max(0) as usize;
+    let abs_pitch = bitmap.pitch.unsigned_abs() as usize;
+    let mut buffer = Vec::with_capacity(row_len * rows);
+    for row in 0..rows {
+        let src_row = if bitmap.pitch < 0 {
+            rows - 1 - row
+        } else {
+            row
+        };
+        let start = src_row * abs_pitch;
+        match bitmap.buffer.get(start..start + row_len) {
+            Some(src) => buffer.extend_from_slice(src),
+            None => buffer.resize(buffer.len() + row_len, 0),
+        }
+    }
+    CachedGlyph {
+        width: bitmap.width.max(0),
+        rows: rows as i32,
+        pixel_mode: bitmap.pixel_mode,
+        buffer,
+        left: bitmap.left,
+        top: bitmap.top,
+    }
+}
+
+fn scale_bitmap(bitmap: &GlyphBitmap<'_>, scale: f32) -> CachedGlyph {
     let left = (bitmap.left as f32 * scale).round() as i32;
     let top = (bitmap.top as f32 * scale).round() as i32;
     if bitmap.width <= 0 || bitmap.rows <= 0 {
-        return ScaledGlyph {
+        return CachedGlyph {
             width: 0,
             rows: 0,
             pixel_mode: bitmap.pixel_mode,
@@ -603,7 +630,7 @@ fn scale_bitmap(bitmap: &GlyphBitmap<'_>, scale: f32) -> ScaledGlyph {
         width as usize,
         rows as usize,
     );
-    ScaledGlyph {
+    CachedGlyph {
         width,
         rows,
         pixel_mode: bitmap.pixel_mode,
@@ -871,6 +898,24 @@ mod tests {
         assert_eq!(choose_strike(&strikes, 200, true), Some(5));
         assert_eq!(choose_strike(&[109], 15, true), Some(0));
         assert_eq!(choose_strike(&[], 15, true), None);
+    }
+
+    #[test]
+    fn copied_bitmaps_are_packed_top_down() {
+        // Two rows of two pixels with padding, stored bottom-up.
+        let data = [3, 4, 0, 1, 2, 0];
+        let bitmap = GlyphBitmap {
+            width: 2,
+            rows: 2,
+            pitch: -3,
+            pixel_mode: GlyphPixelMode::Gray,
+            buffer: &data,
+            left: 1,
+            top: 2,
+        };
+        let copy = copy_bitmap(&bitmap);
+        assert_eq!(copy.buffer, [1, 2, 3, 4]);
+        assert_eq!((copy.width, copy.rows, copy.left, copy.top), (2, 2, 1, 2));
     }
 
     #[test]
