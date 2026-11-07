@@ -46,11 +46,10 @@ pub struct Output {
     /// Currently fullscreen window on this output
     pub fullscreen_window: Option<Weak<RefCell<super::Window>>>,
 
-    /// Exclusive area (for layer shell surfaces like bars)
-    pub exclusive_x: i32,
-    pub exclusive_y: i32,
-    pub exclusive_width: i32,
-    pub exclusive_height: i32,
+    /// Area left after layer surfaces' exclusive zones (x, y, width, height),
+    /// in global coordinates, as last sent by the compositor. River resends
+    /// it whenever the output's box changes, so it is never adjusted locally.
+    pub non_exclusive_area: Option<(i32, i32, i32, i32)>,
 
     /// Desktop surface for pointer input
     pub desktop_surface: Option<DesktopSurface>,
@@ -79,10 +78,7 @@ impl Output {
             scale: 1,
             preferred_scale: None,
             fullscreen_window: None,
-            exclusive_x: 0,
-            exclusive_y: 0,
-            exclusive_width: 0,
-            exclusive_height: 0,
+            non_exclusive_area: None,
             desktop_surface: None,
             desktop_background: None,
             removed: false,
@@ -114,75 +110,43 @@ impl Output {
     }
 
     /// Get usable area (after subtracting exclusive zones)
+    ///
+    /// Falls back to the whole output until the compositor has sent a
+    /// non-exclusive area, or if the one it sent does not lie within the
+    /// output (e.g. the output's new position has not arrived yet).
     pub fn usable_area(&self) -> (i32, i32, i32, i32) {
-        if self.exclusive_width > 0 && self.exclusive_height > 0 {
-            let in_bounds = self.exclusive_x >= self.x
-                && self.exclusive_x < self.x + self.width
-                && self.exclusive_y >= self.y
-                && self.exclusive_y < self.y + self.height;
-            if !in_bounds {
-                return (self.x, self.y, self.width, self.height);
+        let full = (self.x, self.y, self.width, self.height);
+        match self.non_exclusive_area {
+            Some((x, y, width, height))
+                if width > 0
+                    && height > 0
+                    && x >= self.x
+                    && y >= self.y
+                    && x + width <= self.x + self.width
+                    && y + height <= self.y + self.height =>
+            {
+                (x, y, width, height)
             }
-            (
-                self.exclusive_x,
-                self.exclusive_y,
-                self.exclusive_width,
-                self.exclusive_height,
-            )
-        } else {
-            (self.x, self.y, self.width, self.height)
+            _ => full,
         }
     }
 
     /// Update position from protocol event
     pub fn update_position(&mut self, x: i32, y: i32) {
-        let old_x = self.x;
-        let old_y = self.y;
         self.x = x;
         self.y = y;
-        // Reset exclusive area to match new position
-        if self.exclusive_width == 0 {
-            self.exclusive_x = x;
-            self.exclusive_y = y;
-        } else {
-            let within_old = self.exclusive_x >= old_x
-                && self.exclusive_x < old_x + self.width
-                && self.exclusive_y >= old_y
-                && self.exclusive_y < old_y + self.height;
-            if within_old {
-                self.exclusive_x += x - old_x;
-                self.exclusive_y += y - old_y;
-            }
-        }
     }
 
     /// Update dimensions from protocol event
     pub fn update_dimensions(&mut self, width: i32, height: i32) {
         self.width = width;
         self.height = height;
-        // Reset exclusive area to match new dimensions
-        if self.exclusive_width == 0 {
-            self.exclusive_width = width;
-            self.exclusive_height = height;
-        } else {
-            let within_rel = self.exclusive_x >= 0
-                && self.exclusive_x < self.width
-                && self.exclusive_y >= 0
-                && self.exclusive_y < self.height;
-            let within_global = self.contains_point(self.exclusive_x, self.exclusive_y);
-            if within_rel && !within_global {
-                self.exclusive_x += self.x;
-                self.exclusive_y += self.y;
-            }
-        }
     }
 
-    /// Update exclusive area from layer shell
-    pub fn update_exclusive_area(&mut self, x: i32, y: i32, width: i32, height: i32) {
-        self.exclusive_x = x;
-        self.exclusive_y = y;
-        self.exclusive_width = width;
-        self.exclusive_height = height;
+    /// Update the non-exclusive area from the layer shell event; `x` and `y`
+    /// are global, per the river-layer-shell-v1 protocol.
+    pub fn update_non_exclusive_area(&mut self, x: i32, y: i32, width: i32, height: i32) {
+        self.non_exclusive_area = Some((x, y, width, height));
     }
 
     /// Check if a point is within this output
@@ -201,5 +165,49 @@ impl std::fmt::Debug for Output {
             .field("width", &self.width)
             .field("height", &self.height)
             .finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn usable_area_is_whole_output_without_non_exclusive_area() {
+        let mut out = Output::new(0);
+        out.update_dimensions(2560, 1440);
+        out.update_position(1536, 0);
+        assert_eq!(out.usable_area(), (1536, 0, 2560, 1440));
+    }
+
+    #[test]
+    fn non_exclusive_area_is_not_offset_twice_when_output_moves() {
+        // River sends the non-exclusive area (global) before the output's
+        // new position, e.g. when kanshi moves an output.
+        let mut out = Output::new(0);
+        out.update_dimensions(2560, 1440);
+        out.update_position(0, 0);
+        out.update_non_exclusive_area(1536, 0, 2560, 1440);
+        out.update_position(1536, 0);
+        assert_eq!(out.usable_area(), (1536, 0, 2560, 1440));
+    }
+
+    #[test]
+    fn non_exclusive_area_on_fresh_output_is_kept_global() {
+        // A newly announced output: area first, then dimensions and position.
+        let mut out = Output::new(0);
+        out.update_non_exclusive_area(1536, 30, 2560, 1410);
+        out.update_dimensions(2560, 1440);
+        out.update_position(1536, 0);
+        assert_eq!(out.usable_area(), (1536, 30, 2560, 1410));
+    }
+
+    #[test]
+    fn non_exclusive_area_outside_output_falls_back_to_whole_output() {
+        let mut out = Output::new(0);
+        out.update_dimensions(2560, 1440);
+        out.update_position(1536, 0);
+        out.update_non_exclusive_area(3072, 0, 2560, 1440);
+        assert_eq!(out.usable_area(), (1536, 0, 2560, 1440));
     }
 }
