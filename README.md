@@ -111,8 +111,9 @@ The portal needs to know which Wayland display to capture. On startup Canoe
 exports `WAYLAND_DISPLAY` and `XDG_CURRENT_DESKTOP` (defaulting to `river`) to
 the systemd user manager and D-Bus activation environment, using the same
 values as the programs it launches (see [Environment
-variables](#environment-variables)). If you manage the session environment
-yourself (or run Canoe nested), turn that off:
+variables](#environment-variables)). `XCURSOR_THEME` and `XCURSOR_SIZE` are
+exported too if set, so services started this way use the same cursors. If you
+manage the session environment yourself (or run Canoe nested), turn that off:
 
 ```toml
 update_activation_environment = false

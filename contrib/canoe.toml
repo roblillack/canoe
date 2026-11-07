@@ -23,8 +23,9 @@
 # Programs launched once when Canoe starts (not on reload). Empty by default.
 #startup_cmds = ["kanshi", "mako", ["swaybg", "-i", "/home/me/bg.png"]]
 
-# Export WAYLAND_DISPLAY and XDG_CURRENT_DESKTOP to the systemd user manager
-# and D-Bus activation environment on startup (needed for screen sharing).
+# Export WAYLAND_DISPLAY, XDG_CURRENT_DESKTOP and, if set, XCURSOR_THEME and
+# XCURSOR_SIZE to the systemd user manager and D-Bus activation environment on
+# startup (needed for screen sharing).
 #update_activation_environment = true
 
 # Environment variables for every program Canoe launches. Values must be

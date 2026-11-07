@@ -213,8 +213,9 @@ pub struct Config {
     pub launcher_cmd: Vec<String>,
     pub terminal_cmd: Vec<String>,
     pub lock_cmd: Vec<String>,
-    /// Export WAYLAND_DISPLAY and XDG_CURRENT_DESKTOP to systemd/D-Bus
-    /// activated services (e.g. the screencast portal) on startup.
+    /// Export WAYLAND_DISPLAY, XDG_CURRENT_DESKTOP and, if set, the XCursor
+    /// theme to systemd/D-Bus activated services (e.g. the screencast portal)
+    /// on startup.
     pub update_activation_environment: bool,
     /// XCursor theme name from the config file.
     pub xcursor_theme: Option<String>,
