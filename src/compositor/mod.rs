@@ -1,0 +1,534 @@
+//! Canoe's compositor, built on Smithay.
+//!
+//! The compositor owns the Wayland display, the outputs and the input
+//! devices, and hosts canoe's window manager (`crate::canoe::Context`) in
+//! process. It reports what clients and devices do to the window manager the
+//! way River's window-management protocol did, runs the window manager's
+//! manage and render sequences when something changed, and carries out what
+//! the window manager asked for (see `crate::wm`).
+
+pub mod apply;
+pub mod capture;
+pub mod backend;
+pub mod cursor;
+pub mod handlers;
+pub mod input;
+pub mod protocol_handlers;
+pub mod protocols;
+pub mod render;
+pub mod wm_events;
+pub mod wm_glue;
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::ffi::OsString;
+use std::rc::Rc;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use smithay::desktop::{PopupManager, Window};
+use smithay::input::keyboard::{Keycode, XkbConfig};
+use smithay::input::{Seat, SeatState};
+use smithay::output::Output;
+use smithay::reexports::calloop::generic::Generic;
+use smithay::reexports::calloop::{Interest, LoopHandle, LoopSignal, Mode, PostAction};
+use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::reexports::wayland_server::{Display, DisplayHandle};
+use smithay::utils::{Logical, Point, Size};
+use smithay::wayland::compositor::{CompositorClientState, CompositorState};
+use smithay::wayland::cursor_shape::CursorShapeManagerState;
+use smithay::wayland::foreign_toplevel_list::{ForeignToplevelHandle, ForeignToplevelListState};
+use smithay::wayland::fractional_scale::FractionalScaleManagerState;
+use smithay::wayland::idle_inhibit::IdleInhibitManagerState;
+use smithay::wayland::idle_notify::IdleNotifierState;
+use smithay::wayland::output::OutputManagerState;
+use smithay::wayland::pointer_constraints::PointerConstraintsState;
+use smithay::wayland::presentation::PresentationState;
+use smithay::wayland::relative_pointer::RelativePointerManagerState;
+use smithay::wayland::selection::data_device::DataDeviceState;
+use smithay::wayland::selection::primary_selection::PrimarySelectionState;
+use smithay::wayland::selection::wlr_data_control::DataControlState;
+use smithay::wayland::session_lock::{LockSurface, SessionLockManagerState};
+use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
+use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
+use smithay::wayland::shell::xdg::{ToplevelSurface, XdgShellState};
+use smithay::wayland::shm::ShmState;
+use smithay::wayland::single_pixel_buffer::SinglePixelBufferState;
+use smithay::wayland::socket::ListeningSocketSource;
+use smithay::wayland::viewporter::ViewporterState;
+use smithay::wayland::xdg_activation::XdgActivationState;
+
+use crate::canoe::{self, Context};
+use crate::wm::{self, ClipBox, CursorShape, OutputKey, Requests, WindowKey};
+
+/// A toplevel window the compositor shows.
+pub struct ManagedWindow {
+    pub key: WindowKey,
+    /// The window manager's id for it.
+    pub id: canoe::WindowId,
+    pub window: Window,
+    pub toplevel: ToplevelSurface,
+    pub foreign: Option<ForeignToplevelHandle>,
+    /// Where the window manager put the content's top left corner.
+    pub pos: Point<i32, Logical>,
+    pub hidden: bool,
+    /// The output the window is fullscreen on.
+    pub fullscreen: Option<OutputKey>,
+    pub clip: ClipBox,
+    pub content_clip: ClipBox,
+    /// Decorated by the window manager (as opposed to by the client).
+    pub ssd: bool,
+    /// The size last reported to the window manager.
+    pub reported_size: Option<Size<i32, Logical>>,
+    /// min/max size last reported to the window manager.
+    pub reported_hints: Option<(i32, i32, i32, i32)>,
+    /// Pending state changed; a configure must be sent.
+    pub needs_configure: bool,
+    /// A position to apply only once the client has drawn the size proposed
+    /// along with it, so resizing from the left or top edge doesn't make the
+    /// content jitter (River does this with transactions).
+    pub pending_position: Option<(Point<i32, Logical>, Size<i32, Logical>, Instant)>,
+    /// The client made its initial commit.
+    pub initial_commit: bool,
+}
+
+impl ManagedWindow {
+    pub fn wl_surface(&self) -> &WlSurface {
+        self.toplevel.wl_surface()
+    }
+
+    /// Where the window's surface (not its geometry) has its origin.
+    pub fn surface_origin(&self, fullscreen_at: Option<Point<i32, Logical>>) -> Point<i32, Logical> {
+        fullscreen_at.unwrap_or(self.pos) - self.window.geometry().loc
+    }
+}
+
+/// An output the compositor shows things on.
+pub struct ManagedOutput {
+    pub key: OutputKey,
+    pub id: canoe::OutputId,
+    pub output: Output,
+    pub enabled: bool,
+    /// Logical geometry last reported to the window manager.
+    pub reported: Option<(i32, i32, i32, i32)>,
+    /// Non-exclusive area last reported to the window manager.
+    pub reported_usable: Option<(i32, i32, i32, i32)>,
+    pub lock_surface: Option<LockSurface>,
+    /// The wl_output global, while the output is enabled.
+    pub global: Option<smithay::reexports::wayland_server::backend::GlobalId>,
+    pub redraw_needed: bool,
+    pub frame_pending: bool,
+}
+
+/// A pointer operation in progress (an interactive move or resize the
+/// window manager drives).
+pub struct PointerOp {
+    pub start: Point<f64, Logical>,
+    pub released: bool,
+}
+
+/// Where a key press went, so its release goes there too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyConsumer {
+    /// A binding of the window manager's: the seat's binding index, or
+    /// `None` if it already fired a press without a release.
+    Binding(Option<usize>),
+    Client,
+}
+
+/// Lock state of the session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockState {
+    Unlocked,
+    /// A locker asked to lock; locked once every output shows a lock surface
+    /// (or a short timeout passes).
+    Locking,
+    Locked,
+}
+
+pub struct State {
+    pub display_handle: DisplayHandle,
+    pub loop_handle: LoopHandle<'static, State>,
+    pub loop_signal: LoopSignal,
+    pub socket_name: OsString,
+    pub start_time: Instant,
+
+    pub compositor_state: CompositorState,
+    pub xdg_shell_state: XdgShellState,
+    pub xdg_decoration_state: XdgDecorationState,
+    pub layer_shell_state: WlrLayerShellState,
+    pub shm_state: ShmState,
+    pub seat_state: SeatState<State>,
+    pub data_device_state: DataDeviceState,
+    pub primary_selection_state: PrimarySelectionState,
+    pub data_control_state: DataControlState,
+    pub output_manager_state: OutputManagerState,
+    pub viewporter_state: ViewporterState,
+    pub fractional_scale_state: FractionalScaleManagerState,
+    pub cursor_shape_state: CursorShapeManagerState,
+    pub xdg_activation_state: XdgActivationState,
+    pub session_lock_state: SessionLockManagerState,
+    pub foreign_toplevel_state: ForeignToplevelListState,
+    pub presentation_state: PresentationState,
+    pub single_pixel_buffer_state: SinglePixelBufferState,
+    pub idle_notifier_state: IdleNotifierState<State>,
+    pub idle_inhibit_state: IdleInhibitManagerState,
+    pub pointer_constraints_state: PointerConstraintsState,
+    pub relative_pointer_state: RelativePointerManagerState,
+    pub screencopy_state: protocols::screencopy::ScreencopyManagerState,
+    pub image_capture_state: protocols::image_capture::ImageCopyCaptureState,
+    pub output_management_state: protocols::output_management::OutputManagementState,
+    pub virtual_pointer_state: protocols::virtual_pointer::VirtualPointerManagerState,
+    pub dmabuf: Option<handlers::DmabufGlobal>,
+    pub popups: PopupManager,
+
+    pub seat: Seat<State>,
+
+    /// The window manager.
+    pub context: Rc<RefCell<Context>>,
+    /// What the window manager asked for, still to be done.
+    pub requests: Requests,
+    pub next_key: u64,
+    /// Windows in rendering order, bottom first.
+    pub windows: Vec<ManagedWindow>,
+    pub outputs: Vec<ManagedOutput>,
+    /// Layer surfaces without an output open here.
+    pub default_layer_output: Option<OutputKey>,
+
+    /// A manage sequence is due.
+    pub wm_dirty: bool,
+    pub wm_scheduled: bool,
+    /// The window manager asked for keyboard focus on this window.
+    pub wm_focus: Option<WindowKey>,
+    pub pointer_op: Option<PointerOp>,
+    pub key_consumers: HashMap<Keycode, KeyConsumer>,
+    /// Pointer buttons bound by the window manager and held, with the
+    /// binding they pressed.
+    pub button_consumers: HashMap<u32, usize>,
+    pub pressed_buttons: Vec<u32>,
+    /// Modifiers held, as River's modifier bits, as of the last key event.
+    pub key_modifiers: u32,
+    /// A button held on one of the window manager's surfaces, which gets
+    /// the pointer until it is released (an implicit grab).
+    pub canoe_grab: Option<(canoe::PointerTarget, Option<canoe::WindowId>)>,
+    /// What the pointer is over, as last reported to the window manager.
+    pub pointer_window: Option<canoe::WindowId>,
+    pub pointer_canoe_target: canoe::PointerTarget,
+    pub pointer_location: Point<f64, Logical>,
+    /// The cursor the window manager asked for over its own surfaces and
+    /// during pointer operations; `None` hides it.
+    pub wm_cursor: Option<CursorShape>,
+    pub client_cursor: smithay::input::pointer::CursorImageStatus,
+    pub cursor: cursor::CursorTheme,
+    /// Keyboard focus held by a layer surface (exclusive or on demand).
+    pub layer_focus: Option<(WlSurface, bool)>,
+
+    pub lock_state: LockState,
+    pub locker: Option<smithay::wayland::session_lock::SessionLocker>,
+
+    /// Where `canoe --share-picker` requests arrive.
+    pub share_server: Option<crate::ipc::ShareServer>,
+    pub share_timer: Option<smithay::reexports::calloop::RegistrationToken>,
+    /// The startup commands are still to be launched.
+    pub startup_pending: bool,
+
+    /// Black backdrops behind fullscreen windows, per output.
+    pub backdrop_ids: HashMap<OutputKey, smithay::backend::renderer::element::solid::SolidColorBuffer>,
+    /// The backend draws the cursor itself (a nested window's host cursor).
+    pub cursor_hidden_by_backend: bool,
+    /// Leave the cursor out (for screen captures without it).
+    pub suppress_cursor: bool,
+
+    pub backend: backend::Backend,
+}
+
+/// Per-client data.
+#[derive(Default)]
+pub struct ClientState {
+    pub compositor_state: CompositorClientState,
+}
+
+impl ClientData for ClientState {
+    fn initialized(&self, _client_id: ClientId) {}
+    fn disconnected(&self, _client_id: ClientId, _reason: DisconnectReason) {}
+}
+
+impl State {
+    pub fn new(
+        display: Display<State>,
+        loop_handle: LoopHandle<'static, State>,
+        loop_signal: LoopSignal,
+        skip_config: bool,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
+        let dh = display.handle();
+
+        let compositor_state = CompositorState::new::<State>(&dh);
+        let xdg_shell_state = XdgShellState::new::<State>(&dh);
+        let xdg_decoration_state = XdgDecorationState::new::<State>(&dh);
+        let layer_shell_state = WlrLayerShellState::new::<State>(&dh);
+        let shm_state = ShmState::new::<State>(&dh, vec![]);
+        let mut seat_state = SeatState::new();
+        let data_device_state = DataDeviceState::new::<State>(&dh);
+        let primary_selection_state = PrimarySelectionState::new::<State>(&dh);
+        let data_control_state =
+            DataControlState::new::<State, _>(&dh, Some(&primary_selection_state), |_| true);
+        let output_manager_state = OutputManagerState::new_with_xdg_output::<State>(&dh);
+        let viewporter_state = ViewporterState::new::<State>(&dh);
+        let fractional_scale_state = FractionalScaleManagerState::new::<State>(&dh);
+        let cursor_shape_state = CursorShapeManagerState::new::<State>(&dh);
+        let xdg_activation_state = XdgActivationState::new::<State>(&dh);
+        let session_lock_state = SessionLockManagerState::new::<State, _>(&dh, |_| true);
+        let foreign_toplevel_state = ForeignToplevelListState::new::<State>(&dh);
+        let presentation_state = PresentationState::new::<State>(&dh, libc_clock_monotonic());
+        let single_pixel_buffer_state = SinglePixelBufferState::new::<State>(&dh);
+        let idle_notifier_state = IdleNotifierState::new(&dh, loop_handle.clone());
+        let idle_inhibit_state = IdleInhibitManagerState::new::<State>(&dh);
+        let pointer_constraints_state = PointerConstraintsState::new::<State>(&dh);
+        let relative_pointer_state = RelativePointerManagerState::new::<State>(&dh);
+        let screencopy_state = protocols::screencopy::ScreencopyManagerState::new::<State>(&dh);
+        let image_capture_state =
+            protocols::image_capture::ImageCopyCaptureState::new::<State>(&dh);
+        let output_management_state =
+            protocols::output_management::OutputManagementState::new::<State>(&dh);
+        let virtual_pointer_state =
+            protocols::virtual_pointer::VirtualPointerManagerState::new::<State, _>(&dh, |_| true);
+        protocols::virtual_keyboard::VirtualKeyboardManagerState::new::<State>(&dh);
+
+        let context = Rc::new(RefCell::new(Context::new(skip_config)));
+        let requests = Requests::default();
+        context.borrow_mut().rwm = Some(wm::WindowManager::new(requests.clone()));
+
+        let mut seat: Seat<State> = seat_state.new_wl_seat(&dh, "seat0");
+        {
+            let config = &context.borrow().config;
+            seat.add_keyboard(
+                XkbConfig::default(),
+                config.repeat_delay as i32,
+                config.repeat_rate as i32,
+            )?;
+        }
+        seat.add_pointer();
+
+        // Listen for clients.
+        let source = ListeningSocketSource::new_auto()?;
+        let socket_name = source.socket_name().to_os_string();
+        loop_handle.insert_source(source, |stream, _, state: &mut State| {
+            if let Err(err) = state
+                .display_handle
+                .insert_client(stream, Arc::new(ClientState::default()))
+            {
+                eprintln!("canoe: failed to add client: {err}");
+            }
+        })?;
+        loop_handle.insert_source(
+            Generic::new(display, Interest::READ, Mode::Level),
+            |_, display, state: &mut State| {
+                // Safety: the display is not dropped while dispatching.
+                unsafe {
+                    display.get_mut().dispatch_clients(state).unwrap();
+                }
+                Ok(PostAction::Continue)
+            },
+        )?;
+
+        let theme = context.borrow().config.xcursor_theme_resolved();
+        let cursor = cursor::CursorTheme::new(
+            theme.name_or_default(),
+            theme.size_or_default(),
+        );
+
+        let mut state = State {
+            display_handle: dh,
+            loop_handle,
+            loop_signal,
+            socket_name,
+            start_time: Instant::now(),
+            compositor_state,
+            xdg_shell_state,
+            xdg_decoration_state,
+            layer_shell_state,
+            shm_state,
+            seat_state,
+            data_device_state,
+            primary_selection_state,
+            data_control_state,
+            output_manager_state,
+            viewporter_state,
+            fractional_scale_state,
+            cursor_shape_state,
+            xdg_activation_state,
+            session_lock_state,
+            foreign_toplevel_state,
+            presentation_state,
+            single_pixel_buffer_state,
+            idle_notifier_state,
+            idle_inhibit_state,
+            pointer_constraints_state,
+            relative_pointer_state,
+            screencopy_state,
+            image_capture_state,
+            output_management_state,
+            virtual_pointer_state,
+            dmabuf: None,
+            popups: PopupManager::default(),
+            seat,
+            context,
+            requests,
+            next_key: 1,
+            windows: Vec::new(),
+            outputs: Vec::new(),
+            default_layer_output: None,
+            wm_dirty: false,
+            wm_scheduled: false,
+            wm_focus: None,
+            pointer_op: None,
+            key_consumers: HashMap::new(),
+            button_consumers: HashMap::new(),
+            pressed_buttons: Vec::new(),
+            key_modifiers: 0,
+            canoe_grab: None,
+            pointer_window: None,
+            pointer_canoe_target: canoe::PointerTarget::None,
+            pointer_location: (0.0, 0.0).into(),
+            wm_cursor: Some(CursorShape::Default),
+            client_cursor: smithay::input::pointer::CursorImageStatus::default_named(),
+            cursor,
+            layer_focus: None,
+            lock_state: LockState::Unlocked,
+            locker: None,
+            share_server: None,
+            share_timer: None,
+            startup_pending: true,
+            backdrop_ids: HashMap::new(),
+            cursor_hidden_by_backend: false,
+            suppress_cursor: false,
+            backend: backend::Backend::None,
+        };
+
+        // The window manager's seat.
+        let seat_handle = wm::SeatHandle::new(0, state.requests.clone());
+        let seat = state.context.borrow_mut().create_seat(seat_handle);
+        {
+            let theme = state.context.borrow().config.xcursor_theme_resolved();
+            seat.borrow().set_xcursor_theme(&theme);
+        }
+
+        Ok(state)
+    }
+
+    pub fn next_key(&mut self) -> u64 {
+        let key = self.next_key;
+        self.next_key += 1;
+        key
+    }
+
+    pub fn window_by_key(&self, key: WindowKey) -> Option<&ManagedWindow> {
+        self.windows.iter().find(|w| w.key == key)
+    }
+
+    pub fn window_by_key_mut(&mut self, key: WindowKey) -> Option<&mut ManagedWindow> {
+        self.windows.iter_mut().find(|w| w.key == key)
+    }
+
+    pub fn window_by_id(&self, id: canoe::WindowId) -> Option<&ManagedWindow> {
+        self.windows.iter().find(|w| w.id == id)
+    }
+
+    pub fn window_for_surface(&self, surface: &WlSurface) -> Option<&ManagedWindow> {
+        self.windows.iter().find(|w| w.wl_surface() == surface)
+    }
+
+    pub fn output_by_key(&self, key: OutputKey) -> Option<&ManagedOutput> {
+        self.outputs.iter().find(|o| o.key == key)
+    }
+
+    pub fn output_by_id(&self, id: canoe::OutputId) -> Option<&ManagedOutput> {
+        self.outputs.iter().find(|o| o.id == id)
+    }
+
+    pub fn managed_output(&self, output: &Output) -> Option<&ManagedOutput> {
+        self.outputs.iter().find(|o| &o.output == output)
+    }
+
+    /// Outputs that are shown, i.e. part of the layout.
+    pub fn active_outputs(&self) -> impl Iterator<Item = &ManagedOutput> {
+        self.outputs.iter().filter(|o| o.enabled)
+    }
+
+    /// Ask for a frame on every output.
+    pub fn queue_redraw_all(&mut self) {
+        for output in &mut self.outputs {
+            output.redraw_needed = true;
+        }
+        backend::Backend::schedule_redraws(self);
+    }
+
+    /// Make sure a manage sequence runs soon, once the current batch of
+    /// events is handled.
+    pub fn schedule_wm(&mut self) {
+        self.wm_dirty = true;
+        if self.wm_scheduled {
+            return;
+        }
+        self.wm_scheduled = true;
+        self.loop_handle.insert_idle(|state| {
+            state.wm_scheduled = false;
+            state.run_wm();
+        });
+    }
+
+    /// Send clients the frame callbacks and other per-frame state after
+    /// rendering `output`.
+    pub fn post_render(&mut self, output: &Output) {
+        let time = self.start_time.elapsed();
+        for window in &self.windows {
+            if window.hidden {
+                continue;
+            }
+            window.window.send_frame(output, time, Some(Duration::ZERO), |_, _| {
+                Some(output.clone())
+            });
+        }
+        let map = smithay::desktop::layer_map_for_output(output);
+        for layer in map.layers() {
+            layer.send_frame(output, time, Some(Duration::ZERO), |_, _| Some(output.clone()));
+        }
+        drop(map);
+        if let Some(managed) = self.managed_output(output) {
+            if let Some(lock) = managed.lock_surface.as_ref() {
+                smithay::desktop::utils::send_frames_surface_tree(
+                    lock.wl_surface(),
+                    output,
+                    time,
+                    Some(Duration::ZERO),
+                    |_, _| Some(output.clone()),
+                );
+            }
+        }
+        if let smithay::input::pointer::CursorImageStatus::Surface(ref surface) = self.client_cursor {
+            smithay::desktop::utils::send_frames_surface_tree(
+                surface,
+                output,
+                time,
+                Some(Duration::ZERO),
+                |_, _| Some(output.clone()),
+            );
+        }
+    }
+
+    /// Housekeeping once per loop iteration.
+    pub fn refresh(&mut self) {
+        self.popups.cleanup();
+        for output in self.outputs.iter().map(|o| o.output.clone()).collect::<Vec<_>>() {
+            smithay::desktop::layer_map_for_output(&output).cleanup();
+        }
+        self.foreign_toplevel_state.cleanup_closed_handles();
+        let _ = self.display_handle.flush_clients();
+    }
+}
+
+fn libc_clock_monotonic() -> u32 {
+    // CLOCK_MONOTONIC
+    1
+}

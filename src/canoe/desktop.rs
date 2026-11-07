@@ -1,20 +1,13 @@
 //! Desktop icon surface (bottom layer) + shared surface machinery also used by the background fill
 #![allow(dead_code)]
 
-use memmap2::MmapMut;
 use resvg::{tiny_skia, usvg};
-use std::fs::File;
-use std::os::fd::AsFd;
 use std::rc::Rc;
-use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_surface,
-};
-use wayland_client::QueueHandle;
-use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 
 use super::render::{ColorGlyphs, Renderer};
 use super::scale::{FractionalSurface, Origin, Scale};
-use super::{shmfile, OutputId, WindowId};
+use super::surface::{Buffer, LayerSurface, Region, Surface};
+use super::{OutputId, WindowId};
 
 // Icon layout constants (logical pixels)
 pub const ICON_SIZE: i32 = 48;
@@ -44,13 +37,10 @@ struct DesktopIconLayout {
 
 /// Desktop surface with minimized window icons.
 pub struct DesktopSurface {
-    pub surface: wl_surface::WlSurface,
-    pub layer_surface: ZwlrLayerSurfaceV1,
+    pub surface: Surface,
+    pub layer_surface: LayerSurface,
     pub fractional: FractionalSurface,
-    pub buffer: Option<wl_buffer::WlBuffer>,
-    pub pool: Option<wl_shm_pool::WlShmPool>,
-    pub memfile: Option<File>,
-    pub mmap: Option<MmapMut>,
+    pub buffer: Option<Buffer>,
     pub width: i32,
     pub height: i32,
     buf_width: i32,
@@ -67,8 +57,8 @@ pub struct DesktopSurface {
 
 impl DesktopSurface {
     pub fn new(
-        surface: wl_surface::WlSurface,
-        layer_surface: ZwlrLayerSurfaceV1,
+        surface: Surface,
+        layer_surface: LayerSurface,
         fractional: FractionalSurface,
         output_id: OutputId,
     ) -> Self {
@@ -77,9 +67,6 @@ impl DesktopSurface {
             layer_surface,
             fractional,
             buffer: None,
-            pool: None,
-            memfile: None,
-            mmap: None,
             width: 0,
             height: 0,
             buf_width: 0,
@@ -102,23 +89,11 @@ impl DesktopSurface {
     }
 
     pub fn reset_buffer(&mut self) {
-        if let Some(buffer) = self.buffer.take() {
-            buffer.destroy();
-        }
-        if let Some(pool) = self.pool.take() {
-            pool.destroy();
-        }
-        self.memfile = None;
-        self.mmap = None;
+        self.buffer = None;
         self.dirty = true;
     }
 
-    pub fn ensure_buffer<D>(&mut self, shm: &wl_shm::WlShm, qh: &QueueHandle<D>, scale: Scale)
-    where
-        D: 'static
-            + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
-            + wayland_client::Dispatch<wl_buffer::WlBuffer, ()>,
-    {
+    pub fn ensure_buffer(&mut self, scale: Scale) {
         if self.width <= 0 || self.height <= 0 {
             return;
         }
@@ -132,18 +107,13 @@ impl DesktopSurface {
             Origin::default(),
         );
         self.scale = scale;
-        self.allocate_buffer(shm, qh, buf_w, buf_h);
+        self.allocate_buffer(buf_w, buf_h);
     }
 
     /// Ensure a buffer for a surface drawn in a single color: one pixel
     /// stretched over the surface when it has a viewport, else a full-size
     /// buffer at scale 1.
-    pub fn ensure_solid_buffer<D>(&mut self, shm: &wl_shm::WlShm, qh: &QueueHandle<D>)
-    where
-        D: 'static
-            + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
-            + wayland_client::Dispatch<wl_buffer::WlBuffer, ()>,
-    {
+    pub fn ensure_solid_buffer(&mut self, ) {
         if self.width <= 0 || self.height <= 0 {
             return;
         }
@@ -158,51 +128,26 @@ impl DesktopSurface {
         );
         self.scale = scale;
         if self.fractional.has_viewport() {
-            self.allocate_buffer(shm, qh, 1, 1);
+            self.allocate_buffer(1, 1);
         } else {
-            self.allocate_buffer(shm, qh, buf_w, buf_h);
+            self.allocate_buffer(buf_w, buf_h);
         }
     }
 
-    /// (Re)allocate the shm buffer unless one of this size already exists.
-    fn allocate_buffer<D>(
+    /// (Re)allocate the buffer unless one of this size already exists.
+    fn allocate_buffer(
         &mut self,
-        shm: &wl_shm::WlShm,
-        qh: &QueueHandle<D>,
         buf_w: i32,
         buf_h: i32,
-    ) where
-        D: 'static
-            + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
-            + wayland_client::Dispatch<wl_buffer::WlBuffer, ()>,
-    {
+    ) {
         if self.buffer.is_some() && self.buf_width == buf_w && self.buf_height == buf_h {
             return;
         }
         self.reset_buffer();
 
-        let stride = buf_w * 4;
-        let size = stride * buf_h;
-        let memfile = match shmfile::create("canoe-desktop", size as i64) {
-            Ok(f) => f,
-            Err(_) => {
-                return;
-            }
+        let Some(buffer) = Buffer::new(buf_w, buf_h) else {
+            return;
         };
-
-        let mmap = match unsafe { memmap2::MmapMut::map_mut(&memfile) } {
-            Ok(m) => m,
-            Err(_) => {
-                return;
-            }
-        };
-
-        let pool = shm.create_pool(memfile.as_fd(), size, qh, ());
-        let buffer = pool.create_buffer(0, buf_w, buf_h, stride, wl_shm::Format::Argb8888, qh, ());
-
-        self.memfile = Some(memfile);
-        self.mmap = Some(mmap);
-        self.pool = Some(pool);
         self.buffer = Some(buffer);
         self.buf_width = buf_w;
         self.buf_height = buf_h;
@@ -210,10 +155,10 @@ impl DesktopSurface {
 
     /// Fill the whole buffer with `rgba` (0xRRGGBBAA, straight alpha).
     pub fn render(&mut self, rgba: u32) {
-        if let Some(ref mut mmap) = self.mmap {
+        if let Some(ref buffer) = self.buffer {
             let argb = rgba_to_premultiplied_argb(rgba);
             let color_bytes = argb.to_ne_bytes();
-            for pixel in mmap.as_mut().as_chunks_mut::<4>().0 {
+            for pixel in buffer.pixels_mut().as_chunks_mut::<4>().0 {
                 *pixel = color_bytes;
             }
         }
@@ -276,10 +221,11 @@ impl DesktopSurface {
         self.icons = layouts;
 
         // Now render each icon
-        let Some(ref mut mmap) = self.mmap else {
+        let Some(buffer) = self.buffer.clone() else {
             return;
         };
-        let pixels = mmap.as_mut();
+        let mut pixels = buffer.pixels_mut();
+        let pixels = pixels.as_mut_slice();
         let Some(mut renderer) = Renderer::new(pixels, buf_w, buf_h) else {
             return;
         };
@@ -472,19 +418,15 @@ impl DesktopSurface {
     ///
     /// Never pass `None` to set_input_region here: `None` means an
     /// *infinite* region; an empty region means "no input".
-    pub fn update_input_region<D>(
+    pub fn update_input_region(
         &self,
-        compositor: &wl_compositor::WlCompositor,
-        qh: &QueueHandle<D>,
         desktop_area: Option<(i32, i32, i32, i32)>,
-    ) where
-        D: 'static + wayland_client::Dispatch<wl_region::WlRegion, ()>,
-    {
+    ) {
         if self.width <= 0 || self.height <= 0 {
             return;
         }
 
-        let region = compositor.create_region(qh, ());
+        let mut region = Region::new();
         if let Some((x, y, width, height)) = desktop_area {
             region.add(x, y, width, height);
         }
@@ -500,7 +442,6 @@ impl DesktopSurface {
             region.add(x0, y0, x1 - x0, y1 - y0);
         }
         self.surface.set_input_region(Some(&region));
-        region.destroy();
     }
 
     pub fn commit(&self) {
@@ -859,12 +800,7 @@ fn scale_pixmap(src: &tiny_skia::Pixmap, size: u32) -> Option<tiny_skia::Pixmap>
 
 impl Drop for DesktopSurface {
     fn drop(&mut self) {
-        if let Some(buffer) = self.buffer.take() {
-            buffer.destroy();
-        }
-        if let Some(pool) = self.pool.take() {
-            pool.destroy();
-        }
+        self.buffer = None;
         self.fractional.destroy();
         self.layer_surface.destroy();
         self.surface.destroy();

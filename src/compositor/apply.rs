@@ -1,0 +1,278 @@
+//! Carry out what the window manager asked for (see `crate::wm::Request`).
+
+use std::time::Instant;
+
+use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
+use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::{
+    State as XdgState, WmCapabilities,
+};
+use smithay::utils::Size;
+
+use super::{PointerOp, State};
+use crate::wm::{Capabilities, Edges, Request, WindowKey};
+
+impl State {
+    /// Apply every queued request, in order.
+    pub fn apply_requests(&mut self) {
+        let requests = self.requests.drain();
+        // Windows asked to take a new size in this batch: a position set
+        // along with it waits for the client (see set_window_position).
+        let resized: std::collections::HashSet<WindowKey> = requests
+            .iter()
+            .filter_map(|request| match request {
+                Request::ProposeDimensions(key, w, h) if *w > 0 && *h > 0 => Some(*key),
+                _ => None,
+            })
+            .collect();
+        for request in requests {
+            self.apply_request(request, &resized);
+        }
+    }
+
+    /// Apply positions that waited too long for their client.
+    pub fn apply_expired_positions(&mut self) {
+        for window in &mut self.windows {
+            if let Some((pos, _, since)) = window.pending_position {
+                if since.elapsed() >= super::wm_events::POSITION_SYNC_TIMEOUT {
+                    window.pos = pos;
+                    window.pending_position = None;
+                }
+            }
+        }
+    }
+
+    fn apply_request(&mut self, request: Request, resized: &std::collections::HashSet<WindowKey>) {
+        match request {
+            Request::ManageDirty => self.wm_dirty = true,
+
+            Request::ProposeDimensions(key, width, height) => {
+                self.with_toplevel(key, |window| {
+                    let size = (width > 0 && height > 0).then(|| Size::from((width, height)));
+                    window.toplevel.with_pending_state(|state| state.size = size);
+                });
+            }
+            Request::SetDimensionBounds(key, width, height) => {
+                self.with_toplevel(key, |window| {
+                    let bounds = (width > 0 && height > 0).then(|| Size::from((width, height)));
+                    window.toplevel.with_pending_state(|state| state.bounds = bounds);
+                });
+            }
+            Request::Hide(key) => {
+                if let Some(window) = self.window_by_key_mut(key) {
+                    window.hidden = true;
+                }
+            }
+            Request::Show(key) => {
+                if let Some(window) = self.window_by_key_mut(key) {
+                    window.hidden = false;
+                }
+            }
+            Request::Close(key) => {
+                if let Some(window) = self.window_by_key(key) {
+                    window.toplevel.send_close();
+                }
+            }
+            Request::SetTiled(key, edges) => {
+                self.with_toplevel(key, |window| {
+                    window.toplevel.with_pending_state(|state| {
+                        for (edge, xdg) in [
+                            (Edges::Top, XdgState::TiledTop),
+                            (Edges::Bottom, XdgState::TiledBottom),
+                            (Edges::Left, XdgState::TiledLeft),
+                            (Edges::Right, XdgState::TiledRight),
+                        ] {
+                            if edges.contains(edge) {
+                                state.states.set(xdg);
+                            } else {
+                                state.states.unset(xdg);
+                            }
+                        }
+                    });
+                });
+            }
+            Request::Fullscreen(key, output_key) => {
+                let size = self
+                    .output_by_key(output_key)
+                    .and_then(|o| self.output_geometry(&o.output))
+                    .map(|geo| geo.size);
+                self.with_toplevel(key, |window| {
+                    window.fullscreen = Some(output_key);
+                    if let Some(size) = size {
+                        window.toplevel.with_pending_state(|state| state.size = Some(size));
+                    }
+                });
+            }
+            Request::ExitFullscreen(key) => {
+                if let Some(window) = self.window_by_key_mut(key) {
+                    window.fullscreen = None;
+                }
+            }
+            Request::InformFullscreen(key, on) => {
+                self.set_xdg_state(key, XdgState::Fullscreen, on);
+            }
+            Request::InformMaximized(key, on) => {
+                self.set_xdg_state(key, XdgState::Maximized, on);
+            }
+            Request::InformResizing(key, on) => {
+                self.set_xdg_state(key, XdgState::Resizing, on);
+            }
+            Request::UseSsd(key, ssd) => {
+                self.with_toplevel(key, |window| {
+                    window.ssd = ssd;
+                    window.toplevel.with_pending_state(|state| {
+                        state.decoration_mode = Some(if ssd {
+                            DecorationMode::ServerSide
+                        } else {
+                            DecorationMode::ClientSide
+                        });
+                    });
+                });
+            }
+            Request::SetCapabilities(key, caps) => {
+                self.with_toplevel(key, |window| {
+                    window.toplevel.with_pending_state(|state| {
+                        for (cap, xdg) in [
+                            (Capabilities::WindowMenu, WmCapabilities::WindowMenu),
+                            (Capabilities::Maximize, WmCapabilities::Maximize),
+                            (Capabilities::Fullscreen, WmCapabilities::Fullscreen),
+                            (Capabilities::Minimize, WmCapabilities::Minimize),
+                        ] {
+                            if caps.contains(cap) {
+                                state.capabilities.set(xdg);
+                            } else {
+                                state.capabilities.unset(xdg);
+                            }
+                        }
+                    });
+                });
+            }
+            Request::SetClipBox(key, clip) => {
+                if let Some(window) = self.window_by_key_mut(key) {
+                    window.clip = clip;
+                }
+            }
+            Request::SetContentClipBox(key, clip) => {
+                if let Some(window) = self.window_by_key_mut(key) {
+                    window.content_clip = clip;
+                }
+            }
+
+            Request::SetPosition(key, x, y) => {
+                self.set_window_position(key, x, y, resized.contains(&key))
+            }
+            Request::PlaceTop(key) => {
+                if let Some(index) = self.windows.iter().position(|w| w.key == key) {
+                    let window = self.windows.remove(index);
+                    self.windows.push(window);
+                }
+            }
+            Request::PlaceBottom(key) => {
+                if let Some(index) = self.windows.iter().position(|w| w.key == key) {
+                    let window = self.windows.remove(index);
+                    self.windows.insert(0, window);
+                }
+            }
+            Request::PlaceAbove(key, other) => self.restack(key, other, true),
+            Request::PlaceBelow(key, other) => self.restack(key, other, false),
+
+            Request::FocusWindow(_, key) => {
+                self.wm_focus = Some(key);
+                // The window manager took the keyboard back from an
+                // on-demand layer surface.
+                if matches!(self.layer_focus, Some((_, false))) {
+                    self.layer_focus = None;
+                }
+            }
+            Request::ClearFocus(_) => self.wm_focus = None,
+            Request::OpStartPointer(_) => {
+                if self.pointer_op.is_none() {
+                    self.pointer_op = Some(PointerOp {
+                        start: self.pointer_location,
+                        released: self.pressed_buttons.is_empty(),
+                    });
+                    // Nothing has pointer focus during the operation, not
+                    // even the window manager's own surfaces.
+                    self.canoe_grab = None;
+                    self.leave_canoe_target();
+                    self.clear_client_pointer_focus();
+                }
+            }
+            Request::OpEnd(_) => {
+                if self.pointer_op.take().is_some() {
+                    self.refresh_pointer_focus();
+                }
+            }
+            Request::SetXcursorTheme(_, name, size) => {
+                self.cursor.set_theme(&name, size);
+                self.queue_redraw_all();
+            }
+            Request::SetCursorShape(_, shape) => {
+                self.wm_cursor = shape;
+                self.queue_redraw_all();
+            }
+            Request::SetDefaultLayerOutput(output_key) => {
+                self.default_layer_output = Some(output_key);
+            }
+        }
+    }
+
+    fn with_toplevel(&mut self, key: WindowKey, f: impl FnOnce(&mut super::ManagedWindow)) {
+        if let Some(window) = self.window_by_key_mut(key) {
+            f(window);
+            window.needs_configure = true;
+        }
+    }
+
+    fn set_xdg_state(&mut self, key: WindowKey, xdg: XdgState, on: bool) {
+        self.with_toplevel(key, |window| {
+            window.toplevel.with_pending_state(|state| {
+                if on {
+                    state.states.set(xdg);
+                } else {
+                    state.states.unset(xdg);
+                }
+            });
+        });
+    }
+
+    /// Move a window. When the window manager proposed a new size along
+    /// with the position, the move waits until the client draws that size,
+    /// so a resize from the left or top edge doesn't make the content jump.
+    fn set_window_position(&mut self, key: WindowKey, x: i32, y: i32, resized: bool) {
+        let Some(window) = self.window_by_key_mut(key) else {
+            return;
+        };
+        let target = (x, y).into();
+        let proposed = window
+            .toplevel
+            .with_pending_state(|state| state.size)
+            .filter(|_| resized && window.toplevel.is_initial_configure_sent());
+        let current = window.window.geometry().size;
+        match proposed {
+            Some(size) if size != current && window.reported_size.is_some() => {
+                window.pending_position = Some((target, size, Instant::now()));
+            }
+            _ => {
+                window.pos = target;
+                window.pending_position = None;
+            }
+        }
+    }
+
+    fn restack(&mut self, key: WindowKey, other: WindowKey, above: bool) {
+        if key == other {
+            return;
+        }
+        let Some(index) = self.windows.iter().position(|w| w.key == key) else {
+            return;
+        };
+        let window = self.windows.remove(index);
+        match self.windows.iter().position(|w| w.key == other) {
+            Some(other_index) => {
+                let at = if above { other_index + 1 } else { other_index };
+                self.windows.insert(at, window);
+            }
+            None => self.windows.insert(index.min(self.windows.len()), window),
+        }
+    }
+}

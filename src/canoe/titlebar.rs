@@ -2,14 +2,9 @@
 
 use super::render::{ColorGlyphs, Renderer};
 use super::scale::{FractionalSurface, Origin, Scale};
-use super::shmfile::ShmPool;
+use super::surface::{Decoration, PixelPool, Region, Surface};
 use crate::config::UiConfig;
-use crate::protocol::RiverDecorationV1;
 use resvg::{tiny_skia, usvg};
-use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_surface,
-};
-use wayland_client::QueueHandle;
 
 /// Titlebar height in logical pixels: `0.8·font_size` rounded, doubled plus
 /// one so the bar always has a center row.
@@ -425,13 +420,13 @@ pub fn button_at(
 /// Titlebar state for a window
 pub struct Titlebar {
     /// The wl_surface for the titlebar
-    pub surface: wl_surface::WlSurface,
+    pub surface: Surface,
     /// The river decoration object
-    pub decoration: RiverDecorationV1,
+    pub decoration: Decoration,
     /// Viewport and fractional-scale handles for the surface
     pub fractional: FractionalSurface,
-    /// Double-buffered shm pool backing the wl_buffer.
-    shm_pool: ShmPool,
+    /// The pixels the surface is drawn into.
+    shm_pool: PixelPool,
     /// Current surface width (logical px)
     pub width: i32,
     /// Current surface height (logical px)
@@ -477,15 +472,15 @@ pub struct Titlebar {
 impl Titlebar {
     /// Create a new titlebar
     pub fn new(
-        surface: wl_surface::WlSurface,
-        decoration: RiverDecorationV1,
+        surface: Surface,
+        decoration: Decoration,
         fractional: FractionalSurface,
     ) -> Self {
         Self {
             surface,
             decoration,
             fractional,
-            shm_pool: ShmPool::new("canoe-titlebar"),
+            shm_pool: PixelPool::new("canoe-titlebar"),
             width: 0,
             height: 0,
             buffer_width: 0,
@@ -527,22 +522,16 @@ impl Titlebar {
     /// redraws the frame whenever that shifts an edge. `fit` says how the
     /// frame takes up the rounding (see [`FrameFit`]).
     #[allow(clippy::too_many_arguments)]
-    pub fn ensure_buffer<D>(
+    pub fn ensure_buffer(
         &mut self,
         content_width: i32,
         content_height: i32,
-        _shm: &wl_shm::WlShm,
-        _qh: &QueueHandle<D>,
         scale: Scale,
         origin: Origin,
         fit: FrameFit,
         ui: &UiConfig,
         frame_style: FrameStyle,
-    ) where
-        D: 'static
-            + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
-            + wayland_client::Dispatch<wl_buffer::WlBuffer, super::shmfile::ReleaseFlag>,
-    {
+    ) {
         if content_width <= 0 || content_height <= 0 {
             return;
         }
@@ -739,7 +728,7 @@ impl Titlebar {
 
     /// Render the titlebar with the given title and state
     #[allow(clippy::too_many_arguments)]
-    pub fn render<D>(
+    pub fn render(
         &mut self,
         title: Option<&str>,
         is_active: bool,
@@ -750,14 +739,7 @@ impl Titlebar {
         hovered_button: Option<TitlebarButton>,
         left_down: bool,
         ui: &UiConfig,
-        shm: &wl_shm::WlShm,
-        qh: &QueueHandle<D>,
-    ) -> bool
-    where
-        D: 'static
-            + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
-            + wayland_client::Dispatch<wl_buffer::WlBuffer, super::shmfile::ReleaseFlag>,
-    {
+    ) -> bool {
         let title_changed = self.last_title.as_deref() != title;
         let state_changed = title_changed
             || self.last_is_active != is_active
@@ -819,7 +801,7 @@ impl Titlebar {
         let allocated_before = self.shm_pool.allocate_fresh_count();
         let slot_idx = match self
             .shm_pool
-            .prepare(buffer_width, buffer_height, stride, shm, qh)
+            .prepare(buffer_width, buffer_height, stride)
         {
             Some(s) => s,
             None => return false,
@@ -840,10 +822,11 @@ impl Titlebar {
             frame_style,
         };
 
-        let pixels = match self.shm_pool.slot_bytes_mut(slot_idx) {
+        let mut pixels = match self.shm_pool.slot_bytes_mut(slot_idx) {
             Some(p) => p,
             None => return false,
         };
+        let pixels = pixels.as_mut_slice();
 
         #[cfg(feature = "debug-logging")]
         let fill_t0 = std::time::Instant::now();
@@ -1190,20 +1173,16 @@ impl Titlebar {
     }
 
     /// Limit input to the frame (titlebar + borders), let content receive clicks.
-    pub fn update_input_region<D>(
+    pub fn update_input_region(
         &self,
-        compositor: &wl_compositor::WlCompositor,
-        qh: &QueueHandle<D>,
         ui: &UiConfig,
         frame_style: FrameStyle,
-    ) where
-        D: 'static + wayland_client::Dispatch<wl_region::WlRegion, ()>,
-    {
+    ) {
         if self.width <= 0 || self.height <= 0 {
             return;
         }
 
-        let region = compositor.create_region(qh, ());
+        let mut region = Region::new();
         region.add(0, 0, self.width, self.height);
         if self.content_width > 0 && self.content_height > 0 {
             let titlebar_height = titlebar_height(ui);
@@ -1216,7 +1195,6 @@ impl Titlebar {
             );
         }
         self.surface.set_input_region(Some(&region));
-        region.destroy();
     }
 
     /// Set the offset position relative to window

@@ -2,7 +2,7 @@
 name = "canoe"
 version = "0.6.0"
 edition = "2021"
-description = "Canoe, a River window manager implementation in Rust"
+description = "Canoe, a stacking Wayland compositor with Win 3.x looks"
 license = "MIT"
 repository = "https://github.com/roblillack/canoe"
 homepage = "https://github.com/roblillack/canoe"
@@ -24,13 +24,24 @@ pre-release-replacements = [
 ]
 
 [dependencies]
-# Wayland client bindings
-wayland-client = "0.31"
-wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
-wayland-protocols-wlr = { version = "0.2", features = ["client"] }
-wayland-backend = "0.3"
-wayland-scanner = "0.31"
+# The compositor itself
+smithay = { version = "0.7", default-features = false, features = [
+    "backend_drm",
+    "backend_gbm",
+    "backend_egl",
+    "backend_libinput",
+    "backend_udev",
+    "backend_session_libseat",
+    "backend_winit",
+    "desktop",
+    "renderer_gl",
+    "renderer_pixman",
+    "wayland_frontend",
+] }
 bitflags = "2"
+
+# Cursor themes for the cursors the compositor draws
+xcursor = "0.3"
 
 # XKB for keyboard handling
 xkbcommon = "0.8"
@@ -69,9 +80,6 @@ tempfile = "3"
 [features]
 # Compile in verbose debug logging / render timing (to stderr). Off by default.
 debug-logging = []
-
-[build-dependencies]
-wayland-scanner = "0.31"
 
 [[bin]]
 name = "canoe"

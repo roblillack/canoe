@@ -1,29 +1,28 @@
 //! How big a pixel is.
 //!
 //! Every size in the config and the code is in **logical pixels**, the
-//! Wayland surface coordinates River lays windows out in. A buffer is made
-//! of **device pixels**: a surface's logical size times the scale the
-//! compositor presents it at (`wp_fractional_scale_v1`, e.g. 1.25), presented
-//! through a `wp_viewport` so the buffer can be that fractional size.
+//! Wayland surface coordinates windows are laid out in. A buffer is made of
+//! **device pixels**: a surface's logical size times the output's scale (e.g.
+//! 1.25).
 //!
 //! [`Scale`] maps one to the other: surface edges round to the device pixel
-//! nearest to where River puts them, and thin lines and bevels are kept to
-//! whole device pixels so they never blur across a pixel and a half.
+//! nearest to where the compositor puts them, and thin lines and bevels are
+//! kept to whole device pixels so they never blur across a pixel and a half.
 //!
-//! River's renderer (the wlroots scene graph) rounds every surface edge from
-//! the *output's* origin, not the surface's: a surface at logical `x`, `w`
-//! wide, covers device columns `round(x·s)` up to `round((x + w)·s)`. Where an
-//! edge of a decoration lands inside its buffer therefore depends on where the
-//! surface sits on the output — see [`Origin`] and [`Scale::edge`]. Rounding
-//! from the surface's own corner instead leaves the frame's cut-out a device
-//! pixel off the client's content at some positions, and stretches the buffer
-//! by a pixel whenever its size doesn't match the box it's drawn into.
+//! The compositor rounds every surface edge from the *output's* origin, not
+//! the surface's: a surface at logical `x`, `w` wide, covers device columns
+//! `round(x·s)` up to `round((x + w)·s)` (as the wlroots scene graph does,
+//! which canoe's decorations were first written for). Where an edge of a
+//! decoration lands inside its buffer therefore depends on where the surface
+//! sits on the output — see [`Origin`] and [`Scale::edge`]. Rounding from the
+//! surface's own corner instead leaves the frame's cut-out a device pixel off
+//! the client's content at some positions, and stretches the buffer by a
+//! pixel whenever its size doesn't match the box it's drawn into.
 
-use wayland_client::protocol::wl_surface;
-use wayland_protocols::wp::fractional_scale::v1::client::wp_fractional_scale_v1::WpFractionalScaleV1;
-use wayland_protocols::wp::viewporter::client::wp_viewport::WpViewport;
+use super::surface::Surface;
 
-/// `wp_fractional_scale_v1` reports scales in 120ths.
+/// Fractional scales are expressed in 120ths, as `wp_fractional_scale_v1`
+/// does.
 pub const FRACTIONAL_DENOMINATOR: u32 = 120;
 
 /// From this scale up to where a thin line becomes two device pixels, a
@@ -142,37 +141,26 @@ impl Scale {
     }
 }
 
-/// A surface's handles on fractional scaling: the viewport that lets its
-/// buffer be any size, and the object the compositor reports the scale it
-/// presents the surface at through.
-///
-/// Without `wp_viewporter` a surface falls back to an integer buffer scale.
+/// The scale one of canoe's surfaces is drawn at, and the logical size it
+/// is presented at: its buffer can be any size, since canoe's compositor
+/// draws it straight to the output's device pixels.
 #[derive(Default)]
 pub struct FractionalSurface {
-    viewport: Option<WpViewport>,
-    fractional: Option<WpFractionalScaleV1>,
     /// The scale the compositor last asked for, in 120ths.
     preferred: Option<u32>,
-    /// The destination size last sent to the viewport.
-    destination: Option<(i32, i32)>,
 }
 
 impl FractionalSurface {
-    pub fn new(viewport: Option<WpViewport>, fractional: Option<WpFractionalScaleV1>) -> Self {
-        Self {
-            viewport,
-            fractional,
-            preferred: None,
-            destination: None,
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
-    /// Whether the surface has a viewport, so its buffer may be any size.
+    /// Whether the buffer may be any size. Always true for canoe's surfaces.
     pub fn has_viewport(&self) -> bool {
-        self.viewport.is_some()
+        true
     }
 
-    /// Record a `preferred_scale` event. True when it changed anything.
+    /// Record the output's fractional scale. True when it changed anything.
     pub fn set_preferred(&mut self, scale: u32) -> bool {
         if scale == 0 || self.preferred == Some(scale) {
             return false;
@@ -182,15 +170,10 @@ impl FractionalSurface {
     }
 
     /// The device scale to draw at: the surface's own preferred scale, else
-    /// `output_preferred` (what another surface on the same output was told),
-    /// else the output's integer scale. Only the last is possible without a
-    /// viewport, since nothing else can present a buffer that isn't a whole
-    /// multiple of the surface.
+    /// `output_preferred`, else the output's integer scale.
     pub fn device_scale(&self, output_preferred: Option<u32>, integer_scale: i32) -> f64 {
-        if self.viewport.is_some() {
-            if let Some(preferred) = self.preferred.or(output_preferred) {
-                return preferred as f64 / FRACTIONAL_DENOMINATOR as f64;
-            }
+        if let Some(preferred) = self.preferred.or(output_preferred) {
+            return preferred as f64 / FRACTIONAL_DENOMINATOR as f64;
         }
         integer_scale.max(1) as f64
     }
@@ -198,46 +181,24 @@ impl FractionalSurface {
     /// Size `surface` to `width`×`height` logical pixels at `scale`, and
     /// return the buffer size that covers it in device pixels: the box the
     /// compositor draws the surface into when its corner sits at `origin`, so
-    /// the buffer isn't resampled. The state is double-buffered: it takes
-    /// effect with the next commit.
+    /// the buffer isn't resampled. Takes effect with the next commit.
     pub fn apply(
         &mut self,
-        surface: &wl_surface::WlSurface,
+        surface: &Surface,
         width: i32,
         height: i32,
         scale: &Scale,
         origin: Origin,
     ) -> (i32, i32) {
-        match self.viewport {
-            Some(ref viewport) => {
-                surface.set_buffer_scale(1);
-                if self.destination != Some((width, height)) {
-                    viewport.set_destination(width, height);
-                    self.destination = Some((width, height));
-                }
-                (
-                    scale.edge(origin.x, width).max(1),
-                    scale.edge(origin.y, height).max(1),
-                )
-            }
-            None => {
-                let integer = (scale.device().round() as i32).max(1);
-                surface.set_buffer_scale(integer);
-                (width * integer, height * integer)
-            }
-        }
+        surface.set_buffer_scale(1);
+        surface.set_destination(width, height);
+        (
+            scale.edge(origin.x, width).max(1),
+            scale.edge(origin.y, height).max(1),
+        )
     }
 
-    /// Release the protocol objects. Must run before the surface is destroyed.
-    pub fn destroy(&mut self) {
-        if let Some(viewport) = self.viewport.take() {
-            viewport.destroy();
-        }
-        if let Some(fractional) = self.fractional.take() {
-            fractional.destroy();
-        }
-        self.destination = None;
-    }
+    pub fn destroy(&mut self) {}
 }
 
 #[cfg(test)]

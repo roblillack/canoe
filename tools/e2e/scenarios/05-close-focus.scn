@@ -1,0 +1,15 @@
+# Closing the focused window focuses the most recent visible one (#57).
+key super+shift+Return
+wait-toplevel foot 4000
+drag 300 27 500 200
+key super+shift+Return
+sleep 800
+drag 300 27 650 100
+key super+shift+Return
+sleep 800
+# Minimize the top one, then close the newly focused one.
+key super+h
+shot 01-minimized-top
+key super+w
+sleep 500
+shot 02-closed-focus-restored

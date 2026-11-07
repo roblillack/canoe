@@ -5,12 +5,10 @@
 use super::titlebar::TitlebarButton;
 use super::WindowShadow;
 use crate::config::WindowDecoration;
-use crate::protocol::river_window_management_v1::client::river_window_v1::{Capabilities, Edges};
-use crate::protocol::{RiverNodeV1, RiverOutputV1, RiverWindowV1};
+use crate::wm::{Capabilities, Edges, NodeHandle, OutputHandle, WindowHandle};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Weak;
-use wayland_client::Proxy;
 
 /// Window identifier
 pub type WindowId = usize;
@@ -99,10 +97,10 @@ pub enum WindowEvent {
 pub struct Window {
     /// Unique window ID
     pub id: WindowId,
-    /// River window protocol object
-    pub rwm_window: Option<RiverWindowV1>,
-    /// River node protocol object for rendering
-    pub rwm_node: Option<RiverNodeV1>,
+    /// The compositor's window
+    pub rwm_window: Option<WindowHandle>,
+    /// The window's place in the compositor's layout and rendering order
+    pub rwm_node: Option<NodeHandle>,
 
     /// Associated output
     pub output: Option<Weak<RefCell<super::Output>>>,
@@ -473,7 +471,7 @@ impl Window {
     }
 
     /// Request fullscreen on output
-    pub fn fullscreen_on(&mut self, output: &RiverOutputV1) {
+    pub fn fullscreen_on(&mut self, output: &OutputHandle) {
         if let Some(ref rwm_window) = self.rwm_window {
             rwm_window.fullscreen(output);
             rwm_window.inform_fullscreen();

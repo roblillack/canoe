@@ -2,10 +2,9 @@
 
 #![allow(dead_code)]
 
-use crate::protocol::{RiverLayerShellOutputV1, RiverOutputV1};
+use crate::wm::OutputHandle;
 use std::cell::RefCell;
 use std::rc::Weak;
-use wayland_client::protocol::wl_output::WlOutput;
 
 use super::DesktopSurface;
 
@@ -16,16 +15,10 @@ pub type OutputId = usize;
 pub struct Output {
     /// Unique output ID
     pub id: OutputId,
-    /// River output protocol object
-    pub rwm_output: Option<RiverOutputV1>,
-    /// Layer shell output for bar
-    pub layer_shell_output: Option<RiverLayerShellOutputV1>,
-    /// Wayland output object
-    pub wl_output: Option<WlOutput>,
-    /// Global name of the wl_output
-    pub wl_output_name: u32,
+    /// The compositor's output
+    pub rwm_output: Option<OutputHandle>,
 
-    /// Output name (from wl_output)
+    /// Output name (e.g. "DP-1")
     pub name: Option<String>,
 
     /// Position X in global coordinates
@@ -68,9 +61,6 @@ impl Output {
         Self {
             id,
             rwm_output: None,
-            layer_shell_output: None,
-            wl_output: None,
-            wl_output_name: 0,
             name: None,
             x: 0,
             y: 0,

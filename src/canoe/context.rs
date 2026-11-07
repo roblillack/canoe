@@ -2,11 +2,11 @@
 
 use crate::binding::{Action, Direction, PointerBinding, XkbBinding};
 use crate::config::{load_config, Config, WindowDecoration};
-use crate::protocol::river_window_management_v1::client::river_window_v1::{Capabilities, Edges};
-use crate::protocol::*;
 use crate::rule;
+use crate::wm::{
+    Capabilities, CursorShape, Edges, OutputHandle, SeatHandle, WindowHandle, WindowManager,
+};
 use resvg::tiny_skia;
-use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape as CursorShape;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -20,12 +20,8 @@ use super::{
 
 /// The central window manager context
 pub struct Context {
-    // Wayland globals
-    pub rwm: Option<RiverWindowManagerV1>,
-    pub rwm_xkb_bindings: Option<RiverXkbBindingsV1>,
-    pub rwm_layer_shell: Option<RiverLayerShellV1>,
-    pub rwm_input_manager: Option<RiverInputManagerV1>,
-    pub rwm_libinput_config: Option<RiverLibinputConfigV1>,
+    /// The compositor
+    pub rwm: Option<WindowManager>,
 
     // Managed objects
     pub windows: HashMap<WindowId, Rc<RefCell<Window>>>,
@@ -117,10 +113,6 @@ impl Context {
     pub fn new(skip_config: bool) -> Self {
         Self {
             rwm: None,
-            rwm_xkb_bindings: None,
-            rwm_layer_shell: None,
-            rwm_input_manager: None,
-            rwm_libinput_config: None,
 
             windows: HashMap::new(),
             outputs: HashMap::new(),
@@ -219,11 +211,12 @@ impl Context {
     }
 
     /// Create a new window and add to context
-    pub fn create_window(&mut self, rwm_window: RiverWindowV1) -> Rc<RefCell<Window>> {
+    pub fn create_window(&mut self, rwm_window: WindowHandle) -> Rc<RefCell<Window>> {
         let id = self.next_window_id;
         self.next_window_id += 1;
 
         let mut window = Window::new(id);
+        window.rwm_node = Some(rwm_window.node());
         window.rwm_window = Some(rwm_window);
 
         // Assign to the preferred output for new windows.
@@ -264,7 +257,7 @@ impl Context {
     }
 
     /// Create a new output and add to context
-    pub fn create_output(&mut self, rwm_output: RiverOutputV1) -> Rc<RefCell<Output>> {
+    pub fn create_output(&mut self, rwm_output: OutputHandle) -> Rc<RefCell<Output>> {
         let id = self.next_output_id;
         self.next_output_id += 1;
 
@@ -338,7 +331,7 @@ impl Context {
     }
 
     /// Create a new seat and add to context
-    pub fn create_seat(&mut self, rwm_seat: RiverSeatV1) -> Rc<RefCell<Seat>> {
+    pub fn create_seat(&mut self, rwm_seat: SeatHandle) -> Rc<RefCell<Seat>> {
         let id = self.next_seat_id;
         self.next_seat_id += 1;
 
@@ -434,7 +427,7 @@ impl Context {
         seat.xkb_bindings.clear();
         self.populate_xkb_bindings(seat);
         let mode = seat.mode;
-        for (binding, _) in &mut seat.xkb_bindings {
+        for binding in &mut seat.xkb_bindings {
             binding.enabled = binding.mode == mode;
         }
     }
@@ -1141,8 +1134,8 @@ impl Context {
         let Some(output) = self.outputs.get(&output_id) else {
             return;
         };
-        if let Some(ref layer_shell_output) = output.borrow().layer_shell_output {
-            layer_shell_output.set_default();
+        if let Some(ref rwm_output) = output.borrow().rwm_output {
+            rwm_output.set_default_layer_output();
             self.layer_shell_default_output = Some(output_id);
         }
     }
@@ -3190,8 +3183,7 @@ impl Context {
                 Some(CursorShape::Default)
             }
             super::PointerTarget::SharePicker(_) => Some(CursorShape::Crosshair),
-            // MenuShield hides the cursor via wl_pointer.set_cursor directly,
-            // so don't touch it here.
+            // MenuShield hides the cursor itself, so don't touch it here.
             super::PointerTarget::MenuShield(_) | super::PointerTarget::None => None,
         };
 

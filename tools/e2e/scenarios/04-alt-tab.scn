@@ -1,0 +1,14 @@
+# Window switcher: hold super, Tab twice, release commits; Esc cancels.
+key super+shift+Return
+wait-toplevel foot 4000
+drag 300 27 500 127
+key super+shift+Return
+sleep 800
+drag 300 27 600 227
+key super+shift+Return
+sleep 800
+spawn sleep 0.7; grim -c $OUT/00-switcher-open.png
+keydown super ; key Tab ; key Tab ; sleep 1200 ; keyup super
+shot 01-after-commit
+keydown super ; key Tab ; sleep 300 ; key Escape ; keyup super
+shot 02-after-cancel

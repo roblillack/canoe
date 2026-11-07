@@ -11,7 +11,7 @@ mod seat;
 mod shadow;
 pub mod share_picker;
 mod shield;
-pub mod shmfile;
+pub mod surface;
 pub mod titlebar;
 pub mod window;
 
