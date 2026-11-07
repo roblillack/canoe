@@ -1,6 +1,6 @@
 [package]
 name = "canoe"
-version = "0.5.1"
+version = "0.6.0"
 edition = "2021"
 description = "Canoe, a River window manager implementation in Rust"
 license = "MIT"
