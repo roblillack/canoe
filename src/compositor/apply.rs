@@ -8,7 +8,7 @@ use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::{
 };
 use smithay::utils::Size;
 
-use super::{PointerOp, State};
+use super::{PointerOp, Shell, State};
 use crate::wm::{Capabilities, Edges, Request, WindowKey};
 
 impl State {
@@ -48,17 +48,19 @@ impl State {
             Request::ProposeDimensions(key, width, height) => {
                 self.with_toplevel(key, |window| {
                     let size = (width > 0 && height > 0).then(|| Size::from((width, height)));
-                    window
-                        .toplevel
-                        .with_pending_state(|state| state.size = size);
+                    match window.toplevel() {
+                        Some(toplevel) => toplevel.with_pending_state(|state| state.size = size),
+                        // No size leaves an X11 window the size it has.
+                        None => window.x11_size = size,
+                    }
                 });
             }
             Request::SetDimensionBounds(key, width, height) => {
                 self.with_toplevel(key, |window| {
                     let bounds = (width > 0 && height > 0).then(|| Size::from((width, height)));
-                    window
-                        .toplevel
-                        .with_pending_state(|state| state.bounds = bounds);
+                    if let Some(toplevel) = window.toplevel() {
+                        toplevel.with_pending_state(|state| state.bounds = bounds);
+                    }
                 });
             }
             Request::Hide(key) => {
@@ -73,25 +75,28 @@ impl State {
             }
             Request::Close(key) => {
                 if let Some(window) = self.window_by_key(key) {
-                    window.toplevel.send_close();
+                    match &window.shell {
+                        Shell::Xdg(toplevel) => toplevel.send_close(),
+                        Shell::X11(x11) => {
+                            let _ = x11.close();
+                        }
+                    }
                 }
             }
             Request::SetTiled(key, edges) => {
-                self.with_toplevel(key, |window| {
-                    window.toplevel.with_pending_state(|state| {
-                        for (edge, xdg) in [
-                            (Edges::Top, XdgState::TiledTop),
-                            (Edges::Bottom, XdgState::TiledBottom),
-                            (Edges::Left, XdgState::TiledLeft),
-                            (Edges::Right, XdgState::TiledRight),
-                        ] {
-                            if edges.contains(edge) {
-                                state.states.set(xdg);
-                            } else {
-                                state.states.unset(xdg);
-                            }
+                self.with_xdg_state(key, |state| {
+                    for (edge, xdg) in [
+                        (Edges::Top, XdgState::TiledTop),
+                        (Edges::Bottom, XdgState::TiledBottom),
+                        (Edges::Left, XdgState::TiledLeft),
+                        (Edges::Right, XdgState::TiledRight),
+                    ] {
+                        if edges.contains(edge) {
+                            state.states.set(xdg);
+                        } else {
+                            state.states.unset(xdg);
                         }
-                    });
+                    }
                 });
             }
             Request::Fullscreen(key, output_key) => {
@@ -102,9 +107,12 @@ impl State {
                 self.with_toplevel(key, |window| {
                     window.fullscreen = Some(output_key);
                     if let Some(size) = size {
-                        window
-                            .toplevel
-                            .with_pending_state(|state| state.size = Some(size));
+                        match window.toplevel() {
+                            Some(toplevel) => {
+                                toplevel.with_pending_state(|state| state.size = Some(size))
+                            }
+                            None => window.x11_size = Some(size),
+                        }
                     }
                 });
             }
@@ -114,9 +122,15 @@ impl State {
                 }
             }
             Request::InformFullscreen(key, on) => {
+                if let Some(x11) = self.window_by_key(key).and_then(|w| w.x11()) {
+                    let _ = x11.set_fullscreen(on);
+                }
                 self.set_xdg_state(key, XdgState::Fullscreen, on);
             }
             Request::InformMaximized(key, on) => {
+                if let Some(x11) = self.window_by_key(key).and_then(|w| w.x11()) {
+                    let _ = x11.set_maximized(on);
+                }
                 self.set_xdg_state(key, XdgState::Maximized, on);
             }
             Request::InformResizing(key, on) => {
@@ -125,31 +139,31 @@ impl State {
             Request::UseSsd(key, ssd) => {
                 self.with_toplevel(key, |window| {
                     window.ssd = ssd;
-                    window.toplevel.with_pending_state(|state| {
-                        state.decoration_mode = Some(if ssd {
-                            DecorationMode::ServerSide
-                        } else {
-                            DecorationMode::ClientSide
+                    if let Some(toplevel) = window.toplevel() {
+                        toplevel.with_pending_state(|state| {
+                            state.decoration_mode = Some(if ssd {
+                                DecorationMode::ServerSide
+                            } else {
+                                DecorationMode::ClientSide
+                            });
                         });
-                    });
+                    }
                 });
             }
             Request::SetCapabilities(key, caps) => {
-                self.with_toplevel(key, |window| {
-                    window.toplevel.with_pending_state(|state| {
-                        for (cap, xdg) in [
-                            (Capabilities::WindowMenu, WmCapabilities::WindowMenu),
-                            (Capabilities::Maximize, WmCapabilities::Maximize),
-                            (Capabilities::Fullscreen, WmCapabilities::Fullscreen),
-                            (Capabilities::Minimize, WmCapabilities::Minimize),
-                        ] {
-                            if caps.contains(cap) {
-                                state.capabilities.set(xdg);
-                            } else {
-                                state.capabilities.unset(xdg);
-                            }
+                self.with_xdg_state(key, |state| {
+                    for (cap, xdg) in [
+                        (Capabilities::WindowMenu, WmCapabilities::WindowMenu),
+                        (Capabilities::Maximize, WmCapabilities::Maximize),
+                        (Capabilities::Fullscreen, WmCapabilities::Fullscreen),
+                        (Capabilities::Minimize, WmCapabilities::Minimize),
+                    ] {
+                        if caps.contains(cap) {
+                            state.capabilities.set(xdg);
+                        } else {
+                            state.capabilities.unset(xdg);
                         }
-                    });
+                    }
                 });
             }
             Request::SetClipBox(key, clip) => {
@@ -229,15 +243,26 @@ impl State {
         }
     }
 
-    fn set_xdg_state(&mut self, key: WindowKey, xdg: XdgState, on: bool) {
+    /// Change the pending state of an xdg toplevel (X11 windows have none).
+    fn with_xdg_state(
+        &mut self,
+        key: WindowKey,
+        f: impl FnOnce(&mut smithay::wayland::shell::xdg::ToplevelState),
+    ) {
         self.with_toplevel(key, |window| {
-            window.toplevel.with_pending_state(|state| {
-                if on {
-                    state.states.set(xdg);
-                } else {
-                    state.states.unset(xdg);
-                }
-            });
+            if let Some(toplevel) = window.toplevel() {
+                toplevel.with_pending_state(f);
+            }
+        });
+    }
+
+    fn set_xdg_state(&mut self, key: WindowKey, xdg: XdgState, on: bool) {
+        self.with_xdg_state(key, |state| {
+            if on {
+                state.states.set(xdg);
+            } else {
+                state.states.unset(xdg);
+            }
         });
     }
 
@@ -249,10 +274,11 @@ impl State {
             return;
         };
         let target = (x, y).into();
+        // An X11 window takes position and size at once.
         let proposed = window
-            .toplevel
-            .with_pending_state(|state| state.size)
-            .filter(|_| resized && window.toplevel.is_initial_configure_sent());
+            .toplevel()
+            .and_then(|toplevel| toplevel.with_pending_state(|state| state.size))
+            .filter(|_| resized && window.configurable());
         let current = window.window.geometry().size;
         match proposed {
             Some(size) if size != current && window.reported_size.is_some() => {

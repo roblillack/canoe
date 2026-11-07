@@ -36,7 +36,7 @@ use smithay::wayland::selection::primary_selection::{
     set_primary_focus, PrimarySelectionHandler, PrimarySelectionState,
 };
 use smithay::wayland::selection::wlr_data_control::{DataControlHandler, DataControlState};
-use smithay::wayland::selection::SelectionHandler;
+use smithay::wayland::selection::{SelectionHandler, SelectionSource, SelectionTarget};
 use smithay::wayland::session_lock::{
     LockSurface, SessionLockHandler, SessionLockManagerState, SessionLocker,
 };
@@ -78,6 +78,9 @@ impl CompositorHandler for State {
     }
 
     fn client_compositor_state<'a>(&self, client: &'a Client) -> &'a CompositorClientState {
+        if let Some(xwayland) = client.get_data::<smithay::xwayland::XWaylandClientData>() {
+            return &xwayland.compositor_state;
+        }
         &client.get_data::<ClientState>().unwrap().compositor_state
     }
 
@@ -204,7 +207,10 @@ impl XdgShellHandler for State {
     }
 
     fn move_request(&mut self, surface: ToplevelSurface, _seat: WlSeat, _serial: Serial) {
-        self.window_request(&surface, canoe::WindowEvent::Move(self.wm_seat_weak()));
+        self.window_request(
+            surface.wl_surface(),
+            canoe::WindowEvent::Move(self.wm_seat_weak()),
+        );
     }
 
     fn resize_request(
@@ -215,7 +221,7 @@ impl XdgShellHandler for State {
         edges: xdg_toplevel::ResizeEdge,
     ) {
         self.window_request(
-            &surface,
+            surface.wl_surface(),
             canoe::WindowEvent::Resize(self.wm_seat_weak(), u32::from(edges)),
         );
     }
@@ -226,7 +232,7 @@ impl XdgShellHandler for State {
         let Ok(root) = find_popup_root_surface(&kind) else {
             return;
         };
-        let Ok(mut grab) = self.popups.grab_popup(root, kind, &seat, serial) else {
+        let Ok(mut grab) = self.popups.grab_popup(root.into(), kind, &seat, serial) else {
             return;
         };
         if let Some(keyboard) = seat.get_keyboard() {
@@ -253,13 +259,13 @@ impl XdgShellHandler for State {
     }
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
-        self.window_request(&surface, canoe::WindowEvent::Maximize);
+        self.window_request(surface.wl_surface(), canoe::WindowEvent::Maximize);
         // The protocol wants a configure in reply even if nothing changes.
         surface.send_configure();
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
-        self.window_request(&surface, canoe::WindowEvent::Unmaximize);
+        self.window_request(surface.wl_surface(), canoe::WindowEvent::Unmaximize);
         surface.send_configure();
     }
 
@@ -274,29 +280,29 @@ impl XdgShellHandler for State {
                     .get(&id)
                     .map(std::rc::Rc::downgrade)
             });
-        self.window_request(&surface, canoe::WindowEvent::Fullscreen(output));
+        self.window_request(surface.wl_surface(), canoe::WindowEvent::Fullscreen(output));
         surface.send_configure();
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
-        self.window_request(&surface, canoe::WindowEvent::Unfullscreen);
+        self.window_request(surface.wl_surface(), canoe::WindowEvent::Unfullscreen);
         surface.send_configure();
     }
 
     fn minimize_request(&mut self, surface: ToplevelSurface) {
-        self.window_request(&surface, canoe::WindowEvent::Minimize);
+        self.window_request(surface.wl_surface(), canoe::WindowEvent::Minimize);
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
-        self.remove_toplevel(&surface);
+        self.remove_toplevel(surface.wl_surface());
     }
 
     fn app_id_changed(&mut self, surface: ToplevelSurface) {
-        self.toplevel_properties_changed(&surface);
+        self.toplevel_properties_changed(surface.wl_surface());
     }
 
     fn title_changed(&mut self, surface: ToplevelSurface) {
-        self.toplevel_properties_changed(&surface);
+        self.toplevel_properties_changed(surface.wl_surface());
     }
 
     fn parent_changed(&mut self, surface: ToplevelSurface) {
@@ -353,8 +359,8 @@ impl State {
     }
 
     /// Queue a request a window made for the window manager.
-    fn window_request(&mut self, surface: &ToplevelSurface, event: canoe::WindowEvent) {
-        let Some(id) = self.window_for_surface(surface.wl_surface()).map(|w| w.id) else {
+    pub(super) fn window_request(&mut self, surface: &WlSurface, event: canoe::WindowEvent) {
+        let Some(id) = self.window_for_surface(surface).map(|w| w.id) else {
             return;
         };
         if let Some(window) = self.context.borrow().windows.get(&id) {
@@ -370,6 +376,15 @@ impl State {
         let parent_id = surface
             .parent()
             .and_then(|parent| self.window_for_surface(&parent).map(|w| w.id));
+        self.set_window_parent(id, parent_id);
+    }
+
+    /// Tell the window manager whose child a window is.
+    pub(super) fn set_window_parent(
+        &mut self,
+        id: canoe::WindowId,
+        parent_id: Option<canoe::WindowId>,
+    ) {
         {
             let context = self.context.borrow();
             if let Some(window) = context.windows.get(&id) {
@@ -425,13 +440,15 @@ impl State {
         // just (re)created its decoration object or changed its mind.
         if let Some(window) = self.window_by_key_mut(key) {
             let ssd = window.ssd;
-            window.toplevel.with_pending_state(|state| {
-                state.decoration_mode = Some(if ssd {
-                    DecorationMode::ServerSide
-                } else {
-                    DecorationMode::ClientSide
+            if let Some(toplevel) = window.toplevel() {
+                toplevel.with_pending_state(|state| {
+                    state.decoration_mode = Some(if ssd {
+                        DecorationMode::ServerSide
+                    } else {
+                        DecorationMode::ClientSide
+                    });
                 });
-            });
+            }
             window.needs_configure = true;
         }
         self.schedule_wm();
@@ -498,7 +515,7 @@ impl WlrLayerShellHandler for State {
 }
 
 impl SeatHandler for State {
-    type KeyboardFocus = WlSurface;
+    type KeyboardFocus = super::focus::KeyboardFocus;
     type PointerFocus = WlSurface;
     type TouchFocus = WlSurface;
 
@@ -511,9 +528,9 @@ impl SeatHandler for State {
         self.queue_redraw_all();
     }
 
-    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&WlSurface>) {
+    fn focus_changed(&mut self, seat: &Seat<Self>, focused: Option<&super::focus::KeyboardFocus>) {
         let dh = &self.display_handle;
-        let client = focused.and_then(|s| dh.get_client(s.id()).ok());
+        let client = focused.and_then(|f| dh.get_client(f.surface().id()).ok());
         set_data_device_focus(dh, seat, client.clone());
         set_primary_focus(dh, seat, client);
     }
@@ -521,6 +538,36 @@ impl SeatHandler for State {
 
 impl SelectionHandler for State {
     type SelectionUserData = ();
+
+    fn new_selection(
+        &mut self,
+        target: SelectionTarget,
+        source: Option<SelectionSource>,
+        _seat: Seat<Self>,
+    ) {
+        // Wayland clients' selections are offered to X11 clients too.
+        if let Some(xwm) = self.xwm.as_mut() {
+            if let Err(err) = xwm.new_selection(target, source.map(|s| s.mime_types())) {
+                eprintln!("canoe: failed to pass the selection to Xwayland: {err}");
+            }
+        }
+    }
+
+    fn send_selection(
+        &mut self,
+        target: SelectionTarget,
+        mime_type: String,
+        fd: std::os::fd::OwnedFd,
+        _seat: Seat<Self>,
+        _user_data: &(),
+    ) {
+        // A Wayland client reads the selection an X11 client holds.
+        if let Some(xwm) = self.xwm.as_mut() {
+            if let Err(err) = xwm.send_selection(target, mime_type, fd, self.loop_handle.clone()) {
+                eprintln!("canoe: failed to read the selection from Xwayland: {err}");
+            }
+        }
+    }
 }
 
 impl DataDeviceHandler for State {
@@ -671,7 +718,11 @@ impl SessionLockHandler for State {
         surface.send_configure();
         managed.lock_surface = Some(surface.clone());
         let keyboard = self.seat.get_keyboard().unwrap();
-        keyboard.set_focus(self, Some(surface.wl_surface().clone()), Serial::from(0));
+        keyboard.set_focus(
+            self,
+            Some(surface.wl_surface().clone().into()),
+            Serial::from(0),
+        );
         self.check_lock_complete();
         self.queue_redraw_all();
     }
@@ -812,3 +863,4 @@ delegate_pointer_constraints!(State);
 delegate_relative_pointer!(State);
 delegate_dmabuf!(State);
 smithay::delegate_shm!(State);
+smithay::delegate_xwayland_shell!(State);

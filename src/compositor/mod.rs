@@ -11,6 +11,7 @@ pub mod apply;
 pub mod backend;
 pub mod capture;
 pub mod cursor;
+pub mod focus;
 pub mod handlers;
 pub mod input;
 pub mod protocol_handlers;
@@ -18,6 +19,7 @@ pub mod protocols;
 pub mod render;
 pub mod wm_events;
 pub mod wm_glue;
+pub mod xwayland;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -66,13 +68,25 @@ use crate::wm::{self, ClipBox, CursorShape, OutputKey, Requests, WindowKey};
 /// since when it waits.
 pub type PendingPosition = (Point<i32, Logical>, Size<i32, Logical>, Instant);
 
+/// What a window's client draws it with.
+pub enum Shell {
+    Xdg(ToplevelSurface),
+    X11(smithay::xwayland::X11Surface),
+}
+
 /// A toplevel window the compositor shows.
 pub struct ManagedWindow {
     pub key: WindowKey,
     /// The window manager's id for it.
     pub id: canoe::WindowId,
     pub window: Window,
-    pub toplevel: ToplevelSurface,
+    pub shell: Shell,
+    /// The window's main surface (for X11 windows, the one Xwayland
+    /// associated with it).
+    pub surface: WlSurface,
+    /// The size the window manager wants an X11 window to have; `None`
+    /// leaves it the size the client picked.
+    pub x11_size: Option<Size<i32, Logical>>,
     pub foreign: Option<ForeignToplevelHandle>,
     /// Where the window manager put the content's top left corner.
     pub pos: Point<i32, Logical>,
@@ -97,9 +111,42 @@ pub struct ManagedWindow {
     pub initial_commit: bool,
 }
 
+impl Shell {
+    /// The process id an X11 client announced.
+    pub fn x11_pid(&self) -> Option<u32> {
+        match self {
+            Shell::Xdg(_) => None,
+            Shell::X11(x11) => x11.pid(),
+        }
+    }
+}
+
 impl ManagedWindow {
     pub fn wl_surface(&self) -> &WlSurface {
-        self.toplevel.wl_surface()
+        &self.surface
+    }
+
+    pub fn toplevel(&self) -> Option<&ToplevelSurface> {
+        match &self.shell {
+            Shell::Xdg(toplevel) => Some(toplevel),
+            Shell::X11(_) => None,
+        }
+    }
+
+    pub fn x11(&self) -> Option<&smithay::xwayland::X11Surface> {
+        match &self.shell {
+            Shell::Xdg(_) => None,
+            Shell::X11(x11) => Some(x11),
+        }
+    }
+
+    /// The client may be sent configures: an xdg toplevel made its initial
+    /// commit (X11 windows can always be configured).
+    pub fn configurable(&self) -> bool {
+        match &self.shell {
+            Shell::Xdg(toplevel) => toplevel.is_initial_configure_sent(),
+            Shell::X11(_) => true,
+        }
     }
 
     /// Where the window's surface (not its geometry) has its origin.
@@ -190,6 +237,17 @@ pub struct State {
     pub virtual_pointer_state: protocols::virtual_pointer::VirtualPointerManagerState,
     pub dmabuf: Option<handlers::DmabufGlobal>,
     pub popups: PopupManager,
+    pub xwayland_shell_state: smithay::wayland::xwayland_shell::XWaylandShellState,
+    /// The window manager of the Xwayland server, once it is up.
+    pub xwm: Option<smithay::xwayland::X11Wm>,
+    /// X11 windows mapped but still waiting for Xwayland to associate their
+    /// surface.
+    pub x11_pending: Vec<smithay::xwayland::X11Surface>,
+    /// X11 windows not managed by the window manager (menus, tooltips and
+    /// other override-redirect windows), bottom first.
+    pub x11_unmanaged: Vec<smithay::xwayland::X11Surface>,
+    /// The stacking order last given to the X server, bottom first.
+    pub x11_stacking: Vec<smithay::xwayland::xwm::X11Window>,
 
     pub seat: Seat<State>,
 
@@ -303,6 +361,8 @@ impl State {
         let virtual_pointer_state =
             protocols::virtual_pointer::VirtualPointerManagerState::new::<State, _>(&dh, |_| true);
         protocols::virtual_keyboard::VirtualKeyboardManagerState::new::<State>(&dh);
+        let xwayland_shell_state =
+            smithay::wayland::xwayland_shell::XWaylandShellState::new::<State>(&dh);
 
         let context = Rc::new(RefCell::new(Context::new(skip_config)));
         let requests = Requests::default();
@@ -378,6 +438,11 @@ impl State {
             virtual_pointer_state,
             dmabuf: None,
             popups: PopupManager::default(),
+            xwayland_shell_state,
+            xwm: None,
+            x11_pending: Vec::new(),
+            x11_unmanaged: Vec::new(),
+            x11_stacking: Vec::new(),
             seat,
             context,
             requests,
@@ -515,6 +580,15 @@ impl State {
                     |_, _| Some(output.clone()),
                 );
             }
+        }
+        for (surface, _) in self.x11_unmanaged_surfaces() {
+            smithay::desktop::utils::send_frames_surface_tree(
+                &surface,
+                output,
+                time,
+                Some(Duration::ZERO),
+                |_, _| Some(output.clone()),
+            );
         }
         if let smithay::input::pointer::CursorImageStatus::Surface(ref surface) = self.client_cursor
         {

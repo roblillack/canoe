@@ -38,7 +38,7 @@ extern "C" fn forward_signal(sig: libc::c_int) {
     }
 }
 
-/// Export `WAYLAND_DISPLAY` and `XDG_CURRENT_DESKTOP` to the systemd user
+/// Export `WAYLAND_DISPLAY`, `DISPLAY` and `XDG_CURRENT_DESKTOP` to the systemd user
 /// manager and the D-Bus activation environment, so services started on demand
 /// (xdg-desktop-portal and its backends) connect to this session. The XCursor
 /// theme is exported as well, if set, so their cursors match.
@@ -82,6 +82,10 @@ fn activation_environment_argv(
         format!("WAYLAND_DISPLAY={display}"),
         format!("XDG_CURRENT_DESKTOP={desktop}"),
     ];
+    // Xwayland's display, for services that start X11 programs.
+    if let Some(x11_display) = effective("DISPLAY") {
+        argv.push(format!("DISPLAY={x11_display}"));
+    }
     if let Some(ref name) = xcursor.name {
         argv.push(format!("XCURSOR_THEME={name}"));
     }
@@ -104,6 +108,7 @@ Options:
                     running session (winit, the default inside one), or
                     nowhere, for tests (headless; outputs from
                     CANOE_HEADLESS_OUTPUTS, e.g. 1920x1080@1.5,1280x720)
+      --no-xwayland Don't start Xwayland, so X11 programs don't run
       --share-picker
                     Act as the screen-sharing chooser of xdg-desktop-portal-wlr:
                     let the running canoe ask what to share, print the answer
@@ -123,6 +128,7 @@ enum BackendKind {
 struct CliArgs {
     skip_config: bool,
     backend: BackendKind,
+    xwayland: bool,
 }
 
 /// Parse command-line arguments, exiting the process for --help/--version or on
@@ -132,6 +138,7 @@ fn parse_args() -> CliArgs {
         std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
     let mut args = CliArgs {
         skip_config: false,
+        xwayland: true,
         backend: if nested {
             BackendKind::Winit
         } else {
@@ -148,6 +155,7 @@ fn parse_args() -> CliArgs {
         };
         match flag.as_str() {
             "-n" | "--no-config" => args.skip_config = true,
+            "--no-xwayland" => args.xwayland = false,
             "--share-picker" => std::process::exit(ipc::run_share_picker()),
             "--backend" => {
                 let value = inline.or_else(|| iter.next()).unwrap_or_default();
@@ -264,6 +272,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     std::env::set_var("WAYLAND_DISPLAY", &socket_name);
     std::env::remove_var("DISPLAY");
+    // X11 programs get Xwayland (which sets DISPLAY).
+    if args.xwayland {
+        state.start_xwayland();
+    }
     eprintln!(
         "canoe: listening on WAYLAND_DISPLAY={}",
         socket_name.to_string_lossy()
@@ -417,6 +429,17 @@ mod tests {
         };
         let argv = activation_environment_argv(&HashMap::new(), &xcursor, &own).expect("argv");
         assert_eq!(argv[4..], ["XCURSOR_SIZE=32"]);
+    }
+
+    #[test]
+    fn test_activation_environment_exports_xwayland_display() {
+        let argv = activation_environment_argv(
+            &HashMap::new(),
+            &no_xcursor(),
+            lookup_from(&[("WAYLAND_DISPLAY", "w"), ("DISPLAY", ":1")]),
+        )
+        .expect("argv");
+        assert_eq!(argv[4..], ["DISPLAY=:1"]);
     }
 
     #[test]

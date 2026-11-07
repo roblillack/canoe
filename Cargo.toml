@@ -36,6 +36,7 @@ smithay = { version = "0.7", default-features = false, features = [
     "renderer_gl",
     "renderer_pixman",
     "wayland_frontend",
+    "xwayland",
 ] }
 bitflags = "2"
 

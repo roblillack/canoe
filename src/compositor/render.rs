@@ -393,6 +393,22 @@ impl State {
             push_top_first(&mut bottom_up, popups.into_iter().map(Into::into).collect());
         }
 
+        // X11 menus and tooltips, above the windows they belong to.
+        for (surface, loc) in self.x11_unmanaged_surfaces() {
+            let elements = surface_tree_elements(
+                renderer,
+                &surface,
+                to_phys(loc.to_f64()),
+                scale,
+                1.0,
+                Kind::Unspecified,
+            );
+            push_top_first(
+                &mut bottom_up,
+                elements.into_iter().map(Into::into).collect(),
+            );
+        }
+
         self.push_layer(
             renderer,
             output,

@@ -623,6 +623,24 @@ impl State {
             return hit;
         }
 
+        // X11 menus and tooltips.
+        for (surface, loc) in self.x11_unmanaged_surfaces().into_iter().rev() {
+            let origin = loc.to_f64();
+            if let Some((surface, loc)) = smithay::desktop::utils::under_from_surface_tree(
+                &surface,
+                location - origin,
+                (0, 0),
+                WindowSurfaceType::ALL,
+            ) {
+                return Hit::Client {
+                    surface,
+                    origin: origin + loc.to_f64(),
+                    window: None,
+                    layer: None,
+                };
+            }
+        }
+
         // A fullscreen window covers everything below the overlay layer.
         let fullscreen = self
             .windows

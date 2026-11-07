@@ -46,6 +46,11 @@ Inside a running Wayland or X11 session, `canoe` opens a window instead
 for trying it out. `--backend headless` runs without any monitor, for
 automated tests (see `tools/e2e`).
 
+X11 programs run through Xwayland, which Canoe starts if it is installed
+(programs it launches find it through `DISPLAY`); `--no-xwayland` turns that
+off. An X11 window's app id, as window rules match it, is its `WM_CLASS`
+class (e.g. `XTerm`).
+
 To start Canoe from a display manager (GDM, SDDM, LightDM, greetd with
 tuigreet, …), install the session file:
 
@@ -432,11 +437,13 @@ single windows), ext-foreign-toplevel-list, wlr-output-management,
 fractional scaling and viewporter, cursor-shape, data device, primary
 selection and wlr-data-control, xdg-activation, presentation-time,
 idle-notify and idle-inhibit, pointer constraints and relative pointer,
-virtual keyboard and pointer, linux-dmabuf.
+virtual keyboard and pointer, linux-dmabuf, and X11 programs through
+Xwayland (with clipboard and primary selection shared both ways).
 
 Missing or untested:
 
-- **XWayland**: X11 programs don't run.
+- **Xwayland**: X11 windows are drawn at scale 1 (blurry on scaled
+  outputs), and X11 programs can't activate their own windows.
 - **DRM/KMS**: the `udev` backend (real monitors) uses one GPU, has no
   direct scanout tuning, adaptive sync, gamma control or DRM leasing, and has
   only been compile-tested so far.

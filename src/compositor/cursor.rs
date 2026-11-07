@@ -22,6 +22,9 @@ pub struct CursorFrame {
     pub delay: Duration,
 }
 
+/// A cursor's RGBA pixels, size and hotspot.
+pub type CursorImage = (Vec<u8>, (u16, u16), (u16, u16));
+
 pub struct CursorTheme {
     name: String,
     size: u32,
@@ -75,6 +78,24 @@ impl CursorTheme {
             t -= frame.delay;
         }
         frames.first().cloned()
+    }
+
+    /// The theme's default cursor, as RGBA pixels with its size and hotspot
+    /// (for X11 programs, which draw their own cursors).
+    pub fn default_image(&self) -> Option<CursorImage> {
+        let theme = xcursor::CursorTheme::load(&self.name);
+        let image = ["default", "left_ptr"].iter().find_map(|name| {
+            let data = std::fs::read(theme.load_icon(name)?).ok()?;
+            let images = parse_xcursor(&data)?;
+            images
+                .into_iter()
+                .min_by_key(|image| (image.size as i32 - self.size as i32).abs())
+        })?;
+        Some((
+            image.pixels_rgba,
+            (image.width as u16, image.height as u16),
+            (image.xhot as u16, image.yhot as u16),
+        ))
     }
 
     fn load(&self, name: &str, scale: u32) -> Vec<CursorFrame> {

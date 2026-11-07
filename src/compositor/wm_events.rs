@@ -27,8 +27,10 @@ use crate::canoe::surface::{Decoration, Surface};
 use crate::config;
 use crate::wm::{OutputHandle, WindowHandle};
 
+use super::focus::KeyboardFocus;
 use super::wm_glue::*;
-use super::{ManagedOutput, ManagedWindow, State};
+use super::{ManagedOutput, ManagedWindow, Shell, State};
+use crate::wm::WindowKey;
 
 /// How long a window's new position waits for the client to take the size
 /// proposed with it.
@@ -69,6 +71,7 @@ impl State {
         }
         let t = Instant::now();
         self.send_pending_configures();
+        self.restack_x11_windows();
         self.update_keyboard_focus();
         phases.push(("focus", t.elapsed()));
         let t = Instant::now();
@@ -147,6 +150,18 @@ impl State {
     // Windows
 
     pub fn add_toplevel(&mut self, toplevel: ToplevelSurface) {
+        let window = Window::new_wayland_window(toplevel.clone());
+        let surface = toplevel.wl_surface().clone();
+        self.add_window(Shell::Xdg(toplevel), window, surface);
+    }
+
+    /// Show a new window and tell the window manager about it.
+    pub(super) fn add_window(
+        &mut self,
+        shell: Shell,
+        smithay_window: Window,
+        surface: WlSurface,
+    ) -> WindowKey {
         let key = self.next_key();
         let handle = WindowHandle::new(key, self.requests.clone());
         let window = self.context.borrow_mut().create_window(handle);
@@ -170,28 +185,38 @@ impl State {
             ));
         }
 
-        let (app_id, title) = toplevel_properties(&toplevel);
-        let pid = toplevel
-            .wl_surface()
-            .client()
-            .and_then(|client| client.get_credentials(&self.display_handle).ok())
-            .map(|credentials| credentials.pid)
+        let (app_id, title) = shell_properties(&shell);
+        let pid = shell
+            .x11_pid()
+            .map(|pid| pid as i32)
+            .or_else(|| {
+                surface
+                    .client()
+                    .and_then(|client| client.get_credentials(&self.display_handle).ok())
+                    .map(|credentials| credentials.pid)
+            })
             .unwrap_or(0);
         {
             let mut w = window.borrow_mut();
             w.app_id = app_id;
             w.title = title;
             w.pid = pid;
-            // What River reports for a client without a decoration object.
-            w.decoration_hint = Some(0);
+            w.decoration_hint = Some(match &shell {
+                // What River reports for a client without a decoration
+                // object.
+                Shell::Xdg(_) => 0,
+                Shell::X11(x11) => super::xwayland::decoration_hint(x11),
+            });
             w.queue_event(canoe::WindowEvent::Init);
         }
 
         self.windows.push(ManagedWindow {
             key,
             id: window_id,
-            window: Window::new_wayland_window(toplevel.clone()),
-            toplevel,
+            window: smithay_window,
+            shell,
+            surface,
+            x11_size: None,
             // Announced to taskbars and capture clients once mapped.
             foreign: None,
             pos: (0, 0).into(),
@@ -207,6 +232,7 @@ impl State {
             initial_commit: false,
         });
         self.schedule_wm();
+        key
     }
 
     pub fn toplevel_committed(&mut self, surface: &WlSurface) {
@@ -215,13 +241,15 @@ impl State {
         };
         self.report_size_hints(key);
         let window = self.window_by_key_mut(key).unwrap();
-        if !window.toplevel.is_initial_configure_sent() {
+        if !window.configurable() {
             // The window manager picks the size, decorations and state the
             // window starts with.
             window.initial_commit = true;
             self.run_wm();
             if let Some(window) = self.window_by_key_mut(key) {
-                window.toplevel.send_configure();
+                if let Some(toplevel) = window.toplevel() {
+                    toplevel.send_configure();
+                }
                 window.needs_configure = false;
             }
             return;
@@ -249,7 +277,7 @@ impl State {
             window.reported_size = Some(size);
             let id = window.id;
             if window.foreign.is_none() {
-                let (app_id, title) = toplevel_properties(&window.toplevel);
+                let (app_id, title) = shell_properties(&window.shell);
                 let foreign = self.foreign_toplevel_state.new_toplevel::<State>(
                     title.as_deref().unwrap_or(""),
                     app_id.as_deref().unwrap_or(""),
@@ -267,15 +295,21 @@ impl State {
     }
 
     /// Tell the window manager about changed size limits.
-    fn report_size_hints(&mut self, key: u64) {
+    pub(super) fn report_size_hints(&mut self, key: u64) {
         let Some(window) = self.window_by_key_mut(key) else {
             return;
         };
-        let (min, max) = with_states(window.toplevel.wl_surface(), |states| {
-            let mut cached = states.cached_state.get::<SurfaceCachedState>();
-            let current = cached.current();
-            (current.min_size, current.max_size)
-        });
+        let (min, max) = match &window.shell {
+            Shell::Xdg(toplevel) => with_states(toplevel.wl_surface(), |states| {
+                let mut cached = states.cached_state.get::<SurfaceCachedState>();
+                let current = cached.current();
+                (current.min_size, current.max_size)
+            }),
+            Shell::X11(x11) => (
+                x11.min_size().unwrap_or_default(),
+                x11.max_size().unwrap_or_default(),
+            ),
+        };
         let hints = (min.w, min.h, max.w, max.h);
         if window.reported_hints == Some(hints) {
             return;
@@ -296,12 +330,12 @@ impl State {
         self.schedule_wm();
     }
 
-    pub fn toplevel_properties_changed(&mut self, toplevel: &ToplevelSurface) {
-        let Some(window) = self.window_for_surface(toplevel.wl_surface()) else {
+    pub fn toplevel_properties_changed(&mut self, surface: &WlSurface) {
+        let Some(window) = self.window_for_surface(surface) else {
             return;
         };
         let id = window.id;
-        let (app_id, title) = toplevel_properties(toplevel);
+        let (app_id, title) = shell_properties(&window.shell);
         if let Some(foreign) = window.foreign.as_ref() {
             foreign.send_title(title.as_deref().unwrap_or(""));
             foreign.send_app_id(app_id.as_deref().unwrap_or(""));
@@ -319,12 +353,8 @@ impl State {
         self.schedule_wm();
     }
 
-    pub fn remove_toplevel(&mut self, toplevel: &ToplevelSurface) {
-        let Some(index) = self
-            .windows
-            .iter()
-            .position(|w| w.wl_surface() == toplevel.wl_surface())
-        else {
+    pub fn remove_toplevel(&mut self, surface: &WlSurface) {
+        let Some(index) = self.windows.iter().position(|w| w.wl_surface() == surface) else {
             return;
         };
         let window = self.windows.remove(index);
@@ -350,16 +380,20 @@ impl State {
     /// Send the configures the window manager's requests made necessary.
     pub fn send_pending_configures(&mut self) {
         for window in &mut self.windows {
+            let Some(toplevel) = window.toplevel() else {
+                continue;
+            };
             if !window.needs_configure {
                 continue;
             }
             // Nothing may be sent before the client's initial commit.
-            if !window.toplevel.is_initial_configure_sent() {
+            if !toplevel.is_initial_configure_sent() {
                 continue;
             }
+            toplevel.send_pending_configure();
             window.needs_configure = false;
-            window.toplevel.send_pending_configure();
         }
+        self.configure_x11_windows();
     }
 
     // ------------------------------------------------------------------
@@ -371,36 +405,50 @@ impl State {
     pub fn update_keyboard_focus(&mut self) {
         use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::State as XdgState;
 
-        let target = if self.lock_state != super::LockState::Unlocked {
+        let target: Option<KeyboardFocus> = if self.lock_state != super::LockState::Unlocked {
             self.outputs
                 .iter()
                 .filter_map(|o| o.lock_surface.as_ref())
                 .next()
-                .map(|lock| lock.wl_surface().clone())
+                .map(|lock| lock.wl_surface().clone().into())
         } else if let Some((surface, _)) = self.layer_focus.as_ref() {
-            Some(surface.clone())
+            Some(surface.clone().into())
         } else {
             self.wm_focus
                 .and_then(|key| self.window_by_key(key))
                 .filter(|w| !w.hidden)
-                .map(|w| w.wl_surface().clone())
+                .map(|w| match &w.shell {
+                    Shell::Xdg(_) => w.wl_surface().clone().into(),
+                    Shell::X11(x11) => {
+                        KeyboardFocus::X11(Box::new(x11.clone()), w.wl_surface().clone())
+                    }
+                })
         };
 
         // Activated state follows the window manager's focus.
         let active = self.wm_focus;
         for window in &mut self.windows {
             let activated = Some(window.key) == active;
-            let changed = window.toplevel.with_pending_state(|state| {
-                let had = state.states.contains(XdgState::Activated);
-                if activated {
-                    state.states.set(XdgState::Activated);
-                } else {
-                    state.states.unset(XdgState::Activated);
+            match &window.shell {
+                Shell::Xdg(toplevel) => {
+                    let changed = toplevel.with_pending_state(|state| {
+                        let had = state.states.contains(XdgState::Activated);
+                        if activated {
+                            state.states.set(XdgState::Activated);
+                        } else {
+                            state.states.unset(XdgState::Activated);
+                        }
+                        had != activated
+                    });
+                    if changed {
+                        window.needs_configure = true;
+                    }
                 }
-                had != activated
-            });
-            if changed {
-                window.needs_configure = true;
+                Shell::X11(x11) => {
+                    if x11.is_activated() != activated {
+                        let _ = x11.set_activated(activated);
+                    }
+                }
             }
         }
         self.send_pending_configures();
@@ -1458,17 +1506,24 @@ impl State {
     }
 }
 
-/// The app id and title a toplevel set.
-fn toplevel_properties(toplevel: &ToplevelSurface) -> (Option<String>, Option<String>) {
-    with_states(toplevel.wl_surface(), |states| {
-        let data = states
-            .data_map
-            .get::<XdgToplevelSurfaceData>()
-            .unwrap()
-            .lock()
-            .unwrap();
-        (data.app_id.clone(), data.title.clone())
-    })
+/// The app id and title a window set (for X11 windows, their class and
+/// title).
+fn shell_properties(shell: &Shell) -> (Option<String>, Option<String>) {
+    match shell {
+        Shell::Xdg(toplevel) => with_states(toplevel.wl_surface(), |states| {
+            let data = states
+                .data_map
+                .get::<XdgToplevelSurfaceData>()
+                .unwrap()
+                .lock()
+                .unwrap();
+            (data.app_id.clone(), data.title.clone())
+        }),
+        Shell::X11(x11) => {
+            let non_empty = |s: String| (!s.is_empty()).then_some(s);
+            (non_empty(x11.class()), non_empty(x11.title()))
+        }
+    }
 }
 
 /// Tell a surface tree the scale of the output it's on.
