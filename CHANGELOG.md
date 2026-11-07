@@ -10,6 +10,11 @@ While pre-1.0, the minor version is bumped for breaking changes.
 
 ## [Unreleased] - ReleaseDate
 
+### Fixed
+
+- Snapped and maximized windows follow when a bar is started, stopped or
+  resized, instead of covering it or leaving a gap. (#65)
+
 ## [0.6.1] - 2026-11-07
 
 ### Fixed
