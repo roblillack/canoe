@@ -2832,12 +2832,7 @@ impl Dispatch<RiverLayerShellOutputV1, canoe::OutputId> for AppState {
         {
             if let Some(output) = state.context.borrow().outputs.get(output_id) {
                 let mut out = output.borrow_mut();
-                let (global_x, global_y) = if out.contains_point(x, y) {
-                    (x, y)
-                } else {
-                    (x + out.x, y + out.y)
-                };
-                out.update_exclusive_area(global_x, global_y, width, height);
+                out.update_non_exclusive_area(x, y, width, height);
                 // The desktop surface's input region leaves exclusive zones
                 // out; it is redrawn at the end of the next manage sequence.
                 if let Some(desktop) = out.desktop_surface.as_mut() {
