@@ -203,7 +203,10 @@ pub struct Config {
     /// Export WAYLAND_DISPLAY and XDG_CURRENT_DESKTOP to systemd/D-Bus
     /// activated services (e.g. the screencast portal) on startup.
     pub update_activation_environment: bool,
-    pub xcursor_theme: Option<XCursorTheme>,
+    /// XCursor theme name from the config file.
+    pub xcursor_theme: Option<String>,
+    /// XCursor size from the config file.
+    pub xcursor_size: Option<u32>,
     pub main_modifier: MainModifier,
 
     pub repeat_rate: i32,
@@ -240,6 +243,7 @@ impl Default for Config {
             lock_cmd: vec!["swaylock".to_string()],
             update_activation_environment: true,
             xcursor_theme: None,
+            xcursor_size: None,
             main_modifier: MainModifier::default(),
 
             repeat_rate: 50,
@@ -256,36 +260,30 @@ impl Default for Config {
     }
 }
 
-impl Config {
-    /// Resolved XCursor theme: config file → XCURSOR_THEME/XCURSOR_SIZE env
-    /// → ("default", 24).
-    pub fn xcursor_theme_resolved(&self) -> XCursorTheme {
-        self.xcursor_theme
-            .clone()
-            .or_else(xcursor_theme_from_env)
-            .unwrap_or(XCursorTheme {
-                name: "default".to_string(),
-                size: 24,
-            })
-    }
-}
+/// XCursor theme used when nothing else names one.
+const DEFAULT_XCURSOR_THEME: &str = "default";
+/// XCursor size used when nothing else sets one.
+const DEFAULT_XCURSOR_SIZE: u32 = 24;
 
-/// Read the theme from XCURSOR_THEME/XCURSOR_SIZE, if either is set.
-fn xcursor_theme_from_env() -> Option<XCursorTheme> {
-    let name = std::env::var("XCURSOR_THEME")
-        .ok()
-        .filter(|s| !s.is_empty());
-    let size = std::env::var("XCURSOR_SIZE")
-        .ok()
-        .and_then(|s| s.parse::<u32>().ok())
-        .filter(|&s| s > 0);
-    if name.is_none() && size.is_none() {
-        return None;
+impl Config {
+    /// Resolved XCursor theme. Name and size are resolved independently:
+    /// config file, then `XCURSOR_THEME`/`XCURSOR_SIZE` from the environment,
+    /// then `"default"` and 24.
+    pub fn xcursor_theme_resolved(&self) -> XCursorTheme {
+        let env = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+        XCursorTheme {
+            name: self
+                .xcursor_theme
+                .clone()
+                .or_else(|| env("XCURSOR_THEME"))
+                .unwrap_or_else(|| DEFAULT_XCURSOR_THEME.to_string()),
+            size: self
+                .xcursor_size
+                .or_else(|| env("XCURSOR_SIZE").and_then(|s| s.trim().parse().ok()))
+                .filter(|&size| size > 0)
+                .unwrap_or(DEFAULT_XCURSOR_SIZE),
+        }
     }
-    Some(XCursorTheme {
-        name: name.unwrap_or_else(|| "default".to_string()),
-        size: size.unwrap_or(24),
-    })
 }
 
 #[derive(Debug, Deserialize)]
@@ -749,21 +747,12 @@ impl Config {
         if let Some(main_modifier) = file.main_modifier {
             self.main_modifier = main_modifier;
         }
-        if file.xcursor_theme.is_some() || file.xcursor_size.is_some() {
-            let env = xcursor_theme_from_env();
-            self.xcursor_theme = Some(XCursorTheme {
-                name: file
-                    .xcursor_theme
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .or_else(|| env.as_ref().map(|e| e.name.clone()))
-                    .unwrap_or_else(|| "default".to_string()),
-                size: file
-                    .xcursor_size
-                    .filter(|&s| s > 0)
-                    .or_else(|| env.as_ref().map(|e| e.size))
-                    .unwrap_or(24),
-            });
+        if let Some(name) = file.xcursor_theme {
+            let name = name.trim();
+            self.xcursor_theme = (!name.is_empty()).then(|| name.to_string());
+        }
+        if let Some(size) = file.xcursor_size {
+            self.xcursor_size = (size > 0).then_some(size);
         }
         if let Some(launcher_cmd) = string_or_vec(file.launcher_cmd) {
             let launcher_cmd = clean_cmd_args(launcher_cmd);
@@ -940,6 +929,31 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn test_xcursor_parsing() {
+        let parse = |contents: &str| {
+            let mut config = Config::default();
+            config.apply(toml::from_str(contents).expect("parse config"));
+            (config.xcursor_theme, config.xcursor_size)
+        };
+
+        assert_eq!(parse(""), (None, None));
+        assert_eq!(
+            parse("xcursor_theme = \" Adwaita \"\nxcursor_size = 32"),
+            (Some("Adwaita".to_string()), Some(32))
+        );
+        assert_eq!(
+            parse("xcursor_theme = \"Adwaita\""),
+            (Some("Adwaita".to_string()), None)
+        );
+        assert_eq!(parse("xcursor_size = 32"), (None, Some(32)));
+        // Blank names and zero sizes count as unset.
+        assert_eq!(
+            parse("xcursor_theme = \"  \"\nxcursor_size = 0"),
+            (None, None)
+        );
     }
 
     #[test]
