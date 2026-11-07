@@ -100,6 +100,9 @@ pub struct Context {
 
     /// Outputs that moved since the last manage sequence: (id, dx, dy).
     pub pending_output_shifts: Vec<(OutputId, i32, i32)>,
+    /// Outputs whose size changed since the last manage sequence:
+    /// (id, old width, old height).
+    pub pending_output_resizes: Vec<(OutputId, i32, i32)>,
     /// Windows anchored to a removed output: (window_id, dead usable area).
     pending_output_orphans: Vec<(WindowId, (i32, i32, i32, i32))>,
     /// Windows fullscreen on a removed output they are not anchored to.
@@ -160,6 +163,7 @@ impl Context {
             share_last_choice: None,
 
             pending_output_shifts: Vec::new(),
+            pending_output_resizes: Vec::new(),
             pending_output_orphans: Vec::new(),
             pending_fullscreen_exits: Vec::new(),
         }
@@ -1596,24 +1600,11 @@ impl Context {
         use super::window::SnapState;
 
         let (ox, oy, ow, oh) = area;
-        let (has_ssd, swallow_top) = self
+        let (left, top, right, bottom) = self
             .windows
             .get(&window_id)
-            .map(|w| {
-                let w = w.borrow();
-                (w.decoration == Some(WindowDecoration::Ssd), w.swallow_top)
-            })
-            .unwrap_or((false, 0));
-        // Only account for borders/titlebar if window uses SSD
-        let (border_width, titlebar_height) = if has_ssd {
-            (
-                self.config.ui.border_width,
-                super::titlebar::titlebar_height(&self.config.ui),
-            )
-        } else {
-            (0, 0)
-        };
-        let swallow_top = swallow_top.max(0);
+            .map(|w| self.frame_insets(&w.borrow()))
+            .unwrap_or_default();
 
         let left_width = ow / 2;
         let (side_x, side_width) = match snap {
@@ -1623,10 +1614,26 @@ impl Context {
         };
 
         (
-            side_x + border_width,
-            oy + border_width + titlebar_height - swallow_top,
-            (side_width - border_width * 2).max(1),
-            (oh - border_width * 2 - titlebar_height + swallow_top).max(1),
+            side_x + left,
+            oy + top,
+            (side_width - left - right).max(1),
+            (oh - top - bottom).max(1),
+        )
+    }
+
+    /// How far server-side decorations extend past a window's content on each
+    /// side: (left, top, right, bottom). Zero for client-side decorations.
+    fn frame_insets(&self, window: &Window) -> (i32, i32, i32, i32) {
+        if window.decoration != Some(WindowDecoration::Ssd) {
+            return (0, 0, 0, 0);
+        }
+        let border = self.config.ui.border_width;
+        let titlebar = super::titlebar::titlebar_height(&self.config.ui);
+        (
+            border,
+            border + titlebar - window.swallow_top.max(0),
+            border,
+            border,
         )
     }
 
@@ -1915,6 +1922,9 @@ impl Context {
         let shifts = std::mem::take(&mut self.pending_output_shifts);
         for (output_id, dx, dy) in shifts {
             self.apply_output_shift(output_id, dx, dy);
+        }
+        for (output_id, old_width, old_height) in std::mem::take(&mut self.pending_output_resizes) {
+            self.refit_output_windows(output_id, old_width, old_height);
         }
         let orphans = std::mem::take(&mut self.pending_output_orphans);
         if !orphans.is_empty() {
@@ -3161,6 +3171,124 @@ impl Context {
         }
     }
 
+    /// Keep windows on an output that changed size (a new resolution or scale)
+    /// usable: snapped and maximized windows are snapped again to the new
+    /// size, and windows that fit the output before but not anymore are moved
+    /// back onto it, shrunk as far as needed and their minimum size allows.
+    /// Windows that already reached past the output's edges were put there
+    /// on purpose and stay where they are.
+    fn refit_output_windows(&mut self, output_id: OutputId, old_width: i32, old_height: i32) {
+        use super::window::{FullscreenState, Operator, SavedGeometry, SnapState};
+
+        let Some(output) = self.outputs.get(&output_id) else {
+            return;
+        };
+        let (old_rect, new_rect, area) = {
+            let out = output.borrow();
+            let new_rect = (out.x, out.y, out.width, out.height);
+            // The usable area may still reflect exclusive zones laid out for
+            // the old size; never let it reach past the output.
+            let area = intersect_rects(out.usable_area(), new_rect).unwrap_or(new_rect);
+            ((out.x, out.y, old_width, old_height), new_rect, area)
+        };
+        if old_width <= 0 || old_height <= 0 || area.2 <= 0 || area.3 <= 0 {
+            return;
+        }
+
+        let window_ids: Vec<WindowId> = self
+            .windows
+            .iter()
+            .filter(|(_, window)| {
+                let w = window.borrow();
+                !w.position_undefined
+                    && matches!(w.operator, Operator::None)
+                    && w.output
+                        .as_ref()
+                        .and_then(|o| o.upgrade())
+                        .is_some_and(|o| o.borrow().id == output_id)
+            })
+            .map(|(&id, _)| id)
+            .collect();
+
+        for window_id in window_ids {
+            let Some(window) = self.windows.get(&window_id).cloned() else {
+                continue;
+            };
+            let insets = self.frame_insets(&window.borrow());
+            let min_size = {
+                let w = window.borrow();
+                (w.min_width, w.min_height)
+            };
+            let refit = |rect: SavedGeometry| {
+                refit_rect(
+                    (rect.x, rect.y, rect.width, rect.height),
+                    insets,
+                    min_size,
+                    old_rect,
+                    new_rect,
+                    area,
+                )
+                .map(|(x, y, width, height)| SavedGeometry {
+                    x,
+                    y,
+                    width,
+                    height,
+                })
+            };
+
+            let (fullscreen, snap, current, pre_snap, pre_fullscreen) = {
+                let w = window.borrow();
+                let snap = w.snap_state.or(w.maximized.then_some(SnapState::Maximized));
+                let current = SavedGeometry {
+                    x: w.x,
+                    y: w.y,
+                    width: w.width,
+                    height: w.height,
+                };
+                (
+                    !matches!(w.fullscreen, FullscreenState::None),
+                    snap,
+                    current,
+                    w.pre_snap,
+                    w.pre_fullscreen,
+                )
+            };
+
+            if fullscreen {
+                // River sizes fullscreen windows; fix up where they go back to.
+                if let Some(saved) = pre_fullscreen.and_then(refit) {
+                    window.borrow_mut().pre_fullscreen = Some(saved);
+                }
+                continue;
+            }
+
+            let geometry = match snap {
+                Some(snap) => {
+                    let (x, y, width, height) = self.snapped_geometry(window_id, snap, area);
+                    Some(SavedGeometry {
+                        x,
+                        y,
+                        width,
+                        height,
+                    })
+                }
+                None => refit(current),
+            };
+            let pre_snap = snap.and(pre_snap).and_then(refit);
+
+            let mut w = window.borrow_mut();
+            if let Some(saved) = pre_snap {
+                w.pre_snap = Some(saved);
+            }
+            if let Some(geometry) = geometry {
+                w.set_position(geometry.x, geometry.y);
+                if (geometry.width, geometry.height) != (current.width, current.height) {
+                    w.propose_dimensions(geometry.width, geometry.height);
+                }
+            }
+        }
+    }
+
     /// Carry `rect`, a window's geometry within `old_area`, over to output
     /// `target_id`, keeping its position relative to the usable area. The
     /// window keeps its size unless it doesn't fit or `resize` is set. A
@@ -3496,6 +3624,62 @@ fn map_rect_between_areas(
     (new_x, new_y, new_w, new_h)
 }
 
+/// The overlap of two (x, y, width, height) rects, if any.
+fn intersect_rects(
+    a: (i32, i32, i32, i32),
+    b: (i32, i32, i32, i32),
+) -> Option<(i32, i32, i32, i32)> {
+    let x1 = a.0.max(b.0);
+    let y1 = a.1.max(b.1);
+    let x2 = (a.0 + a.2).min(b.0 + b.2);
+    let y2 = (a.1 + a.3).min(b.1 + b.3);
+    (x2 > x1 && y2 > y1).then_some((x1, y1, x2 - x1, y2 - y1))
+}
+
+/// Whether rect `inner` lies entirely within rect `outer`.
+fn rect_contains(outer: (i32, i32, i32, i32), inner: (i32, i32, i32, i32)) -> bool {
+    inner.0 >= outer.0
+        && inner.1 >= outer.1
+        && inner.0 + inner.2 <= outer.0 + outer.2
+        && inner.1 + inner.3 <= outer.1 + outer.3
+}
+
+/// Refit a window's content `rect` after its output changed from `old_rect`
+/// to `new_rect`. Only a window whose frame (content plus `insets`: left, top,
+/// right, bottom) fit the old output but not the new one is touched: it is
+/// moved into `area` by as little as possible, and shrunk to fit if needed but
+/// no smaller than `min_size`. If it can't fit, it's pinned to the top-left
+/// so its titlebar stays reachable. Returns the new content rect, or `None`
+/// if the window should stay as it is.
+fn refit_rect(
+    rect: (i32, i32, i32, i32),
+    insets: (i32, i32, i32, i32),
+    min_size: (i32, i32),
+    old_rect: (i32, i32, i32, i32),
+    new_rect: (i32, i32, i32, i32),
+    area: (i32, i32, i32, i32),
+) -> Option<(i32, i32, i32, i32)> {
+    let (left, top, right, bottom) = insets;
+    let frame = (
+        rect.0 - left,
+        rect.1 - top,
+        rect.2 + left + right,
+        rect.3 + top + bottom,
+    );
+    if !rect_contains(old_rect, frame) || rect_contains(new_rect, frame) {
+        return None;
+    }
+
+    let (ax, ay, aw, ah) = area;
+    let width = rect.2.min(aw - left - right).max(min_size.0).max(1);
+    let height = rect.3.min(ah - top - bottom).max(min_size.1).max(1);
+    let frame_w = width + left + right;
+    let frame_h = height + top + bottom;
+    let frame_x = frame.0.clamp(ax, (ax + aw - frame_w).max(ax));
+    let frame_y = frame.1.clamp(ay, (ay + ah - frame_h).max(ay));
+    Some((frame_x + left, frame_y + top, width, height))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -3774,5 +3958,73 @@ mod tests {
             (pre_snap.x, pre_snap.y, pre_snap.width, pre_snap.height),
             (133, 95, 640, 512)
         );
+    }
+
+    #[test]
+    fn refit_rect_leaves_windows_that_still_fit_or_never_did() {
+        let old = (0, 0, 2560, 1440);
+        let new = (0, 0, 1920, 1080);
+        // Still fits.
+        assert_eq!(
+            refit_rect((100, 100, 800, 600), (0, 0, 0, 0), (0, 0), old, new, new),
+            None
+        );
+        // Reached past the old output's edge already.
+        assert_eq!(
+            refit_rect((2000, 100, 800, 600), (0, 0, 0, 0), (0, 0), old, new, new),
+            None
+        );
+    }
+
+    #[test]
+    fn refit_rect_moves_and_shrinks_by_as_little_as_needed() {
+        let old = (0, 0, 2560, 1440);
+        let new = (0, 0, 1920, 1080);
+        let insets = (2, 30, 2, 2);
+        // Fits in size, only moved back in.
+        assert_eq!(
+            refit_rect((1500, 200, 800, 600), insets, (0, 0), old, new, new),
+            Some((1118, 200, 800, 600))
+        );
+        // Too large: shrunk to the area, frame included.
+        assert_eq!(
+            refit_rect((100, 100, 2400, 1300), insets, (0, 0), old, new, new),
+            Some((2, 30, 1916, 1048))
+        );
+        // Minimum size wins over fitting; pinned to the top-left.
+        assert_eq!(
+            refit_rect((100, 100, 2400, 1300), insets, (2000, 0), old, new, new),
+            Some((2, 30, 2000, 1048))
+        );
+    }
+
+    #[test]
+    fn resized_output_refits_windows() {
+        let mut ctx = context_with_outputs(&[(1, 0, 0, 2560, 1440)]);
+        // Fits before, not after.
+        add_window(&mut ctx, 10, 1, (1500, 800, 800, 600));
+        // Already reaching past the edge: left alone.
+        add_window(&mut ctx, 11, 1, (2200, 100, 800, 600));
+        // Maximized: follows the new size.
+        add_window(&mut ctx, 12, 1, (0, 0, 2560, 1440));
+        {
+            let mut w = ctx.windows[&12].borrow_mut();
+            w.maximized = true;
+            w.snap_state = Some(super::super::window::SnapState::Maximized);
+        }
+
+        ctx.outputs[&1].borrow_mut().update_dimensions(1920, 1080);
+        ctx.pending_output_resizes.push((1, 2560, 1440));
+        ctx.handle_manage_start();
+
+        let w = ctx.windows[&10].borrow();
+        assert_eq!((w.x, w.y), (1120, 480));
+        drop(w);
+        let w = ctx.windows[&11].borrow();
+        assert_eq!((w.x, w.y), (2200, 100));
+        drop(w);
+        let w = ctx.windows[&12].borrow();
+        assert_eq!((w.x, w.y), (0, 0));
+        assert_eq!(w.proposed_dimensions(), (1920, 1080));
     }
 }

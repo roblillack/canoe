@@ -2471,7 +2471,18 @@ impl Dispatch<RiverOutputV1, canoe::OutputId> for AppState {
                 }
             }
             Event::Dimensions { width, height } => {
+                let (old_width, old_height) = {
+                    let out = output.borrow();
+                    (out.width, out.height)
+                };
                 output.borrow_mut().update_dimensions(width, height);
+                if (old_width, old_height) != (width, height) {
+                    state
+                        .context
+                        .borrow_mut()
+                        .pending_output_resizes
+                        .push((output_id, old_width, old_height));
+                }
             }
         }
     }
