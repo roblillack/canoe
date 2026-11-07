@@ -36,6 +36,7 @@ pub enum WindowMenuMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayerSurfaceKind {
     Desktop(OutputId),
+    DesktopBackground(OutputId),
     Menu,
     MenuShield(OutputId),
     SharePicker(OutputId),

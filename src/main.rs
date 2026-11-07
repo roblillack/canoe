@@ -60,6 +60,11 @@ struct AppState {
     globals: Globals,
     /// Where `canoe --share-picker` requests arrive.
     share_server: Option<ipc::ShareServer>,
+    /// Whether the configured startup commands are still to be launched.
+    startup_pending: bool,
+    /// Whether the first manage sequence has started, i.e. River has
+    /// announced the initial outputs and the desktop surfaces exist.
+    manage_seen: bool,
 }
 
 /// Collected Wayland globals
@@ -904,6 +909,89 @@ fn handle_window_menu_commit(state: &mut AppState, seat_id: canoe::SeatId) {
         .queue_action(binding::Action::WindowMenuCommit);
 }
 
+fn ensure_desktop_surfaces(
+    state: &mut AppState,
+    output_id: canoe::OutputId,
+    qh: &QueueHandle<AppState>,
+) {
+    ensure_desktop_background(state, output_id, qh);
+    ensure_desktop_surface(state, output_id, qh);
+}
+
+/// Solid-fill surface on the background layer, *below* wallpaper clients:
+/// River stacks same-layer surfaces in creation order, and the startup
+/// commands are launched only after this exists.
+///
+/// The surface is kept even when the fill is fully transparent. Creating it
+/// later, say after a reload that makes the fill visible, would put it on
+/// top of a wallpaper that is already running.
+fn ensure_desktop_background(
+    state: &mut AppState,
+    output_id: canoe::OutputId,
+    qh: &QueueHandle<AppState>,
+) {
+    let (Some(compositor), Some(layer_shell)) = (
+        state.globals.compositor.as_ref(),
+        state.globals.wlr_layer_shell.as_ref(),
+    ) else {
+        return;
+    };
+
+    let output = {
+        let context = state.context.borrow();
+        context.outputs.get(&output_id).cloned()
+    };
+    let Some(output) = output else {
+        return;
+    };
+
+    if output.borrow().desktop_background.is_some() {
+        return;
+    }
+
+    // Wait until the output's wl_output is known rather than letting the
+    // compositor pick one and recreating the surface later.
+    let Some(wl_output) = output.borrow().wl_output.clone() else {
+        return;
+    };
+    let surface = compositor.create_surface(qh, ());
+    let layer_surface = layer_shell.get_layer_surface(
+        &surface,
+        Some(&wl_output),
+        wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer::Background,
+        "canoe-desktop-background".to_string(),
+        qh,
+        canoe::LayerSurfaceKind::DesktopBackground(output_id),
+    );
+
+    layer_surface.set_anchor(
+        wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor::Top
+            | wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor::Bottom
+            | wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor::Left
+            | wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::Anchor::Right,
+    );
+    layer_surface.set_exclusive_zone(-1);
+    layer_surface.set_keyboard_interactivity(
+        wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::KeyboardInteractivity::None,
+    );
+    layer_surface.set_size(0, 0);
+    surface.commit();
+
+    // A viewport lets a single pixel cover the whole output; no fractional
+    // scale is needed for a solid color.
+    let viewport = state
+        .globals
+        .viewporter
+        .as_ref()
+        .map(|viewporter| viewporter.get_viewport(&surface, qh, ()));
+    output.borrow_mut().desktop_background = Some(canoe::DesktopSurface::new(
+        surface,
+        layer_surface,
+        canoe::scale::FractionalSurface::new(viewport, None),
+        output_id,
+    ));
+}
+
 fn ensure_desktop_surface(
     state: &mut AppState,
     output_id: canoe::OutputId,
@@ -928,12 +1016,14 @@ fn ensure_desktop_surface(
         return;
     }
 
-    let wl_output = output.borrow().wl_output.clone();
+    let Some(wl_output) = output.borrow().wl_output.clone() else {
+        return;
+    };
     let surface = compositor.create_surface(qh, ());
     let layer_surface = layer_shell.get_layer_surface(
         &surface,
-        wl_output.as_ref(),
-        wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer::Background,
+        Some(&wl_output),
+        wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_shell_v1::Layer::Bottom,
         "canoe-desktop".to_string(),
         qh,
         canoe::LayerSurfaceKind::Desktop(output_id),
@@ -966,6 +1056,56 @@ fn ensure_desktop_surface(
     ));
 }
 
+/// Repaint the solid-fill background surface when dirty. Purely visual:
+/// the input region is always empty so every event reaches clients below.
+fn render_desktop_background(
+    state: &mut AppState,
+    output_id: canoe::OutputId,
+    qh: &QueueHandle<AppState>,
+) {
+    let (bg_color, dirty) = {
+        let context = state.context.borrow();
+        let dirty = context
+            .outputs
+            .get(&output_id)
+            .and_then(|o| o.borrow().desktop_background.as_ref().map(|d| d.dirty))
+            .unwrap_or(false);
+        (context.config.ui.desktop_background, dirty)
+    };
+    if !dirty {
+        return;
+    }
+
+    let (Some(shm), Some(compositor)) = (
+        state.globals.shm.as_ref(),
+        state.globals.compositor.as_ref(),
+    ) else {
+        return;
+    };
+
+    let output = {
+        let context = state.context.borrow();
+        context.outputs.get(&output_id).cloned()
+    };
+    let Some(output) = output else {
+        return;
+    };
+
+    let mut out = output.borrow_mut();
+    let Some(background) = out.desktop_background.as_mut() else {
+        return;
+    };
+    if !background.configured {
+        return;
+    }
+
+    background.ensure_solid_buffer(shm, qh);
+    background.render(bg_color);
+    background.update_input_region(compositor, qh, false);
+    background.commit();
+    background.dirty = false;
+}
+
 fn render_desktop_surface(
     state: &mut AppState,
     output_id: canoe::OutputId,
@@ -992,7 +1132,6 @@ fn render_desktop_surface(
     };
 
     let (
-        bg_color,
         icons,
         icon_theme,
         font_name,
@@ -1000,10 +1139,10 @@ fn render_desktop_surface(
         label_font_name,
         label_font_size,
         scale,
+        desktop_menu,
     ) = {
         let mut context = state.context.borrow_mut();
         let ui = &context.config.ui;
-        let bg_color = ui.desktop_background;
         let icon_theme = canoe::IconTheme {
             text: ui.icons_text.unwrap_or(ui.menu_text),
             highlight_bg: ui.icons_highlight_bg.unwrap_or(ui.menu_highlight_bg),
@@ -1020,6 +1159,7 @@ fn render_desktop_surface(
         };
         let label_font_size = ui.icons_font_size.unwrap_or(font_size * 0.80);
         let icons_enabled = ui.icons_enabled;
+        let desktop_menu = ui.desktop_menu;
         let scale = context
             .outputs
             .get(&output_id)
@@ -1031,7 +1171,6 @@ fn render_desktop_surface(
             Vec::new()
         };
         (
-            bg_color,
             icons,
             icon_theme,
             font_name,
@@ -1039,6 +1178,7 @@ fn render_desktop_surface(
             label_font_name,
             label_font_size,
             scale,
+            desktop_menu,
         )
     };
 
@@ -1058,9 +1198,14 @@ fn render_desktop_surface(
         return;
     }
 
-    desktop.ensure_buffer(shm, qh, scale);
+    if icons.is_empty() {
+        // Nothing to draw: a single transparent pixel covers the output.
+        desktop.ensure_solid_buffer(shm, qh);
+    } else {
+        desktop.ensure_buffer(shm, qh, scale);
+    }
     desktop.render_with_icons(
-        bg_color,
+        0, // transparent fill: wallpaper/fill on the background layer shows through
         &icons,
         &icon_theme,
         font_name.as_deref(),
@@ -1068,7 +1213,7 @@ fn render_desktop_surface(
         Some(label_font_name.as_str()),
         label_font_size,
     );
-    desktop.update_input_region(compositor, qh);
+    desktop.update_input_region(compositor, qh, desktop_menu);
     desktop.commit();
     desktop.dirty = false;
 }
@@ -1079,6 +1224,7 @@ fn render_all_desktop_surfaces(state: &mut AppState, qh: &QueueHandle<AppState>)
         context.outputs.keys().copied().collect()
     };
     for output_id in output_ids {
+        render_desktop_background(state, output_id, qh);
         render_desktop_surface(state, output_id, qh);
     }
 }
@@ -1379,6 +1525,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                         if out.wl_output_name != name {
                             continue;
                         }
+                        let changed = out.wl_output.as_ref() != Some(&output);
                         out.wl_output = Some(output.clone());
                         out.scale = state
                             .globals
@@ -1387,14 +1534,13 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                             .copied()
                             .unwrap_or(1);
                         let output_id = out.id;
-                        let had_desktop = out.desktop_surface.is_some();
-                        if had_desktop {
+                        // Layer surfaces are bound to an output for life.
+                        if changed {
                             out.desktop_surface = None;
+                            out.desktop_background = None;
                         }
                         drop(out);
-                        if had_desktop || state.globals.wlr_layer_shell.is_some() {
-                            ensure_desktop_surface(state, output_id, qh);
-                        }
+                        ensure_desktop_surfaces(state, output_id, qh);
                     }
                 }
                 "wl_seat" => {
@@ -1430,7 +1576,7 @@ impl Dispatch<wl_registry::WlRegistry, ()> for AppState {
                     state.globals.wlr_layer_shell = Some(layer_shell);
                     let outputs: Vec<_> = state.context.borrow().outputs.keys().copied().collect();
                     for output_id in outputs {
-                        ensure_desktop_surface(state, output_id, qh);
+                        ensure_desktop_surfaces(state, output_id, qh);
                     }
                 }
                 "river_input_manager_v1" => {
@@ -1500,6 +1646,7 @@ impl Dispatch<RiverWindowManagerV1, ()> for AppState {
                 state.context.borrow_mut().running = false;
             }
             Event::ManageStart => {
+                state.manage_seen = true;
                 state.context.borrow_mut().handle_manage_start();
                 // After a config reload, rebuild key bindings within this manage
                 // sequence (enable/disable are only valid here).
@@ -2286,7 +2433,9 @@ impl Dispatch<RiverOutputV1, canoe::OutputId> for AppState {
             Event::WlOutput { name } => {
                 let mut out = output.borrow_mut();
                 out.wl_output_name = name;
-                out.wl_output = state.globals.wl_outputs.get(&name).cloned();
+                let wl_output = state.globals.wl_outputs.get(&name).cloned();
+                let changed = out.wl_output != wl_output;
+                out.wl_output = wl_output;
                 out.name = state.globals.wl_output_names.get(&name).cloned();
                 out.scale = state
                     .globals
@@ -2294,12 +2443,13 @@ impl Dispatch<RiverOutputV1, canoe::OutputId> for AppState {
                     .get(&name)
                     .copied()
                     .unwrap_or(1);
-                let had_desktop = out.desktop_surface.is_some();
-                if had_desktop {
+                // Layer surfaces are bound to an output for life.
+                if changed {
                     out.desktop_surface = None;
+                    out.desktop_background = None;
                 }
                 drop(out);
-                ensure_desktop_surface(state, output_id, qh);
+                ensure_desktop_surfaces(state, output_id, qh);
             }
             Event::Position { x, y } => {
                 output.borrow_mut().update_position(x, y);
@@ -2500,6 +2650,28 @@ impl Dispatch<ZwlrLayerSurfaceV1, canoe::LayerSurfaceKind> for AppState {
                         }
                         render_desktop_surface(state, *output_id, qh);
                     }
+                    canoe::LayerSurfaceKind::DesktopBackground(output_id) => {
+                        let output = {
+                            let context = state.context.borrow();
+                            context.outputs.get(output_id).cloned()
+                        };
+                        let Some(output) = output else {
+                            return;
+                        };
+                        {
+                            let mut out = output.borrow_mut();
+                            let Some(background) = out.desktop_background.as_mut() else {
+                                return;
+                            };
+                            if (background.width, background.height)
+                                != (width as i32, height as i32)
+                            {
+                                background.reset_buffer();
+                            }
+                            background.configure(width as i32, height as i32);
+                        }
+                        render_desktop_background(state, *output_id, qh);
+                    }
                     canoe::LayerSurfaceKind::Menu => {
                         let mut context = state.context.borrow_mut();
                         let Some(menu) = context.window_menu.as_mut() else {
@@ -2564,6 +2736,11 @@ impl Dispatch<ZwlrLayerSurfaceV1, canoe::LayerSurfaceKind> for AppState {
                 canoe::LayerSurfaceKind::Desktop(output_id) => {
                     if let Some(output) = state.context.borrow().outputs.get(output_id) {
                         output.borrow_mut().desktop_surface = None;
+                    }
+                }
+                canoe::LayerSurfaceKind::DesktopBackground(output_id) => {
+                    if let Some(output) = state.context.borrow().outputs.get(output_id) {
+                        output.borrow_mut().desktop_background = None;
                     }
                 }
                 canoe::LayerSurfaceKind::Menu => {
@@ -3397,27 +3574,33 @@ impl Dispatch<wl_pointer::WlPointer, canoe::SeatId> for AppState {
                                             render_desktop_surface(state, output_id, _qh);
                                             request_manage_dirty(state);
                                         } else {
-                                            let mut context = state.context.borrow_mut();
-                                            if context.window_menu.is_some() {
-                                                context.close_window_menu();
+                                            if state.context.borrow().config.ui.desktop_menu {
+                                                let mut context = state.context.borrow_mut();
+                                                if context.window_menu.is_some() {
+                                                    context.close_window_menu();
+                                                }
+                                                drop(context);
+                                                open_window_menu(
+                                                    state,
+                                                    output_id,
+                                                    px,
+                                                    py,
+                                                    false,
+                                                    canoe::WindowMenuMode::Pointer,
+                                                    Some("Windows".to_string()),
+                                                    None,
+                                                    _qh,
+                                                );
+                                                update_menu_hover_from_global(state, *seat_id, _qh);
+                                                seat.borrow_mut().menu_click_button = Some(button);
+                                                seat.borrow_mut()
+                                                    .queue_action(binding::Action::ClearFocus);
+                                                request_manage_dirty(state);
+                                            } else {
+                                                seat.borrow_mut()
+                                                    .queue_action(binding::Action::ClearFocus);
+                                                request_manage_dirty(state);
                                             }
-                                            drop(context);
-                                            open_window_menu(
-                                                state,
-                                                output_id,
-                                                px,
-                                                py,
-                                                false,
-                                                canoe::WindowMenuMode::Pointer,
-                                                Some("Windows".to_string()),
-                                                None,
-                                                _qh,
-                                            );
-                                            update_menu_hover_from_global(state, *seat_id, _qh);
-                                            seat.borrow_mut().menu_click_button = Some(button);
-                                            seat.borrow_mut()
-                                                .queue_action(binding::Action::ClearFocus);
-                                            request_manage_dirty(state);
                                         }
                                     } else {
                                         seat.borrow_mut().queue_action(binding::Action::ClearFocus);
@@ -4106,6 +4289,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         context: context.clone(),
         globals: Globals::default(),
         share_server: None,
+        startup_pending: true,
+        manage_seen: false,
     };
 
     // Get registry and collect globals
@@ -4151,11 +4336,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // this session's display.
     if state.context.borrow().config.update_activation_environment {
         update_activation_environment(&state.context.borrow());
-    }
-
-    // Run startup commands
-    for cmd in &state.context.borrow().config.startup_cmds.clone() {
-        state.context.borrow().spawn(cmd);
     }
 
     // Main event loop
@@ -4245,6 +4425,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             event_queue.dispatch_pending(&mut state)?;
+        }
+
+        // Launch the startup commands once River has announced the outputs
+        // and the desktop surfaces have been created, and only after those
+        // requests reached the compositor: River stacks layer surfaces in
+        // creation order, so a wallpaper client started here lands above the
+        // background fill instead of racing it.
+        if state.startup_pending && state.manage_seen {
+            state.startup_pending = false;
+            conn.flush()?;
+            let cmds = state.context.borrow().config.startup_cmds.clone();
+            for cmd in &cmds {
+                state.context.borrow().spawn(cmd);
+            }
         }
 
         // Handle screen-sharing requests

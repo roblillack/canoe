@@ -137,7 +137,17 @@ pub struct UiConfig {
     pub shadows_color: u32,
     pub font_name: Option<String>,
     pub font_size: f32,
+    /// Fill color for the desktop background surface (0xRRGGBBAA), drawn on
+    /// the background layer. Wallpaper clients (swaybg, shaderbg) started
+    /// after Canoe stack above it, but one already running when the surface
+    /// is created ends up below it, so their users should configure
+    /// `"transparent"` (alpha 0), which draws no fill.
     pub desktop_background: u32,
+    /// Whether right-clicking empty desktop opens the window menu. When
+    /// `false`, the desktop icon surface only captures input on minimized-
+    /// window icons; all other pointer input falls through to wallpaper
+    /// clients (e.g. shaderbg) below it.
+    pub desktop_menu: bool,
     /// Whether minimized-window icons are shown on the desktop.
     pub icons_enabled: bool,
     /// Font for icon labels. When `None`, falls back to a regular-weight
@@ -181,6 +191,7 @@ impl Default for UiConfig {
             font_name: None,
             font_size: 15.0,
             desktop_background: 0x008080FF,
+            desktop_menu: true,
             icons_enabled: true,
             icons_font_name: None,
             icons_font_size: None,
@@ -327,6 +338,7 @@ struct UiConfigFile {
     font_size: Option<f32>,
     #[serde(default, deserialize_with = "deserialize_opt_color")]
     desktop_background: Option<u32>,
+    desktop_menu: Option<bool>,
     icons_enabled: Option<bool>,
     icons_font_name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_opt_f32")]
@@ -433,6 +445,9 @@ impl UiConfig {
         if let Some(color) = overrides.desktop_background {
             self.desktop_background = color;
         }
+        if let Some(enabled) = overrides.desktop_menu {
+            self.desktop_menu = enabled;
+        }
         if let Some(enabled) = overrides.icons_enabled {
             self.icons_enabled = enabled;
         }
@@ -488,7 +503,9 @@ where
             Ok(Some(parsed))
         }
         Some(toml::Value::String(value)) => parse_color_str(&value)
-            .ok_or_else(|| de::Error::custom("expected color string #rgb, #rrggbb, or #rrggbbaa"))
+            .ok_or_else(|| {
+                de::Error::custom("expected color string #rgb, #rrggbb, #rrggbbaa, or transparent")
+            })
             .map(Some),
         Some(other) => Err(de::Error::custom(format!(
             "expected string or integer, got {}",
@@ -499,6 +516,9 @@ where
 
 fn parse_color_str(value: &str) -> Option<u32> {
     let value = value.trim();
+    if value.eq_ignore_ascii_case("transparent") {
+        return Some(0x00000000);
+    }
     let hex = value.strip_prefix('#')?;
     if !hex.is_ascii() {
         return None;
@@ -1069,6 +1089,7 @@ mod tests {
             menu_bg = "#112233"
             menu_text = "#123"
             titlebar_bg_active = "#11223344"
+            desktop_background = "transparent"
         "##;
 
         let file_config = toml::from_str::<FileConfig>(contents).expect("parse config");
@@ -1077,6 +1098,7 @@ mod tests {
         assert_eq!(ui.menu_bg, Some(0x112233FF));
         assert_eq!(ui.menu_text, Some(0x112233FF));
         assert_eq!(ui.titlebar_bg_active, Some(0x11223344));
+        assert_eq!(ui.desktop_background, Some(0x00000000));
     }
 }
 

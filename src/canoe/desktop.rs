@@ -1,5 +1,4 @@
-//! Desktop background surface for pointer input and minimized window icons.
-
+//! Desktop icon surface (bottom layer) + shared surface machinery also used by the background fill
 #![allow(dead_code)]
 
 use memmap2::MmapMut;
@@ -133,7 +132,50 @@ impl DesktopSurface {
             Origin::default(),
         );
         self.scale = scale;
+        self.allocate_buffer(shm, qh, buf_w, buf_h);
+    }
 
+    /// Ensure a buffer for a surface drawn in a single color: one pixel
+    /// stretched over the surface when it has a viewport, else a full-size
+    /// buffer at scale 1.
+    pub fn ensure_solid_buffer<D>(&mut self, shm: &wl_shm::WlShm, qh: &QueueHandle<D>)
+    where
+        D: 'static
+            + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
+            + wayland_client::Dispatch<wl_buffer::WlBuffer, ()>,
+    {
+        if self.width <= 0 || self.height <= 0 {
+            return;
+        }
+
+        let scale = Scale::default();
+        let (buf_w, buf_h) = self.fractional.apply(
+            &self.surface,
+            self.width,
+            self.height,
+            &scale,
+            Origin::default(),
+        );
+        self.scale = scale;
+        if self.fractional.has_viewport() {
+            self.allocate_buffer(shm, qh, 1, 1);
+        } else {
+            self.allocate_buffer(shm, qh, buf_w, buf_h);
+        }
+    }
+
+    /// (Re)allocate the shm buffer unless one of this size already exists.
+    fn allocate_buffer<D>(
+        &mut self,
+        shm: &wl_shm::WlShm,
+        qh: &QueueHandle<D>,
+        buf_w: i32,
+        buf_h: i32,
+    ) where
+        D: 'static
+            + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
+            + wayland_client::Dispatch<wl_buffer::WlBuffer, ()>,
+    {
         if self.buffer.is_some() && self.buf_width == buf_w && self.buf_height == buf_h {
             return;
         }
@@ -166,9 +208,10 @@ impl DesktopSurface {
         self.buf_height = buf_h;
     }
 
+    /// Fill the whole buffer with `rgba` (0xRRGGBBAA, straight alpha).
     pub fn render(&mut self, rgba: u32) {
         if let Some(ref mut mmap) = self.mmap {
-            let argb = rgba_to_argb(rgba);
+            let argb = rgba_to_premultiplied_argb(rgba);
             let color_bytes = argb.to_ne_bytes();
             for pixel in mmap.as_mut().as_chunks_mut::<4>().0 {
                 *pixel = color_bytes;
@@ -415,10 +458,19 @@ impl DesktopSurface {
         self.icons.len()
     }
 
+    /// With `full = true` the whole surface accepts input (legacy behavior:
+    /// right-click anywhere opens the window menu). With `full = false` only
+    /// the minimized-icon cells accept input and everything else falls
+    /// through to clients below (e.g. shaderbg). No icons + `full = false`
+    /// = fully click-through.
+    ///
+    /// Never pass `None` to set_input_region here: `None` means an
+    /// *infinite* region; an empty region means "no input".
     pub fn update_input_region<D>(
         &self,
         compositor: &wl_compositor::WlCompositor,
         qh: &QueueHandle<D>,
+        full: bool,
     ) where
         D: 'static + wayland_client::Dispatch<wl_region::WlRegion, ()>,
     {
@@ -427,7 +479,21 @@ impl DesktopSurface {
         }
 
         let region = compositor.create_region(qh, ());
-        region.add(0, 0, self.width, self.height);
+        if full {
+            region.add(0, 0, self.width, self.height);
+        } else {
+            // Layouts are in buffer pixels; the input region is in
+            // surface-local logical pixels. Round outwards so the region
+            // covers every device pixel of the cell.
+            let device = self.scale.device();
+            for layout in &self.icons {
+                let x0 = (layout.x as f64 / device).floor() as i32;
+                let y0 = (layout.y as f64 / device).floor() as i32;
+                let x1 = ((layout.x + layout.width) as f64 / device).ceil() as i32;
+                let y1 = ((layout.y + layout.height) as f64 / device).ceil() as i32;
+                region.add(x0, y0, x1 - x0, y1 - y0);
+            }
+        }
         self.surface.set_input_region(Some(&region));
         region.destroy();
     }
@@ -519,6 +585,17 @@ fn rgba_to_argb(rgba: u32) -> u32 {
     let g = (rgba >> 16) & 0xff;
     let b = (rgba >> 8) & 0xff;
     let a = rgba & 0xff;
+    (a << 24) | (r << 16) | (g << 8) | b
+}
+
+/// Convert straight-alpha 0xRRGGBBAA to the premultiplied ARGB that
+/// `wl_shm` buffers hold.
+fn rgba_to_premultiplied_argb(rgba: u32) -> u32 {
+    let a = rgba & 0xff;
+    let premul = |c: u32| (c * a + 127) / 255;
+    let r = premul((rgba >> 24) & 0xff);
+    let g = premul((rgba >> 16) & 0xff);
+    let b = premul((rgba >> 8) & 0xff);
     (a << 24) | (r << 16) | (g << 8) | b
 }
 
@@ -762,5 +839,17 @@ impl Drop for DesktopSurface {
         self.fractional.destroy();
         self.layer_surface.destroy();
         self.surface.destroy();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::rgba_to_premultiplied_argb;
+
+    #[test]
+    fn premultiplies_fill_color() {
+        assert_eq!(rgba_to_premultiplied_argb(0x008080FF), 0xFF008080);
+        assert_eq!(rgba_to_premultiplied_argb(0xFFFFFF80), 0x80808080);
+        assert_eq!(rgba_to_premultiplied_argb(0x12345600), 0x00000000);
     }
 }

@@ -167,6 +167,11 @@ impl FractionalSurface {
         }
     }
 
+    /// Whether the surface has a viewport, so its buffer may be any size.
+    pub fn has_viewport(&self) -> bool {
+        self.viewport.is_some()
+    }
+
     /// Record a `preferred_scale` event. True when it changed anything.
     pub fn set_preferred(&mut self, scale: u32) -> bool {
         if scale == 0 || self.preferred == Some(scale) {
