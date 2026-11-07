@@ -62,7 +62,9 @@ jobs:
             libwayland-dev \
             libxkbcommon-dev \
             libfreetype-dev \
-            libfontconfig1-dev
+            libfontconfig1-dev \
+            fonts-dejavu-core \
+            fonts-noto-color-emoji
 
       - name: Set up Rust
         uses: actions-rs/toolchain@v1

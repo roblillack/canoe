@@ -1,6 +1,6 @@
 //! Titlebar rendering for windows
 
-use super::render::Renderer;
+use super::render::{ColorGlyphs, Renderer};
 use super::scale::{FractionalSurface, Origin, Scale};
 use super::shmfile::ShmPool;
 use crate::config::UiConfig;
@@ -1054,6 +1054,11 @@ impl Titlebar {
                                 strip.height,
                                 scale.factor(),
                                 text_argb,
+                                if is_active {
+                                    ColorGlyphs::Natural
+                                } else {
+                                    ColorGlyphs::Tinted
+                                },
                                 ui.font_size,
                                 ui.font_name.as_deref(),
                                 text_padding,

@@ -30,6 +30,10 @@ memmap2 = "0.9"
 # Font rendering for titlebars
 freetype = "0.7"
 resvg = "0.42"
+# Text shaping (ligatures, kerning, emoji sequences). Kept at the version
+# resvg already pulls in, so it adds no new crates.
+rustybuzz = "0.14"
+unicode-properties = "0.1"
 yeslogic-fontconfig-sys = "6"
 
 # Regex for window rules

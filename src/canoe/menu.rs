@@ -12,10 +12,11 @@ use wayland_client::protocol::{
 use wayland_client::QueueHandle;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 
+use super::render::{ColorGlyphs, Renderer};
 use super::scale::{FractionalSurface, Origin, Scale};
 use super::shadow::{draw_shadow_soft, SoftShadowRect};
 use super::titlebar::Rect;
-use super::{font, render::Renderer, shmfile, OutputId, WindowId};
+use super::{font, shmfile, OutputId, WindowId};
 
 /// Menu entry data.
 #[derive(Debug, Clone)]
@@ -682,6 +683,7 @@ impl MenuRowContext<'_> {
         x: i32,
         (top, height): (i32, i32),
         color_argb: u32,
+        color_glyphs: ColorGlyphs,
     ) {
         let menu = self.geometry.menu;
         let x = self.x(x);
@@ -693,6 +695,7 @@ impl MenuRowContext<'_> {
             height,
             self.scale.factor(),
             color_argb,
+            color_glyphs,
             self.theme.font_size,
             self.theme.font_name.as_deref(),
             0,
@@ -704,7 +707,16 @@ fn draw_menu_header(renderer: &mut Renderer, title: &str, ctx: &MenuRowContext<'
     let bg = rgba_to_argb(ctx.theme.titlebar_bg);
     let text_color = rgba_to_argb(ctx.theme.titlebar_text);
     let row = ctx.fill_row(renderer, 0, bg);
-    ctx.text(renderer, title, ITEM_PADDING_X, row, text_color);
+    // The header is styled like an inactive titlebar.
+    let color_glyphs = ColorGlyphs::Tinted;
+    ctx.text(
+        renderer,
+        title,
+        ITEM_PADDING_X,
+        row,
+        text_color,
+        color_glyphs,
+    );
 }
 
 fn draw_menu_row(
@@ -761,7 +773,12 @@ fn draw_menu_row(
     }
 
     let text_x = ITEM_PADDING_X + ICON_SIZE + ICON_GAP;
-    ctx.text(renderer, &item.title, text_x, row, text_color);
+    let color_glyphs = if is_active {
+        ColorGlyphs::Natural
+    } else {
+        ColorGlyphs::Tinted
+    };
+    ctx.text(renderer, &item.title, text_x, row, text_color, color_glyphs);
 }
 
 fn rgba_to_argb(rgba: u32) -> u32 {

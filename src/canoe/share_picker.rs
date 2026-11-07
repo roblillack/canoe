@@ -15,7 +15,7 @@ use wayland_client::protocol::{
 use wayland_client::QueueHandle;
 use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 
-use super::render::Renderer;
+use super::render::{ColorGlyphs, Renderer};
 use super::scale::{FractionalSurface, Origin, Scale};
 use super::{font, shmfile, OutputId, SeatId, WindowId};
 
@@ -570,6 +570,11 @@ fn draw_pill(
         height,
         scale.factor(),
         fg,
+        if highlight {
+            ColorGlyphs::Natural
+        } else {
+            ColorGlyphs::Tinted
+        },
         theme.font_size,
         theme.font_name.as_deref(),
         scale.px(12),
