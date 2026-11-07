@@ -1518,37 +1518,9 @@ impl Context {
             return;
         };
 
-        let (ox, oy, ow, oh) = {
-            let out = output.borrow();
-            let (ox, oy, ow, oh) = out.usable_area();
-            (ox, oy, ow, oh)
-        };
-
-        // Only account for borders/titlebar if window uses SSD
-        let has_ssd = self
-            .windows
-            .get(&window_id)
-            .map(|w| w.borrow().decoration == Some(WindowDecoration::Ssd))
-            .unwrap_or(false);
-        let (border_width, titlebar_height) = if has_ssd {
-            (
-                self.config.ui.border_width,
-                super::titlebar::titlebar_height(&self.config.ui),
-            )
-        } else {
-            (0, 0)
-        };
-
-        let swallow_top = self
-            .windows
-            .get(&window_id)
-            .map(|w| w.borrow().swallow_top)
-            .unwrap_or(0)
-            .max(0);
-        let content_w = (ow - border_width * 2).max(1);
-        let content_h = (oh - border_width * 2 - titlebar_height + swallow_top).max(1);
-        let content_x = ox + border_width;
-        let content_y = oy + border_width + titlebar_height - swallow_top;
+        let area = output.borrow().usable_area();
+        let (content_x, content_y, content_w, content_h) =
+            self.snapped_geometry(window_id, super::window::SnapState::Maximized, area);
         if let Some(window) = self.windows.get(&window_id) {
             let mut w = window.borrow_mut();
             if !w.maximized && w.pre_snap.is_none() {
@@ -1613,6 +1585,51 @@ impl Context {
         }
     }
 
+    /// Content geometry (x, y, width, height) of a window snapped to `snap`
+    /// within the usable `area`, leaving room for server-side decorations.
+    fn snapped_geometry(
+        &self,
+        window_id: WindowId,
+        snap: super::window::SnapState,
+        area: (i32, i32, i32, i32),
+    ) -> (i32, i32, i32, i32) {
+        use super::window::SnapState;
+
+        let (ox, oy, ow, oh) = area;
+        let (has_ssd, swallow_top) = self
+            .windows
+            .get(&window_id)
+            .map(|w| {
+                let w = w.borrow();
+                (w.decoration == Some(WindowDecoration::Ssd), w.swallow_top)
+            })
+            .unwrap_or((false, 0));
+        // Only account for borders/titlebar if window uses SSD
+        let (border_width, titlebar_height) = if has_ssd {
+            (
+                self.config.ui.border_width,
+                super::titlebar::titlebar_height(&self.config.ui),
+            )
+        } else {
+            (0, 0)
+        };
+        let swallow_top = swallow_top.max(0);
+
+        let left_width = ow / 2;
+        let (side_x, side_width) = match snap {
+            SnapState::Maximized => (ox, ow),
+            SnapState::Left => (ox, left_width),
+            SnapState::Right => (ox + left_width, ow - left_width),
+        };
+
+        (
+            side_x + border_width,
+            oy + border_width + titlebar_height - swallow_top,
+            (side_width - border_width * 2).max(1),
+            (oh - border_width * 2 - titlebar_height + swallow_top).max(1),
+        )
+    }
+
     fn smart_snap_half(&mut self, window_id: WindowId, side: crate::binding::action::SnapSide) {
         use super::window::{FullscreenState, SnapState};
 
@@ -1633,55 +1650,18 @@ impl Context {
             return;
         };
 
-        let (ox, oy, ow, oh) = {
-            let out = output.borrow();
-            let (ox, oy, ow, oh) = out.usable_area();
-            (ox, oy, ow, oh)
+        let target_snap = match side {
+            crate::binding::action::SnapSide::Left => SnapState::Left,
+            crate::binding::action::SnapSide::Right => SnapState::Right,
         };
-
-        // Only account for borders/titlebar if window uses SSD
-        let has_ssd = self
-            .windows
-            .get(&window_id)
-            .map(|w| w.borrow().decoration == Some(WindowDecoration::Ssd))
-            .unwrap_or(false);
-        let (border_width, titlebar_height) = if has_ssd {
-            (
-                self.config.ui.border_width,
-                super::titlebar::titlebar_height(&self.config.ui),
-            )
-        } else {
-            (0, 0)
-        };
-
-        let swallow_top = self
-            .windows
-            .get(&window_id)
-            .map(|w| w.borrow().swallow_top)
-            .unwrap_or(0)
-            .max(0);
-
-        let (side_width, side_x) = {
-            let left_width = ow / 2;
-            match side {
-                crate::binding::action::SnapSide::Left => (left_width, ox),
-                crate::binding::action::SnapSide::Right => (ow - left_width, ox + left_width),
-            }
-        };
-
-        let content_w = (side_width - border_width * 2).max(1);
-        let content_h = (oh - border_width * 2 - titlebar_height + swallow_top).max(1);
-        let content_x = side_x + border_width;
-        let content_y = oy + border_width + titlebar_height - swallow_top;
+        let area = output.borrow().usable_area();
+        let (content_x, content_y, content_w, content_h) =
+            self.snapped_geometry(window_id, target_snap, area);
         let Some(window) = self.windows.get(&window_id) else {
             return;
         };
 
         let mut w = window.borrow_mut();
-        let target_snap = match side {
-            crate::binding::action::SnapSide::Left => SnapState::Left,
-            crate::binding::action::SnapSide::Right => SnapState::Right,
-        };
 
         if w.snap_state == Some(target_snap) {
             return;
@@ -3183,9 +3163,10 @@ impl Context {
 
     /// Carry `rect`, a window's geometry within `old_area`, over to output
     /// `target_id`, keeping its position relative to the usable area. The
-    /// window keeps its size unless it is snapped, doesn't fit, or `resize`
-    /// is set; a snapped window's restore geometry moves along. Returns the
-    /// geometry the window was given.
+    /// window keeps its size unless it doesn't fit or `resize` is set. A
+    /// snapped or maximized window is snapped the same way on the target, and
+    /// its restore geometry moves along. Returns the geometry the window was
+    /// given.
     fn relocate_window(
         &mut self,
         window_id: WindowId,
@@ -3208,17 +3189,20 @@ impl Context {
             })
             .unwrap_or_default();
 
-        let scale = snap_state.is_some() || maximized;
+        let snap_state = snap_state.or(maximized.then_some(super::window::SnapState::Maximized));
         let too_large = rect.width.max(1) > new_area.2 || rect.height.max(1) > new_area.3;
-        let (x, y, width, height) = map_rect_between_areas(
-            rect.x,
-            rect.y,
-            rect.width,
-            rect.height,
-            old_area,
-            new_area,
-            scale || too_large,
-        );
+        let (x, y, width, height) = match snap_state {
+            Some(snap) => self.snapped_geometry(window_id, snap, new_area),
+            None => map_rect_between_areas(
+                rect.x,
+                rect.y,
+                rect.width,
+                rect.height,
+                old_area,
+                new_area,
+                too_large,
+            ),
+        };
         let mapped_pre_snap = if snap_state.is_some() {
             pre_snap.map(|s| {
                 let (x, y, width, height) =
@@ -3241,7 +3225,7 @@ impl Context {
                 w.pre_snap = Some(saved);
             }
             w.set_position(x, y);
-            if scale || too_large || resize {
+            if snap_state.is_some() || too_large || resize {
                 w.propose_dimensions(width, height);
             }
         }
@@ -3254,8 +3238,8 @@ impl Context {
     }
 
     /// Move a window from a removed output onto a remaining one, mapping its
-    /// geometry proportionally. Maximized/snapped state is preserved (saved
-    /// geometries remapped too); fullscreen-on-the-dead-output degrades to
+    /// geometry proportionally. Maximized/snapped windows are snapped the same
+    /// way on the target; fullscreen-on-the-dead-output degrades to
     /// its pre-fullscreen geometry per the protocol's implicit exit.
     fn migrate_orphaned_window(&mut self, window_id: WindowId, dead_area: (i32, i32, i32, i32)) {
         let target_id = self
@@ -3275,7 +3259,7 @@ impl Context {
             return;
         }
 
-        let (rect, maximized, stale_fullscreen, unplaced) = {
+        let (rect, stale_fullscreen, unplaced) = {
             let Some(window) = self.windows.get(&window_id) else {
                 return;
             };
@@ -3298,7 +3282,7 @@ impl Context {
                     height: w.height,
                 }
             };
-            (rect, w.maximized, stale_fullscreen, w.position_undefined)
+            (rect, stale_fullscreen, w.position_undefined)
         };
 
         // Not placed yet: there is no geometry to carry over, and the initial
@@ -3315,9 +3299,6 @@ impl Context {
             if let Some(window) = self.windows.get(&window_id) {
                 window.borrow_mut().pre_fullscreen = Some(placed);
             }
-        }
-        if maximized {
-            self.maximize_window(window_id); // exact maximized geometry on target
         }
     }
 }
@@ -3756,5 +3737,42 @@ mod tests {
         // The next pointer motion places it relative to where the drag began.
         w.apply_op_delta(10, 0);
         assert_eq!((w.x, w.y), (2010, 100));
+    }
+
+    #[test]
+    fn removed_output_resnaps_window_exactly() {
+        let mut ctx = context_with_outputs(&[(1, 0, 0, 1280, 1024), (2, 1280, 0, 1920, 1080)]);
+        let b = ctx.config.ui.border_width;
+        let t = super::super::titlebar::titlebar_height(&ctx.config.ui);
+        add_window(
+            &mut ctx,
+            10,
+            2,
+            (2240 + b, b + t, 960 - 2 * b, 1080 - 2 * b - t),
+        );
+        {
+            let mut w = ctx.windows[&10].borrow_mut();
+            w.decoration = Some(WindowDecoration::Ssd);
+            w.snap_state = Some(super::super::window::SnapState::Right);
+            w.pre_snap = Some(super::super::window::SavedGeometry {
+                x: 1480,
+                y: 100,
+                width: 960,
+                height: 540,
+            });
+        }
+
+        ctx.destroy_output(2);
+        ctx.handle_manage_start();
+
+        let w = ctx.windows[&10].borrow();
+        assert_eq!((w.x, w.y), (640 + b, b + t));
+        assert_eq!(w.proposed_dimensions(), (640 - 2 * b, 1024 - 2 * b - t));
+        assert_eq!(w.snap_state, Some(super::super::window::SnapState::Right));
+        let pre_snap = w.pre_snap.unwrap();
+        assert_eq!(
+            (pre_snap.x, pre_snap.y, pre_snap.width, pre_snap.height),
+            (133, 95, 640, 512)
+        );
     }
 }
