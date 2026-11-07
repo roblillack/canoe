@@ -563,19 +563,22 @@ fn truncate_with_ellipsis(
         return ELLIPSIS.to_string();
     }
     let target = max_width - ell_w;
-    let chars: Vec<char> = text.chars().collect();
+    // Cut only between clusters, so emoji sequences and combining marks
+    // are never split. `ends[n]` is the byte length of the first n clusters.
+    let ends: Vec<usize> = std::iter::once(0)
+        .chain(super::font::clusters(text).into_iter().map(|c| c.end))
+        .collect();
     let mut lo = 0usize;
-    let mut hi = chars.len();
+    let mut hi = ends.len() - 1;
     while lo < hi {
         let mid = lo + (hi - lo).div_ceil(2);
-        let candidate: String = chars[..mid].iter().collect();
-        if measure(&candidate) <= target {
+        if measure(&text[..ends[mid]]) <= target {
             lo = mid;
         } else {
             hi = mid - 1;
         }
     }
-    let mut out: String = chars[..lo].iter().collect();
+    let mut out = text[..ends[lo]].to_string();
     out.push_str(ELLIPSIS);
     out
 }

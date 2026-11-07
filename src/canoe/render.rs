@@ -165,104 +165,105 @@ impl<'a> Renderer<'a> {
 
         let pixels = self.data_mut();
         let _ = font::with_face(font_name, size_px, |face| {
-            let metrics = match face.line_metrics() {
-                Some(metrics) => metrics,
-                None => return,
+            let Some(metrics) = face.line_metrics() else {
+                return;
             };
 
             let line_height = (metrics.ascender - metrics.descender).max(1);
             let baseline_y = origin_y + (area_height - line_height) / 2 + metrics.ascender;
+            let start_x = origin_x + padding_x;
+            let available = area_width - 2 * padding_x;
+            let clip = Clip {
+                x0: origin_x.max(0),
+                y0: origin_y.max(0),
+                x1: (origin_x + area_width).min(buffer_width),
+                y1: (origin_y + area_height).min(buffer_height),
+            };
 
-            let mut x_pos = origin_x + padding_x;
-            let max_x = origin_x + area_width - padding_x;
-
-            for ch in text.chars() {
-                let glyph = match face.load_char(ch) {
-                    Some(glyph) => glyph,
-                    None => continue,
-                };
-                let advance = glyph.advance;
-                if x_pos + advance > max_x {
+            let layout = face.layout(text);
+            for placed in &layout.glyphs {
+                // Same rounding as `font::measure_text`, so text measured to
+                // fit is never cut short.
+                if (placed.x + placed.advance).round() as i32 > available {
                     break;
                 }
-
-                let width = glyph.width;
-                let rows = glyph.rows;
-                if width <= 0 || rows <= 0 {
-                    x_pos += advance;
+                let Some(glyph) = face.glyph_bitmap(placed) else {
                     continue;
-                }
-
-                let pitch = glyph.pitch;
-                let abs_pitch = pitch.abs();
-                let glyph_x = x_pos + glyph.left;
-                let glyph_y = baseline_y - glyph.top;
-
-                for row in 0..rows {
-                    let row_offset = if pitch < 0 {
-                        (rows - 1 - row) * abs_pitch
-                    } else {
-                        row * abs_pitch
-                    } as usize;
-                    for col in 0..width {
-                        let px = glyph_x + col;
-                        let py = glyph_y + row;
-
-                        if px >= origin_x
-                            && px < origin_x + area_width
-                            && py >= origin_y
-                            && py < origin_y + area_height
-                            && px >= 0
-                            && px < buffer_width
-                            && py >= 0
-                            && py < buffer_height
-                        {
-                            let offset = ((py * buffer_width + px) * 4) as usize;
-                            if offset + 4 > pixels.len() {
-                                continue;
-                            }
-                            match glyph.pixel_mode {
-                                font::GlyphPixelMode::Gray => {
-                                    let idx = row_offset + col as usize;
-                                    if idx >= glyph.buffer.len() {
-                                        continue;
-                                    }
-                                    let alpha = glyph.buffer[idx];
-                                    if alpha > 0 {
-                                        blend_pixel(
-                                            &mut pixels[offset..offset + 4],
-                                            text_argb,
-                                            alpha,
-                                        );
-                                    }
-                                }
-                                font::GlyphPixelMode::Bgra => {
-                                    let idx = row_offset + col as usize * 4;
-                                    if idx + 4 > glyph.buffer.len() {
-                                        continue;
-                                    }
-                                    let b = glyph.buffer[idx];
-                                    let g = glyph.buffer[idx + 1];
-                                    let r = glyph.buffer[idx + 2];
-                                    let a = glyph.buffer[idx + 3];
-                                    if a > 0 {
-                                        blend_pixel_premul(
-                                            &mut pixels[offset..offset + 4],
-                                            r,
-                                            g,
-                                            b,
-                                            a,
-                                        );
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                x_pos += advance;
+                };
+                let glyph_x = start_x + (placed.x + placed.x_offset).round() as i32 + glyph.left;
+                let glyph_y = baseline_y - placed.y_offset.round() as i32 - glyph.top;
+                draw_glyph(
+                    pixels,
+                    buffer_width,
+                    &clip,
+                    &glyph,
+                    glyph_x,
+                    glyph_y,
+                    text_argb,
+                );
             }
         });
+    }
+}
+
+/// Visible area of a text draw, in buffer pixels (end-exclusive).
+struct Clip {
+    x0: i32,
+    y0: i32,
+    x1: i32,
+    y1: i32,
+}
+
+/// Composite one glyph bitmap with its top-left corner at (`x`, `y`).
+/// Coverage glyphs are tinted with `text_argb`; color glyphs keep their own
+/// colors but take on the text color's alpha, so translucent text fades
+/// emoji along with it.
+fn draw_glyph(
+    pixels: &mut [u8],
+    buffer_width: i32,
+    clip: &Clip,
+    glyph: &font::GlyphBitmap<'_>,
+    x: i32,
+    y: i32,
+    text_argb: u32,
+) {
+    let text_alpha = (text_argb >> 24) as u16;
+    let abs_pitch = glyph.pitch.unsigned_abs() as usize;
+    let bpp = glyph.pixel_mode.bytes_per_pixel();
+    let rows = (clip.y0 - y).max(0)..(clip.y1 - y).min(glyph.rows);
+    let cols = (clip.x0 - x).max(0)..(clip.x1 - x).min(glyph.width);
+
+    for row in rows {
+        let src_row = if glyph.pitch < 0 {
+            glyph.rows - 1 - row
+        } else {
+            row
+        } as usize;
+        let py = y + row;
+        for col in cols.clone() {
+            let idx = src_row * abs_pitch + col as usize * bpp;
+            let Some(src) = glyph.buffer.get(idx..idx + bpp) else {
+                continue;
+            };
+            let offset = ((py * buffer_width + x + col) * 4) as usize;
+            let Some(dst) = pixels.get_mut(offset..offset + 4) else {
+                continue;
+            };
+            match glyph.pixel_mode {
+                font::GlyphPixelMode::Gray => {
+                    if src[0] > 0 {
+                        blend_pixel(dst, text_argb, src[0]);
+                    }
+                }
+                font::GlyphPixelMode::Bgra => {
+                    if src[3] == 0 {
+                        continue;
+                    }
+                    let fade = |c: u8| ((c as u16 * text_alpha) / 255) as u8;
+                    blend_pixel_premul(dst, fade(src[2]), fade(src[1]), fade(src[0]), fade(src[3]));
+                }
+            }
+        }
     }
 }
 
@@ -342,5 +343,86 @@ mod tests {
         let mut p = px(0x00000000);
         blend_pixel_premul(&mut p, 0x20, 0x40, 0x60, 0x80);
         assert_eq!(val(p), 0x80204060);
+    }
+}
+
+#[cfg(test)]
+mod text_tests {
+    use super::*;
+
+    fn bgra_glyph(buffer: &[u8]) -> font::GlyphBitmap<'_> {
+        font::GlyphBitmap {
+            width: 1,
+            rows: 1,
+            pitch: 4,
+            pixel_mode: font::GlyphPixelMode::Bgra,
+            buffer,
+            left: 0,
+            top: 0,
+        }
+    }
+
+    fn draw(glyph: &font::GlyphBitmap<'_>, text_argb: u32) -> u32 {
+        let mut px = [0u8; 4];
+        let clip = Clip {
+            x0: 0,
+            y0: 0,
+            x1: 1,
+            y1: 1,
+        };
+        draw_glyph(&mut px, 1, &clip, glyph, 0, 0, text_argb);
+        u32::from_ne_bytes(px)
+    }
+
+    #[test]
+    fn color_glyphs_ignore_text_color_but_take_its_alpha() {
+        // Premultiplied BGRA: opaque orange.
+        let orange = [0x00, 0x80, 0xFF, 0xFF];
+        assert_eq!(draw(&bgra_glyph(&orange), 0xFF000000), 0xFFFF8000);
+        assert_eq!(draw(&bgra_glyph(&orange), 0xFFFFFFFF), 0xFFFF8000);
+        assert_eq!(draw(&bgra_glyph(&orange), 0x80000000), 0x80804000);
+        assert_eq!(draw(&bgra_glyph(&orange), 0x00000000), 0x00000000);
+    }
+
+    /// Text measured with `font::measure_text` must render completely when
+    /// given exactly that much room.
+    fn assert_fits_measured_width(text: &str) {
+        let size = 15.0;
+        let Some(measured) = font::measure_text(None, size, text) else {
+            eprintln!("no font available, skipping");
+            return;
+        };
+        let measured = measured as i32;
+        let height = 30;
+        let render = |area_width: i32| {
+            let width = measured + 60;
+            let mut px = vec![0u8; (width * height * 4) as usize];
+            let mut r = Renderer::new(&mut px, width, height).unwrap();
+            r.render_text(
+                text, 0, 0, area_width, height, 1.0, 0xFF000000, size, None, 0,
+            );
+            px
+        };
+        let exact = render(measured);
+        let roomy = render(measured + 60);
+        let width = (measured + 60) as usize;
+        for y in 0..height as usize {
+            let row = y * width * 4;
+            let span = row..row + measured as usize * 4;
+            assert_eq!(
+                exact[span.clone()],
+                roomy[span],
+                "{text:?} cut short at measured width {measured}"
+            );
+        }
+    }
+
+    #[test]
+    fn measured_width_fits_rendered_text() {
+        assert_fits_measured_width("Plain ASCII title");
+        assert_fits_measured_width("Party 🎉 time 😀 ok");
+        assert_fits_measured_width("Family 👨\u{200D}👩\u{200D}👧 and 🇩🇪");
+        assert_fits_measured_width("CJK 漢字 + 🍣 mix");
+        assert_fits_measured_width("AVATAR Wave");
     }
 }

@@ -16,6 +16,7 @@ A stacking window manager for the River Wayland compositor, written in Rust.
 - Optional forcing server-side decorations via per-window rules
 - Optional "swallowing" of client-side decoration via per-window rules
 - Screen sharing of whole screens or individual windows, picked by clicking them
+- Shaped text with font fallback and color emoji in titles, menus and icon labels
 
 ## Installation
 
