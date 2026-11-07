@@ -2829,22 +2829,16 @@ impl Dispatch<RiverLayerShellOutputV1, canoe::OutputId> for AppState {
             width,
             height,
         } = event;
-        let mut context = state.context.borrow_mut();
-        let Some(output) = context.outputs.get(output_id).cloned() else {
-            return;
-        };
-        let mut out = output.borrow_mut();
-        let changed = out.non_exclusive_area != Some((x, y, width, height));
-        out.update_non_exclusive_area(x, y, width, height);
-        // The desktop surface's input region leaves exclusive zones
-        // out; it is redrawn at the end of the next manage sequence.
-        if let Some(desktop) = out.desktop_surface.as_mut() {
-            desktop.dirty = true;
-        }
-        drop(out);
-        // Snapped and maximized windows follow at the next manage sequence.
-        if changed {
-            context.pending_usable_area_changes.push(*output_id);
+        {
+            if let Some(output) = state.context.borrow().outputs.get(output_id) {
+                let mut out = output.borrow_mut();
+                out.update_non_exclusive_area(x, y, width, height);
+                // The desktop surface's input region leaves exclusive zones
+                // out; it is redrawn at the end of the next manage sequence.
+                if let Some(desktop) = out.desktop_surface.as_mut() {
+                    desktop.dirty = true;
+                }
+            }
         }
     }
 }

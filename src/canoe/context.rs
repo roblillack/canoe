@@ -106,9 +106,6 @@ pub struct Context {
     /// Outputs whose size changed since the last manage sequence:
     /// (id, old width, old height).
     pub pending_output_resizes: Vec<(OutputId, i32, i32)>,
-    /// Outputs whose usable area changed since the last manage sequence,
-    /// e.g. because a bar was started, stopped or resized.
-    pub pending_usable_area_changes: Vec<OutputId>,
     /// Windows anchored to a removed output: (window_id, dead usable area).
     pending_output_orphans: Vec<(WindowId, (i32, i32, i32, i32))>,
     /// Windows fullscreen on a removed output they are not anchored to.
@@ -171,7 +168,6 @@ impl Context {
 
             pending_output_shifts: Vec::new(),
             pending_output_resizes: Vec::new(),
-            pending_usable_area_changes: Vec::new(),
             pending_output_orphans: Vec::new(),
             pending_fullscreen_exits: Vec::new(),
         }
@@ -1968,17 +1964,8 @@ impl Context {
         for (output_id, dx, dy) in shifts {
             self.apply_output_shift(output_id, dx, dy);
         }
-        let resizes = std::mem::take(&mut self.pending_output_resizes);
-        let mut area_changes = std::mem::take(&mut self.pending_usable_area_changes);
-        for &(output_id, old_width, old_height) in &resizes {
+        for (output_id, old_width, old_height) in std::mem::take(&mut self.pending_output_resizes) {
             self.refit_output_windows(output_id, old_width, old_height);
-        }
-        // Refitting a resized output already snapped its windows again.
-        area_changes.retain(|id| !resizes.iter().any(|&(resized, _, _)| resized == *id));
-        area_changes.sort_unstable();
-        area_changes.dedup();
-        for output_id in area_changes {
-            self.resnap_output_windows(output_id);
         }
         let orphans = std::mem::take(&mut self.pending_output_orphans);
         if !orphans.is_empty() {
@@ -3425,63 +3412,6 @@ impl Context {
         }
     }
 
-    /// Snap the snapped and maximized windows anchored to `output_id` again
-    /// to its current usable area, so they follow bars that appear, go away
-    /// or change size. Other windows stay where they are.
-    fn resnap_output_windows(&mut self, output_id: OutputId) {
-        use super::window::{FullscreenState, Operator, SnapState};
-
-        let Some(output) = self.outputs.get(&output_id) else {
-            return;
-        };
-        let area = {
-            let out = output.borrow();
-            let rect = (out.x, out.y, out.width, out.height);
-            intersect_rects(out.usable_area(), rect).unwrap_or(rect)
-        };
-        if area.2 <= 0 || area.3 <= 0 {
-            return;
-        }
-
-        let snapped: Vec<(WindowId, SnapState)> = self
-            .windows
-            .iter()
-            .filter_map(|(&id, window)| {
-                let w = window.borrow();
-                let anchored = w
-                    .output
-                    .as_ref()
-                    .and_then(|o| o.upgrade())
-                    .is_some_and(|o| o.borrow().id == output_id);
-                if !anchored
-                    || w.position_undefined
-                    || !matches!(w.operator, Operator::None)
-                    || !matches!(w.fullscreen, FullscreenState::None)
-                {
-                    return None;
-                }
-                let snap = w
-                    .snap_state
-                    .or(w.maximized.then_some(SnapState::Maximized))?;
-                Some((id, snap))
-            })
-            .collect();
-
-        for (window_id, snap) in snapped {
-            let (x, y, width, height) = self.snapped_geometry(window_id, snap, area);
-            let Some(window) = self.windows.get(&window_id) else {
-                continue;
-            };
-            let mut w = window.borrow_mut();
-            if (w.x, w.y) != (x, y) {
-                w.set_position(x, y);
-            }
-            if (w.width, w.height) != (width, height) {
-                w.propose_dimensions(width, height);
-            }
-        }
-    }
-
     /// Carry `rect`, a window's geometry within `old_area`, over to output
     /// `target_id`, keeping its position relative to the usable area. The
     /// window keeps its size unless it doesn't fit or `resize` is set. A
@@ -4250,42 +4180,6 @@ mod tests {
         let w = ctx.windows[&12].borrow();
         assert_eq!((w.x, w.y), (0, 0));
         assert_eq!(w.proposed_dimensions(), (1920, 1080));
-    }
-
-    #[test]
-    fn usable_area_change_resnaps_snapped_windows_only() {
-        use super::super::window::SnapState;
-
-        let mut ctx = context_with_outputs(&[(1, 0, 0, 2560, 1440)]);
-        // Maximized and left-snapped: follow the new area.
-        add_window(&mut ctx, 10, 1, (0, 0, 2560, 1440));
-        add_window(&mut ctx, 11, 1, (0, 0, 1280, 1440));
-        // Free-floating: left alone.
-        add_window(&mut ctx, 12, 1, (100, 10, 800, 600));
-        {
-            let mut w = ctx.windows[&10].borrow_mut();
-            w.maximized = true;
-            w.snap_state = Some(SnapState::Maximized);
-        }
-        ctx.windows[&11].borrow_mut().snap_state = Some(SnapState::Left);
-
-        // A 32px bar appears at the top.
-        ctx.outputs[&1]
-            .borrow_mut()
-            .update_non_exclusive_area(0, 32, 2560, 1408);
-        ctx.pending_usable_area_changes.push(1);
-        ctx.handle_manage_start();
-
-        let w = ctx.windows[&10].borrow();
-        assert_eq!((w.x, w.y), (0, 32));
-        assert_eq!(w.proposed_dimensions(), (2560, 1408));
-        drop(w);
-        let w = ctx.windows[&11].borrow();
-        assert_eq!((w.x, w.y), (0, 32));
-        assert_eq!(w.proposed_dimensions(), (1280, 1408));
-        drop(w);
-        let w = ctx.windows[&12].borrow();
-        assert_eq!((w.x, w.y), (100, 10));
     }
 
     #[test]
