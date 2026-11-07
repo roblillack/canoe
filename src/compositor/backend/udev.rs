@@ -29,10 +29,8 @@ use smithay::reexports::drm::control::{connector, crtc, Device as ControlDevice,
 use smithay::reexports::input::Libinput;
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::utils::DeviceFd;
-use smithay::wayland::dmabuf::DmabufState;
 
 use super::Backend;
-use crate::compositor::handlers::DmabufGlobal;
 use crate::compositor::render::{CanoeElement, CLEAR_COLOR};
 use crate::compositor::State;
 
@@ -146,7 +144,7 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
 
     let display = unsafe { EGLDisplay::new(gbm.clone())? };
     let context = EGLContext::new(&display)?;
-    let renderer = unsafe { GlesRenderer::new(context)? };
+    let mut renderer = unsafe { GlesRenderer::new(context)? };
     let render_formats = renderer.egl_context().dmabuf_render_formats().clone();
 
     let allocator = GbmAllocator::new(
@@ -165,13 +163,7 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
 
     // Hardware-accelerated clients.
     state.shm_state.update_formats(renderer.shm_formats());
-    let formats = renderer.dmabuf_formats();
-    let mut dmabuf_state = DmabufState::new();
-    let global = dmabuf_state.create_global::<State>(&state.display_handle, formats);
-    state.dmabuf = Some(DmabufGlobal {
-        state: dmabuf_state,
-        global,
-    });
+    super::init_dmabuf(state, &mut renderer, Some(node));
 
     state.backend = Backend::Udev(UdevData {
         session: session.clone(),

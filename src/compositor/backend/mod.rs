@@ -7,9 +7,53 @@ pub mod udev;
 pub mod winit;
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
+use smithay::backend::drm::{DrmNode, NodeType};
+use smithay::backend::egl::EGLDevice;
+use smithay::backend::renderer::gles::GlesRenderer;
+use smithay::backend::renderer::ImportDma;
 use smithay::output::{Mode, Output};
+use smithay::wayland::dmabuf::{DmabufFeedbackBuilder, DmabufState};
 
+use super::handlers::DmabufGlobal;
 use super::State;
+
+/// Offer linux-dmabuf for buffers `renderer` can import.
+///
+/// Clients' EGL (Mesa) finds the GPU to render on through the default
+/// feedback's main device; without it (and without wl_drm) it gives up on
+/// hardware rendering ("failed to get driver name for fd -1"). So name the
+/// renderer's render node, or `fallback` when EGL doesn't know it.
+fn init_dmabuf(state: &mut State, renderer: &mut GlesRenderer, fallback: Option<DrmNode>) {
+    let formats = renderer.dmabuf_formats();
+    let node = EGLDevice::device_for_display(renderer.egl_context().display())
+        .ok()
+        .and_then(|device| device.try_get_render_node().ok().flatten())
+        .or_else(|| {
+            let node = fallback?;
+            node.node_with_type(NodeType::Render)
+                .and_then(Result::ok)
+                .or(Some(node))
+        });
+    let mut dmabuf_state = DmabufState::new();
+    let feedback = node.and_then(|node| {
+        DmabufFeedbackBuilder::new(node.dev_id(), formats.clone())
+            .build()
+            .map_err(|err| eprintln!("canoe: dmabuf feedback failed: {err}"))
+            .ok()
+    });
+    let global = match feedback {
+        Some(feedback) => dmabuf_state
+            .create_global_with_default_feedback::<State>(&state.display_handle, &feedback),
+        None => {
+            eprintln!("canoe: render node unknown, clients may fall back to software rendering");
+            dmabuf_state.create_global::<State>(&state.display_handle, formats)
+        }
+    };
+    state.dmabuf = Some(DmabufGlobal {
+        state: dmabuf_state,
+        global,
+    });
+}
 
 #[allow(clippy::large_enum_variant)] // there is exactly one
 pub enum Backend {

@@ -9,10 +9,8 @@ use smithay::backend::renderer::ImportDma;
 use smithay::backend::winit::{self, WinitEvent, WinitGraphicsBackend};
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::utils::Transform;
-use smithay::wayland::dmabuf::DmabufState;
 
 use super::Backend;
-use crate::compositor::handlers::DmabufGlobal;
 use crate::compositor::render::CLEAR_COLOR;
 use crate::compositor::State;
 
@@ -58,13 +56,7 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Hardware-accelerated clients.
-    let formats = backend.renderer().dmabuf_formats();
-    let mut dmabuf_state = DmabufState::new();
-    let global = dmabuf_state.create_global::<State>(&state.display_handle, formats);
-    state.dmabuf = Some(DmabufGlobal {
-        state: dmabuf_state,
-        global,
-    });
+    super::init_dmabuf(state, backend.renderer(), None);
 
     let damage_tracker = OutputDamageTracker::from_output(&output);
     state.backend = Backend::Winit(WinitData {
