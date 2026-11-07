@@ -6,7 +6,7 @@ use smithay::backend::input::{
     KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
 };
 use smithay::desktop::{layer_map_for_output, WindowSurfaceType};
-use smithay::input::keyboard::{FilterResult, Keycode, ModifiersState};
+use smithay::input::keyboard::{FilterResult, KeyboardTarget, Keycode, ModifiersState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -149,13 +149,8 @@ impl State {
         };
         self.idle_notifier_state.notify_activity(&self.seat);
 
-        let action = keyboard.input(
-            self,
-            keycode,
-            state_key,
-            serial,
-            time,
-            |state, _mods, handle| {
+        let (filter, mods_changed) =
+            keyboard.input_intercept(self, keycode, state_key, |state, _mods, handle| {
                 if pressed {
                     let raw: Vec<u32> = handle.raw_syms().iter().map(|s| s.raw()).collect();
                     let translated: Vec<u32> =
@@ -198,15 +193,34 @@ impl State {
                         Some(KeyConsumer::Client) => FilterResult::Forward,
                     }
                 }
-            },
-        );
+            });
+        let action = match filter {
+            FilterResult::Forward => {
+                keyboard.input_forward(self, keycode, state_key, serial, time, mods_changed);
+                None
+            }
+            FilterResult::Intercept(action) => {
+                // Like River, a key a binding consumes still updates the
+                // focused client's modifiers, else a client focused while
+                // a bound modifier is held (fuzzel opened with Super+Space)
+                // never sees it released and takes every key for a shortcut.
+                if mods_changed {
+                    if let Some(focus) = keyboard.current_focus() {
+                        let seat = self.seat.clone();
+                        let mods = keyboard.modifier_state();
+                        KeyboardTarget::modifiers(&focus, &seat, self, mods, serial);
+                    }
+                }
+                action
+            }
+        };
         self.key_modifiers = modifier_mask(&keyboard.modifier_state());
 
         match action {
-            Some(Some(KeyAction::Binding(index, true))) => self.xkb_binding_pressed(index),
-            Some(Some(KeyAction::Binding(index, false))) => self.xkb_binding_released(index),
-            Some(Some(KeyAction::SwitchVt(vt))) => super::backend::Backend::switch_vt(self, vt),
-            _ => {}
+            Some(KeyAction::Binding(index, true)) => self.xkb_binding_pressed(index),
+            Some(KeyAction::Binding(index, false)) => self.xkb_binding_released(index),
+            Some(KeyAction::SwitchVt(vt)) => super::backend::Backend::switch_vt(self, vt),
+            None => {}
         }
     }
 
