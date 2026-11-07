@@ -3144,15 +3144,22 @@ impl Context {
             if !anchored {
                 continue;
             }
+            // set_position() keeps pre_fullscreen in sync with the position
+            // while the window is windowed; only shift it ourselves otherwise.
+            let tracks_pre_fullscreen =
+                matches!(w.fullscreen, super::window::FullscreenState::None)
+                    && !w.pending_unfullscreen_restore;
             let (new_x, new_y) = (w.x + dx, w.y + dy);
             w.set_position(new_x, new_y);
             if let Some(ref mut saved) = w.pre_snap {
                 saved.x += dx;
                 saved.y += dy;
             }
-            if let Some(ref mut saved) = w.pre_fullscreen {
-                saved.x += dx;
-                saved.y += dy;
+            if !tracks_pre_fullscreen {
+                if let Some(ref mut saved) = w.pre_fullscreen {
+                    saved.x += dx;
+                    saved.y += dy;
+                }
             }
         }
     }
@@ -3467,6 +3474,32 @@ fn map_rect_between_areas(
 mod tests {
     use super::*;
 
+    /// A context with outputs `(id, x, y, width, height)`, no Wayland objects.
+    fn context_with_outputs(outputs: &[(OutputId, i32, i32, i32, i32)]) -> Context {
+        let mut ctx = Context::new(false);
+        for &(id, x, y, width, height) in outputs {
+            let mut output = Output::new(id);
+            output.update_position(x, y);
+            output.update_dimensions(width, height);
+            ctx.outputs.insert(id, Rc::new(RefCell::new(output)));
+        }
+        ctx
+    }
+
+    /// Add a placed window `(x, y, width, height)` anchored to `output_id`.
+    fn add_window(
+        ctx: &mut Context,
+        id: WindowId,
+        output_id: OutputId,
+        rect: (i32, i32, i32, i32),
+    ) {
+        let mut window = Window::new(id);
+        window.output = ctx.outputs.get(&output_id).map(Rc::downgrade);
+        window.set_position(rect.0, rect.1);
+        window.update_dimensions(rect.2, rect.3);
+        ctx.windows.insert(id, Rc::new(RefCell::new(window)));
+    }
+
     #[test]
     fn map_rect_keeps_size_and_relative_position() {
         let old = (1920, 0, 1920, 1080);
@@ -3502,5 +3535,49 @@ mod tests {
             map_rect_between_areas(2500, 0, 200, 100, old, new, false),
             (900, 50, 200, 100)
         );
+    }
+
+    #[test]
+    fn output_shift_moves_window_and_saved_geometry_once() {
+        let mut ctx = context_with_outputs(&[(1, 1920, 0, 1920, 1080)]);
+        add_window(&mut ctx, 10, 1, (2000, 100, 800, 600));
+        {
+            let mut w = ctx.windows[&10].borrow_mut();
+            w.snap_state = Some(super::super::window::SnapState::Left);
+            w.pre_snap = Some(super::super::window::SavedGeometry {
+                x: 2100,
+                y: 200,
+                width: 640,
+                height: 480,
+            });
+        }
+
+        ctx.pending_output_shifts.push((1, -1920, 0));
+        ctx.handle_manage_start();
+
+        let w = ctx.windows[&10].borrow();
+        assert_eq!((w.x, w.y), (80, 100));
+        let pre_fullscreen = w.pre_fullscreen.unwrap();
+        assert_eq!((pre_fullscreen.x, pre_fullscreen.y), (80, 100));
+        let pre_snap = w.pre_snap.unwrap();
+        assert_eq!((pre_snap.x, pre_snap.y), (180, 200));
+    }
+
+    #[test]
+    fn output_shift_moves_fullscreen_restore_geometry() {
+        let mut ctx = context_with_outputs(&[(1, 1920, 0, 1920, 1080)]);
+        add_window(&mut ctx, 10, 1, (2000, 100, 800, 600));
+        {
+            let output = Rc::downgrade(&ctx.outputs[&1]);
+            let mut w = ctx.windows[&10].borrow_mut();
+            w.fullscreen = super::super::window::FullscreenState::Output(output);
+        }
+
+        ctx.pending_output_shifts.push((1, -1920, 0));
+        ctx.handle_manage_start();
+
+        let w = ctx.windows[&10].borrow();
+        let pre_fullscreen = w.pre_fullscreen.unwrap();
+        assert_eq!((pre_fullscreen.x, pre_fullscreen.y), (80, 100));
     }
 }
