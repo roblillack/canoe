@@ -33,6 +33,22 @@ cargo install canoe
 river -c canoe
 ```
 
+To start Canoe from a display manager (GDM, SDDM, LightDM, greetd with
+tuigreet, …), install the session file:
+
+```bash
+sudo install -Dm644 contrib/canoe.desktop /usr/share/wayland-sessions/canoe.desktop
+```
+
+The display manager looks up `river` in its own `PATH`, which does not include
+your home directory, so changes in `~/.profile` or `~/.config/environment.d/`
+don't help. If `river` or `canoe` live in your home directory (e.g. after
+`cargo install`), link them somewhere on the system `PATH`:
+
+```bash
+sudo ln -s ~/.cargo/bin/canoe /usr/local/bin/
+```
+
 ## Building From Source
 
 ```bash
