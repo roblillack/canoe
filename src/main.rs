@@ -38,8 +38,9 @@ extern "C" fn forward_signal(sig: libc::c_int) {
     }
 }
 
-/// Export `WAYLAND_DISPLAY`, `DISPLAY` and `XDG_CURRENT_DESKTOP` to the systemd user
-/// manager and the D-Bus activation environment, so services started on demand
+/// Export `WAYLAND_DISPLAY`, `DISPLAY`, `XDG_CURRENT_DESKTOP` and
+/// `XDG_SESSION_TYPE` to the systemd user manager and the D-Bus activation
+/// environment, so services started on demand
 /// (xdg-desktop-portal and its backends) connect to this session. The XCursor
 /// theme is exported as well, if set, so their cursors match.
 fn update_activation_environment(context: &Context) {
@@ -76,11 +77,13 @@ fn activation_environment_argv(
     let display = effective("WAYLAND_DISPLAY")?;
     // xdg-desktop-portal picks its backends by desktop name.
     let desktop = effective("XDG_CURRENT_DESKTOP").unwrap_or_else(|| "canoe".to_string());
+    let session_type = effective("XDG_SESSION_TYPE").unwrap_or_else(|| "wayland".to_string());
     let mut argv = vec![
         "dbus-update-activation-environment".to_string(),
         "--systemd".to_string(),
         format!("WAYLAND_DISPLAY={display}"),
         format!("XDG_CURRENT_DESKTOP={desktop}"),
+        format!("XDG_SESSION_TYPE={session_type}"),
     ];
     // Xwayland's display, for services that start X11 programs.
     if let Some(x11_display) = effective("DISPLAY") {
@@ -271,6 +274,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         BackendKind::Udev => compositor::backend::udev::init(&mut state)?,
     }
     std::env::set_var("WAYLAND_DISPLAY", &socket_name);
+    // Started from a tty, logind's session type is "tty", which makes
+    // Chromium and Electron fall back to X11.
+    std::env::set_var("XDG_SESSION_TYPE", "wayland");
     std::env::remove_var("DISPLAY");
     // X11 programs get Xwayland (which sets DISPLAY).
     if args.xwayland {
@@ -382,8 +388,31 @@ mod tests {
         .expect("argv");
         assert_eq!(
             argv[2..],
-            ["WAYLAND_DISPLAY=wayland-1", "XDG_CURRENT_DESKTOP=foo"]
+            [
+                "WAYLAND_DISPLAY=wayland-1",
+                "XDG_CURRENT_DESKTOP=foo",
+                "XDG_SESSION_TYPE=wayland"
+            ]
         );
+    }
+
+    #[test]
+    fn test_activation_environment_exports_session_type() {
+        let argv = activation_environment_argv(
+            &HashMap::new(),
+            &no_xcursor(),
+            lookup_from(&[("WAYLAND_DISPLAY", "w"), ("XDG_SESSION_TYPE", "tty")]),
+        )
+        .expect("argv");
+        assert_eq!(argv[4], "XDG_SESSION_TYPE=tty");
+        let env = config_env(&[("XDG_SESSION_TYPE", "x11")]);
+        let argv = activation_environment_argv(
+            &env,
+            &no_xcursor(),
+            lookup_from(&[("WAYLAND_DISPLAY", "w")]),
+        )
+        .expect("argv");
+        assert_eq!(argv[4], "XDG_SESSION_TYPE=x11");
     }
 
     #[test]
@@ -414,21 +443,21 @@ mod tests {
     fn test_activation_environment_exports_xcursor_theme() {
         let own = lookup_from(&[("WAYLAND_DISPLAY", "w")]);
         let argv = activation_environment_argv(&HashMap::new(), &no_xcursor(), &own).expect("argv");
-        assert_eq!(argv.len(), 4, "nothing to export without a theme");
+        assert_eq!(argv.len(), 5, "nothing to export without a theme");
 
         let xcursor = config::XCursorTheme {
             name: Some("Adwaita".to_string()),
             size: Some(32),
         };
         let argv = activation_environment_argv(&HashMap::new(), &xcursor, &own).expect("argv");
-        assert_eq!(argv[4..], ["XCURSOR_THEME=Adwaita", "XCURSOR_SIZE=32"]);
+        assert_eq!(argv[5..], ["XCURSOR_THEME=Adwaita", "XCURSOR_SIZE=32"]);
 
         let xcursor = config::XCursorTheme {
             name: None,
             size: Some(32),
         };
         let argv = activation_environment_argv(&HashMap::new(), &xcursor, &own).expect("argv");
-        assert_eq!(argv[4..], ["XCURSOR_SIZE=32"]);
+        assert_eq!(argv[5..], ["XCURSOR_SIZE=32"]);
     }
 
     #[test]
@@ -439,7 +468,7 @@ mod tests {
             lookup_from(&[("WAYLAND_DISPLAY", "w"), ("DISPLAY", ":1")]),
         )
         .expect("argv");
-        assert_eq!(argv[4..], ["DISPLAY=:1"]);
+        assert_eq!(argv[5..], ["DISPLAY=:1"]);
     }
 
     #[test]

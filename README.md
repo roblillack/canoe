@@ -165,10 +165,10 @@ same window or screen gets the same answer without asking, once.
    `systemctl --user restart xdg-desktop-portal xdg-desktop-portal-wlr`.
 
 The portal needs to know which Wayland display to capture. On startup Canoe
-exports `WAYLAND_DISPLAY` and `XDG_CURRENT_DESKTOP` (defaulting to `canoe`) to
-the systemd user manager and D-Bus activation environment, using the same
-values as the programs it launches (see [Environment
-variables](#environment-variables)). `XCURSOR_THEME` and `XCURSOR_SIZE` are
+exports `WAYLAND_DISPLAY`, `XDG_CURRENT_DESKTOP` (defaulting to `canoe`) and
+`XDG_SESSION_TYPE` (`wayland`) to the systemd user manager and D-Bus activation
+environment, using the same values as the programs it launches (see
+[Environment variables](#environment-variables)). `XCURSOR_THEME` and `XCURSOR_SIZE` are
 exported too if set, so services started this way use the same cursors. If you
 manage the session environment yourself (or run Canoe nested), turn that off:
 
