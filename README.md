@@ -176,6 +176,9 @@ manage the session environment yourself (or run Canoe nested), turn that off:
 update_activation_environment = false
 ```
 
+The headless backend never exports anything, so test sessions don't redirect
+the portals of the session you're working in.
+
 On River, wlroots 0.20.2 and earlier could show a black share when an app
 captured a window that was already being captured (Chrome does this,
 previewing the window while it asks to share it). Canoe's own compositor

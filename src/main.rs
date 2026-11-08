@@ -338,8 +338,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     // Let D-Bus activated services (the screencast portal, above all) find
-    // this session's display.
-    if state.context.borrow().config.update_activation_environment {
+    // this session's display. A headless canoe is a test session and must
+    // not take them over from the real one.
+    if args.backend != BackendKind::Headless
+        && state.context.borrow().config.update_activation_environment
+    {
         update_activation_environment(&state.context.borrow());
     }
 
