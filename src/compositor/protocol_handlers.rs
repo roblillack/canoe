@@ -13,6 +13,7 @@ use super::protocols::output_management::{
 use super::protocols::output_power::{
     delegate_output_power, Mode as PowerMode, OutputPowerHandler, OutputPowerManagerState,
 };
+use super::protocols::plasma_shell::{delegate_plasma_shell, PlasmaShellHandler};
 use super::protocols::toplevel_icon::delegate_toplevel_icon;
 use super::protocols::virtual_pointer::{
     delegate_virtual_pointer, VirtualPointer, VirtualPointerEvent, VirtualPointerHandler,
@@ -21,6 +22,7 @@ use super::protocols::xdg_foreign::{delegate_xdg_foreign, XdgForeignHandler, Xdg
 use super::State;
 use crate::wm::OutputHandle;
 use smithay::desktop::space::SpaceElement;
+use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
 impl VirtualPointerHandler for State {
     fn virtual_pointer_event(
@@ -288,3 +290,10 @@ delegate_output_power!(State);
 delegate_gamma_control!(State);
 delegate_xdg_foreign!(State);
 delegate_toplevel_icon!(State);
+delegate_plasma_shell!(State);
+
+impl PlasmaShellHandler for State {
+    fn skip_switcher_changed(&mut self, surface: &WlSurface, skip: bool) {
+        self.toplevel_skip_switcher_changed(surface, skip);
+    }
+}

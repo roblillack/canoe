@@ -228,6 +228,7 @@ dependencies = [
  "thiserror 2.0.18",
  "toml",
  "unicode-properties",
+ "wayland-protocols-plasma",
  "xcursor",
  "xkbcommon",
  "yeslogic-fontconfig-sys",
@@ -2381,6 +2382,7 @@ dependencies = [
  "wayland-client",
  "wayland-protocols",
  "wayland-scanner",
+ "wayland-server",
 ]
 
 [[package]]

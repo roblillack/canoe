@@ -22,6 +22,10 @@ Xwayland. (#66)
 
 - `xdg-toplevel-icon-v1`: a minimized window's desktop icon is the icon its
   program sets, unless one is put in `~/.config/canoe/icons/`. (#67)
+- KDE's `org_kde_plasma_shell` protocol, of which only `set_skip_switcher`
+  is honored: windows that ask for it are left out of the window menu,
+  Super+Tab and focus cycling, while their desktop icon still shows when
+  minimized. Other requests are accepted and ignored. (#70)
 
 ### Changed
 

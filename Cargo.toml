@@ -39,6 +39,8 @@ smithay = { version = "0.7", default-features = false, features = [
     "xwayland",
 ] }
 bitflags = "2"
+# KDE protocols Smithay doesn't bundle (org_kde_plasma_shell)
+wayland-protocols-plasma = { version = "0.3", features = ["server"] }
 
 # Cursor themes for the cursors the compositor draws
 xcursor = "0.3"

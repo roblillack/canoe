@@ -202,6 +202,7 @@ impl State {
             w.app_id = app_id;
             w.title = title;
             w.pid = pid;
+            w.skip_switcher = super::protocols::plasma_shell::skip_switcher(&surface);
             w.decoration_hint = Some(match &shell {
                 // What River reports for a client without a decoration
                 // object, unless it asked through KDE's protocol already.
@@ -379,6 +380,18 @@ impl State {
             context.mark_all_desktops_dirty();
             drop(context);
             self.schedule_wm();
+        }
+    }
+
+    /// The client asked for its toplevel `surface` to be left out of window
+    /// switchers (`skip`), or to be listed again.
+    pub fn toplevel_skip_switcher_changed(&mut self, surface: &WlSurface, skip: bool) {
+        let Some(id) = self.window_for_surface(surface).map(|w| w.id) else {
+            // Not a window (yet); `add_window` reads the flag.
+            return;
+        };
+        if let Some(window) = self.context.borrow().windows.get(&id) {
+            window.borrow_mut().skip_switcher = skip;
         }
     }
 
