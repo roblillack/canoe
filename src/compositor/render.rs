@@ -89,8 +89,7 @@ where
         },
         |_, _, _| true,
     );
-    // Children are drawn above their parents: topmost first.
-    elements.reverse();
+    // The downward traversal visits the topmost surface first already.
     elements
 }
 
