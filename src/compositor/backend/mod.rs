@@ -122,6 +122,16 @@ impl Backend {
         }
     }
 
+    /// Start a shown output over: forget frames in flight and set its mode
+    /// again with the next frame. Recovers a monitor that went dark behind
+    /// canoe's back.
+    pub fn restart_output(state: &mut State, output: &Output) {
+        match state.backend {
+            Backend::Udev(_) => udev::restart_output(state, output),
+            _ => state.queue_redraw_all(),
+        }
+    }
+
     /// The number of entries in each of `output`'s gamma ramps, or `None`
     /// if its gamma can't be set.
     pub fn gamma_size(state: &State, output: &Output) -> Option<u32> {

@@ -11,7 +11,10 @@
 //! output's current mode right away. The compositor decides which outputs
 //! can be power managed ([`OutputPowerHandler::output_power_mode`] returns
 //! `None` for the others, and the client gets `failed`) and carries out
-//! mode changes ([`OutputPowerHandler::set_output_power_mode`]).
+//! mode changes ([`OutputPowerHandler::set_output_power_mode`]). A request
+//! for the mode an output is already in goes to
+//! [`OutputPowerHandler::output_power_mode_reasserted`], e.g. to make sure
+//! an output that should be on really shows something.
 //!
 //! The compositor tells this module about changes:
 //!
@@ -73,6 +76,10 @@ pub trait OutputPowerHandler:
     /// implementation reports the change with
     /// [`OutputPowerManagerState::mode_changed`].
     fn set_output_power_mode(&mut self, output: &Output, mode: Mode) -> bool;
+
+    /// A client asked for the mode `output` is already in. The client is
+    /// told the mode either way; by default nothing else happens.
+    fn output_power_mode_reasserted(&mut self, _output: &Output, _mode: Mode) {}
 }
 
 /// Global data of the manager.
@@ -254,7 +261,10 @@ impl<D: OutputPowerHandler> Dispatch<ZwlrOutputPowerV1, OutputPowerData, D>
                 };
                 match state.output_power_mode(&output) {
                     // Already there: confirm to the client that asked.
-                    Some(current) if current == mode => resource.mode(mode),
+                    Some(current) if current == mode => {
+                        state.output_power_mode_reasserted(&output, mode);
+                        resource.mode(mode);
+                    }
                     Some(_) if state.set_output_power_mode(&output, mode) => {}
                     _ => {
                         fail(resource);

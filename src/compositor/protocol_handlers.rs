@@ -82,6 +82,11 @@ impl State {
         if self.outputs[index].enabled == enabled {
             return;
         }
+        eprintln!(
+            "canoe: {} {}",
+            output.name(),
+            if enabled { "enabled" } else { "disabled" }
+        );
         self.outputs[index].enabled = enabled;
         self.output_management_state.set_enabled(output, enabled);
         if enabled {
@@ -131,6 +136,11 @@ impl State {
         if !managed.enabled || managed.powered == on {
             return;
         }
+        eprintln!(
+            "canoe: {} powered {}",
+            output.name(),
+            if on { "on" } else { "off" }
+        );
         managed.powered = on;
         // A frame queued before blanking never completes.
         managed.frame_pending = false;
@@ -178,6 +188,15 @@ impl OutputPowerHandler for State {
     fn set_output_power_mode(&mut self, output: &smithay::output::Output, mode: PowerMode) -> bool {
         self.set_output_power(output, mode == PowerMode::On);
         true
+    }
+
+    /// Turning on an output that is on already starts it over, in case it
+    /// went dark without canoe noticing.
+    fn output_power_mode_reasserted(&mut self, output: &smithay::output::Output, mode: PowerMode) {
+        if mode == PowerMode::On {
+            eprintln!("canoe: {} powered on again", output.name());
+            super::backend::Backend::restart_output(self, output);
+        }
     }
 }
 
