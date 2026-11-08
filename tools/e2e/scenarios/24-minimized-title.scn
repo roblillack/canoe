@@ -1,0 +1,12 @@
+# A minimized window's desktop icon shows its new title as soon as the
+# window changes it, not only once the desktop is redrawn for something
+# else.
+spawn $WLTEST --app-id still --title Still --size 300x200
+wait-toplevel still 4000
+key super+h
+spawn $WLTEST --app-id live --title Before --size 300x200 --color d03030 --retitle After@2500
+wait-toplevel live 4000
+key super+h
+shot 01-before
+sleep 2500
+shot 02-after

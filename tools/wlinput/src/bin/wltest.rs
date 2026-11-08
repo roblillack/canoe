@@ -60,6 +60,8 @@ Connects to $WAYLAND_DISPLAY.
 
 Toplevel (default):
   --title T              window title (UTF-8)
+  --retitle T@MS         change the title to T MS after the first configure
+                         (repeatable)
   --app-id A             app id (default: wltest)
   --size WxH             requested size (default 400x300)
   --color RRGGBB         fill color (default 3070b0); border is a darker shade
@@ -106,7 +108,7 @@ Output: configure: WxH states=[...] | decoration: client_side|server_side |
   layer configure: WxH | pointer enter X Y | pointer leave |
   pointer button BTN pressed|released X Y | keyboard enter | keyboard leave |
   key SYM pressed|released | closed | exported: HANDLE | import destroyed |
-  icon: ICON";
+  icon: ICON | title: T";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -148,6 +150,8 @@ struct Options {
     /// Icons to set, each with its delay after the first configure (`None`:
     /// before the first commit).
     icons: Vec<(IconSpec, Option<u64>)>,
+    /// Titles to change to, each with its delay after the first configure.
+    retitles: Vec<(String, u64)>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -231,6 +235,7 @@ fn parse_args() -> Result<Options> {
         import_parent: None,
         import_delay: None,
         icons: Vec::new(),
+        retitles: Vec::new(),
     };
     let parent_default = || WinSpec {
         title: "parent".into(),
@@ -292,6 +297,7 @@ fn parse_args() -> Result<Options> {
             "--import-parent",
             "--import-delay",
             "--icon",
+            "--retitle",
         ];
         if !VALUED.contains(&flag.as_str()) {
             return Err(format!("unknown option {flag:?} (see --help)"));
@@ -385,6 +391,13 @@ fn parse_args() -> Result<Options> {
                 o.import_delay = Some(val.parse().map_err(|_| format!("bad delay {val:?}"))?)
             }
             "--icon" => o.icons.push(parse_icon(&val)?),
+            "--retitle" => {
+                let (title, ms) = val
+                    .rsplit_once('@')
+                    .ok_or_else(|| format!("--retitle: expected T@MS, got {val:?}"))?;
+                let ms = ms.parse().map_err(|_| format!("--retitle: bad delay {ms:?}"))?;
+                o.retitles.push((title.into(), ms));
+            }
             _ => return Err(format!("unknown option {flag:?} (see --help)")),
         }
     }
@@ -416,6 +429,9 @@ fn parse_args() -> Result<Options> {
     }
     if o.layer.is_some() && !o.icons.is_empty() {
         return Err("--layer cannot be combined with --icon".into());
+    }
+    if o.layer.is_some() && !o.retitles.is_empty() {
+        return Err("--layer cannot be combined with --retitle".into());
     }
     Ok(o)
 }
@@ -1312,6 +1328,9 @@ fn run(opts: Options) -> Result<()> {
         .collect();
     late_icons.sort_by_key(|(ms, _)| *ms);
     late_icons.reverse();
+    let mut retitles = opts.retitles.clone();
+    retitles.sort_by_key(|(_, ms)| *ms);
+    retitles.reverse();
 
     let imported = match &opts.import_parent {
         Some(path) => {
@@ -1397,6 +1416,20 @@ fn run(opts: Options) -> Result<()> {
                 continue;
             }
             timeout = Some(due - now);
+        }
+        if let (Some((title, ms)), Some(t0)) = (retitles.last(), main_configured_at) {
+            let due = t0 + Duration::from_millis(*ms);
+            let now = Instant::now();
+            if now >= due {
+                let w = &app.state.windows[main_idx];
+                if let (true, Role::Toplevel { top, .. }) = (w.alive, &w.role) {
+                    top.set_title(title.clone());
+                    app.state.say(Some(main_idx), format_args!("title: {title}"));
+                }
+                retitles.pop();
+                continue;
+            }
+            timeout = Some(timeout.map_or(due - now, |t| t.min(due - now)));
         }
         if let (Some(imported), Some(t0)) = (&late_parent, main_configured_at) {
             let due = t0 + Duration::from_millis(opts.import_delay.unwrap_or(0));
