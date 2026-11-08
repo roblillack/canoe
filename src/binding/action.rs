@@ -84,6 +84,8 @@ pub enum Action {
 
     /// Hide (minimize) the focused window
     HideFocused,
+    /// Minimize all visible windows, or restore the ones this minimized
+    ToggleShowDesktop,
     /// Unfullscreen/unmaximize if needed, otherwise hide (minimize) the focused window
     SmartHideFocused,
     /// Snap to a half; if on the opposite side, restore
@@ -327,6 +329,13 @@ pub fn default_xkb_bindings(
             Keysym::m.raw(),
             main,
             Action::HideFocused,
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::Default,
+            Keysym::d.raw(),
+            main,
+            Action::ToggleShowDesktop,
             super::BindingEvent::Pressed,
         ),
         // Desktop icon navigation (DesktopIcons mode)

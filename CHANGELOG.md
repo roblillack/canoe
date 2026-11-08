@@ -26,6 +26,9 @@ Xwayland. (#66)
   is honored: windows that ask for it are left out of the window menu,
   Super+Tab and focus cycling, while their desktop icon still shows when
   minimized. Other requests are accepted and ignored. (#70)
+- Super+D minimizes all windows on all screens, like on Windows. Pressing it
+  again while no window is shown brings them back, in their old stacking
+  order and with the focus they had. (#72)
 
 ### Changed
 

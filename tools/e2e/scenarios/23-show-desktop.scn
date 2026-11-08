@@ -1,0 +1,17 @@
+#! outputs 1280x720,1280x720
+# Super+D minimizes the windows on both outputs and brings back only those,
+# not one that was already minimized.
+spawn $WLTEST --app-id mini --title Mini --size 300x200 --color d03030
+wait-toplevel mini 4000
+key super+h
+spawn $WLTEST --app-id left --title Left --size 300x200 --color 30a040
+wait-toplevel left 4000
+spawn $WLTEST --app-id right --title Right --size 300x200 --color 3060d0
+wait-toplevel right 4000
+key super+alt+Right
+key super+d
+shot 01-desktop-shown
+toplevels 01-desktop-shown
+key super+d
+shot 02-windows-back
+toplevels 02-windows-back

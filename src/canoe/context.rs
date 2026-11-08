@@ -27,6 +27,13 @@ enum IconSource {
     DesktopEntry,
 }
 
+/// What Super+D minimized: each window with the minimize sequence number it
+/// got, and the window that had keyboard focus.
+struct ShowDesktop {
+    windows: Vec<(WindowId, u64)>,
+    focused: Option<WindowId>,
+}
+
 /// The central window manager context
 pub struct Context {
     /// The compositor
@@ -54,6 +61,8 @@ pub struct Context {
     next_output_id: OutputId,
     next_seat_id: SeatId,
     next_minimize_seq: u64,
+    /// Windows minimized by the last Super+D, for the next one to bring back.
+    show_desktop: Option<ShowDesktop>,
 
     // Configuration
     pub config: Config,
@@ -143,6 +152,7 @@ impl Context {
             next_output_id: 0,
             next_seat_id: 0,
             next_minimize_seq: 0,
+            show_desktop: None,
 
             config: load_config(skip_config),
             skip_config,
@@ -705,6 +715,9 @@ impl Context {
                 if let Some(window_id) = self.focused_window {
                     self.hide_window(window_id);
                 }
+            }
+            Action::ToggleShowDesktop => {
+                self.toggle_show_desktop();
             }
             Action::SmartHideFocused => {
                 let Some(window_id) = self.focused_window else {
@@ -1566,6 +1579,92 @@ impl Context {
             self.focus(next_id);
         } else {
             self.focus(visible[0]);
+        }
+    }
+
+    /// Minimize every visible window on all outputs, or, when none is
+    /// visible, bring back the windows the previous call minimized.
+    pub(crate) fn toggle_show_desktop(&mut self) {
+        if self.window_menu_mode.is_some() {
+            self.close_window_menu();
+        }
+
+        // Most recently focused first, then windows that never had focus.
+        let mut visible: Vec<WindowId> = self
+            .focus_stack
+            .iter()
+            .copied()
+            .filter(|id| self.windows.get(id).is_some_and(|w| !w.borrow().hidden))
+            .collect();
+        let mut unfocused: Vec<WindowId> = self
+            .windows
+            .iter()
+            .filter(|(id, w)| !w.borrow().hidden && !visible.contains(id))
+            .map(|(&id, _)| id)
+            .collect();
+        unfocused.sort_unstable();
+        visible.extend(unfocused);
+
+        if visible.is_empty() {
+            self.restore_shown_desktop();
+            return;
+        }
+
+        // Number the least recently focused window first, so the icons line
+        // up the way minimizing the windows one by one would.
+        let mut windows = Vec::with_capacity(visible.len());
+        for &window_id in visible.iter().rev() {
+            if let Some(window) = self.windows.get(&window_id) {
+                let mut w = window.borrow_mut();
+                w.minimize_seq = self.next_minimize_seq;
+                self.next_minimize_seq += 1;
+                w.hide();
+                windows.push((window_id, w.minimize_seq));
+            }
+        }
+        self.show_desktop = Some(ShowDesktop {
+            windows,
+            focused: self.focused_window,
+        });
+        self.mark_all_desktops_dirty();
+        self.clear_keyboard_focus();
+    }
+
+    /// Bring back the windows Super+D minimized, in their old stacking order,
+    /// and focus the one that had focus. Windows restored and minimized again
+    /// in the meantime have a new minimize sequence number and stay minimized.
+    fn restore_shown_desktop(&mut self) {
+        let Some(saved) = self.show_desktop.take() else {
+            return;
+        };
+        let restored: Vec<WindowId> = saved
+            .windows
+            .iter()
+            .filter(|&&(id, seq)| {
+                self.windows.get(&id).is_some_and(|w| {
+                    let w = w.borrow();
+                    w.hidden && w.minimize_seq == seq
+                })
+            })
+            .map(|&(id, _)| id)
+            .collect();
+        // Hidden windows keep their place in the stacking order, so showing
+        // them is enough to put them back where they were.
+        for window_id in &restored {
+            if let Some(window) = self.windows.get(window_id) {
+                window.borrow_mut().show();
+            }
+        }
+        if restored.is_empty() {
+            return;
+        }
+        self.mark_all_desktops_dirty();
+        let focus = saved
+            .focused
+            .filter(|id| restored.contains(id))
+            .or_else(|| restored.last().copied());
+        if let Some(window_id) = focus {
+            self.focus(window_id);
         }
     }
 
@@ -4602,5 +4701,90 @@ mod tests {
         });
         assert_eq!(decoration(&ctx, "forced", 0), Some(WindowDecoration::Ssd));
         assert_eq!(decoration(&ctx, "app", 0), Some(WindowDecoration::Csd));
+    }
+
+    fn hidden(ctx: &Context, id: WindowId) -> bool {
+        ctx.windows[&id].borrow().hidden
+    }
+
+    #[test]
+    fn show_desktop_minimizes_all_windows_on_all_outputs() {
+        let mut ctx = context_with_output_ids(&[1, 2]);
+        add_stacked_window(&mut ctx, 10, 1, false);
+        add_stacked_window(&mut ctx, 11, 2, false);
+        add_stacked_window(&mut ctx, 12, 1, true);
+        ctx.focus(11);
+
+        ctx.toggle_show_desktop();
+
+        assert!(hidden(&ctx, 10) && hidden(&ctx, 11) && hidden(&ctx, 12));
+        assert_eq!(ctx.focused_window, None);
+    }
+
+    #[test]
+    fn show_desktop_again_restores_only_the_windows_it_minimized() {
+        let mut ctx = context_with_output_ids(&[1, 2]);
+        add_stacked_window(&mut ctx, 10, 1, false);
+        add_stacked_window(&mut ctx, 11, 2, false);
+        add_stacked_window(&mut ctx, 12, 1, true);
+        ctx.focus(11);
+        ctx.focus(10);
+
+        ctx.toggle_show_desktop();
+        ctx.toggle_show_desktop();
+
+        assert!(!hidden(&ctx, 10) && !hidden(&ctx, 11));
+        assert!(hidden(&ctx, 12));
+        assert_eq!(ctx.focused_window, Some(10));
+    }
+
+    #[test]
+    fn show_desktop_with_a_window_shown_again_minimizes_it() {
+        let mut ctx = context_with_output_ids(&[1]);
+        add_stacked_window(&mut ctx, 10, 1, false);
+        add_stacked_window(&mut ctx, 11, 1, false);
+        ctx.focus(10);
+
+        ctx.toggle_show_desktop();
+        ctx.activate_window(11);
+        ctx.toggle_show_desktop();
+        assert!(hidden(&ctx, 10) && hidden(&ctx, 11));
+
+        // The second press only minimized 11, so only 11 comes back.
+        ctx.toggle_show_desktop();
+        assert!(hidden(&ctx, 10));
+        assert!(!hidden(&ctx, 11));
+        assert_eq!(ctx.focused_window, Some(11));
+    }
+
+    #[test]
+    fn show_desktop_leaves_windows_minimized_again_in_between_alone() {
+        let mut ctx = context_with_output_ids(&[1]);
+        add_stacked_window(&mut ctx, 10, 1, false);
+        add_stacked_window(&mut ctx, 11, 1, false);
+        ctx.focus(10);
+
+        ctx.toggle_show_desktop();
+        ctx.activate_window(10);
+        ctx.hide_window(10);
+        ctx.toggle_show_desktop();
+
+        assert!(hidden(&ctx, 10));
+        assert!(!hidden(&ctx, 11));
+        assert_eq!(ctx.focused_window, Some(11));
+    }
+
+    #[test]
+    fn show_desktop_restores_nothing_after_its_windows_closed() {
+        let mut ctx = context_with_output_ids(&[1]);
+        add_stacked_window(&mut ctx, 10, 1, false);
+        ctx.focus(10);
+
+        ctx.toggle_show_desktop();
+        ctx.destroy_window(10);
+        ctx.toggle_show_desktop();
+
+        assert_eq!(ctx.focused_window, None);
+        assert!(ctx.show_desktop.is_none());
     }
 }
