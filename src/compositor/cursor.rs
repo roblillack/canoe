@@ -170,11 +170,13 @@ fn pick_frames(images: &[Image], target: u32) -> Vec<CursorFrame> {
             // ARGB8888 in little endian, i.e. BGRA bytes.
             let pixels = &image.pixels_rgba;
             let _ = buffer.render().draw(|dst: &mut [u8]| {
-                for (d, s) in dst.chunks_exact_mut(4).zip(pixels.chunks_exact(4)) {
-                    d[0] = s[2];
-                    d[1] = s[1];
-                    d[2] = s[0];
-                    d[3] = s[3];
+                for (d, &[r, g, b, a]) in dst
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .zip(pixels.as_chunks::<4>().0)
+                {
+                    *d = [b, g, r, a];
                 }
                 Result::<_, std::convert::Infallible>::Ok(vec![
                     smithay::utils::Rectangle::from_size(

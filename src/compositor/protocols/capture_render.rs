@@ -266,7 +266,7 @@ where
                 if !swizzle && !opaque {
                     std::ptr::copy_nonoverlapping(src.as_ptr(), dst, row_len);
                 } else {
-                    for (x, px) in src.chunks_exact(4).enumerate() {
+                    for (x, px) in src.as_chunks::<4>().0.iter().enumerate() {
                         let (b, r) = if swizzle {
                             (px[2], px[0])
                         } else {
