@@ -1,6 +1,7 @@
 //! Protocols Smithay doesn't implement.
 
 pub mod capture_render;
+pub mod foreign_toplevel;
 pub mod gamma_control;
 pub mod image_capture;
 pub mod output_management;

@@ -270,16 +270,8 @@ impl XdgShellHandler for State {
     }
 
     fn fullscreen_request(&mut self, surface: ToplevelSurface, output: Option<WlOutput>) {
-        let output = output
-            .and_then(|wl| Output::from_resource(&wl))
-            .and_then(|o| self.managed_output(&o).map(|m| m.id))
-            .and_then(|id| {
-                self.context
-                    .borrow()
-                    .outputs
-                    .get(&id)
-                    .map(std::rc::Rc::downgrade)
-            });
+        let output = output.and_then(|wl| Output::from_resource(&wl));
+        let output = self.wm_output_weak(output.as_ref());
         self.window_request(surface.wl_surface(), canoe::WindowEvent::Fullscreen(output));
         surface.send_configure();
     }
@@ -356,6 +348,19 @@ impl State {
             .and_then(|id| context.seats.get(&id))
             .map(std::rc::Rc::downgrade)
             .unwrap_or_default()
+    }
+
+    /// The window manager's output for `output`.
+    pub(super) fn wm_output_weak(
+        &self,
+        output: Option<&Output>,
+    ) -> Option<std::rc::Weak<std::cell::RefCell<canoe::Output>>> {
+        let id = self.managed_output(output?)?.id;
+        self.context
+            .borrow()
+            .outputs
+            .get(&id)
+            .map(std::rc::Rc::downgrade)
     }
 
     /// Queue a request a window made for the window manager.
@@ -591,7 +596,12 @@ impl DataControlHandler for State {
     }
 }
 
-impl OutputHandler for State {}
+impl OutputHandler for State {
+    fn output_bound(&mut self, output: Output, wl_output: WlOutput) {
+        self.foreign_toplevel_manager_state
+            .output_bound(&output, &wl_output);
+    }
+}
 
 impl FractionalScaleHandler for State {
     fn new_fractional_scale(&mut self, surface: WlSurface) {

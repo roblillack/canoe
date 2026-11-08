@@ -17,6 +17,7 @@ pub mod input;
 pub mod protocol_handlers;
 pub mod protocols;
 pub mod render;
+pub mod taskbar;
 pub mod wm_events;
 pub mod wm_glue;
 pub mod xwayland;
@@ -88,9 +89,14 @@ pub struct ManagedWindow {
     /// leaves it the size the client picked.
     pub x11_size: Option<Size<i32, Logical>>,
     pub foreign: Option<ForeignToplevelHandle>,
+    /// The window as taskbars see it (wlr-foreign-toplevel-management),
+    /// announced along with `foreign`.
+    pub wlr_toplevel: Option<protocols::foreign_toplevel::WlrToplevel>,
     /// Where the window manager put the content's top left corner.
     pub pos: Point<i32, Logical>,
     pub hidden: bool,
+    /// The window manager told the client it is maximized.
+    pub maximized: bool,
     /// The output the window is fullscreen on.
     pub fullscreen: Option<OutputKey>,
     pub clip: ClipBox,
@@ -236,6 +242,7 @@ pub struct State {
     pub xdg_activation_state: XdgActivationState,
     pub session_lock_state: SessionLockManagerState,
     pub foreign_toplevel_state: ForeignToplevelListState,
+    pub foreign_toplevel_manager_state: protocols::foreign_toplevel::ForeignToplevelManagerState,
     pub presentation_state: PresentationState,
     pub single_pixel_buffer_state: SinglePixelBufferState,
     pub idle_notifier_state: IdleNotifierState<State>,
@@ -360,6 +367,8 @@ impl State {
         let xdg_activation_state = XdgActivationState::new::<State>(&dh);
         let session_lock_state = SessionLockManagerState::new::<State, _>(&dh, |_| true);
         let foreign_toplevel_state = ForeignToplevelListState::new::<State>(&dh);
+        let foreign_toplevel_manager_state =
+            protocols::foreign_toplevel::ForeignToplevelManagerState::new::<State>(&dh);
         let presentation_state = PresentationState::new::<State>(&dh, libc_clock_monotonic());
         let single_pixel_buffer_state = SinglePixelBufferState::new::<State>(&dh);
         let idle_notifier_state = IdleNotifierState::new(&dh, loop_handle.clone());
@@ -443,6 +452,7 @@ impl State {
             xdg_activation_state,
             session_lock_state,
             foreign_toplevel_state,
+            foreign_toplevel_manager_state,
             presentation_state,
             single_pixel_buffer_state,
             idle_notifier_state,

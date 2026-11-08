@@ -2849,21 +2849,25 @@ impl Context {
             return;
         };
 
-        if let Some(window) = self.windows.get(&window_id) {
-            let was_hidden;
-            {
-                let mut w = window.borrow_mut();
-                was_hidden = w.hidden;
-                if w.hidden {
-                    w.show();
-                }
-                w.place_top();
-            }
-            if was_hidden {
-                self.mark_all_desktops_dirty();
-            }
-            self.focus(window_id);
+        self.activate_window(window_id);
+    }
+
+    /// Restore a window if it is minimized, raise and focus it.
+    pub fn activate_window(&mut self, window_id: WindowId) {
+        let Some(window) = self.windows.get(&window_id) else {
+            return;
+        };
+        let was_hidden = {
+            let mut w = window.borrow_mut();
+            let was_hidden = w.hidden;
+            w.show();
+            w.place_top();
+            was_hidden
+        };
+        if was_hidden {
+            self.mark_all_desktops_dirty();
         }
+        self.focus(window_id);
     }
 
     /// Close the window menu if open.

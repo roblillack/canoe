@@ -128,6 +128,9 @@ impl State {
                 self.set_xdg_state(key, XdgState::Fullscreen, on);
             }
             Request::InformMaximized(key, on) => {
+                if let Some(window) = self.window_by_key_mut(key) {
+                    window.maximized = on;
+                }
                 if let Some(x11) = self.window_by_key(key).and_then(|w| w.x11()) {
                     let _ = x11.set_maximized(on);
                 }

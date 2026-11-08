@@ -10,6 +10,7 @@
 # Scenario lines:
 #   # comment
 #   shot NAME            screenshot to <out-dir>/NAME.png (with cursor)
+#   toplevels NAME       taskbar view (wltoplevel list) to <out-dir>/NAME.txt
 #   spawn CMD...         run CMD in the background inside the session
 #   run CMD...           run CMD in the foreground inside the session
 #   sleep MS
@@ -24,7 +25,8 @@ OUTPUTS=${CANOE_E2E_OUTPUTS:-1280x720}
 hdr=$(grep -m1 '^#! outputs ' "$SCENARIO" | cut -d' ' -f3)
 [ -n "$hdr" ] && OUTPUTS=$hdr
 WLTEST=${WLTEST:-$ROOT/tools/wlinput/target/release/wltest}
-export WLTEST WLINPUT
+WLTOPLEVEL=${WLTOPLEVEL:-$ROOT/tools/wlinput/target/release/wltoplevel}
+export WLTEST WLINPUT WLTOPLEVEL
 BASE=/tmp/cne2e-$MODE
 rm -rf "$BASE"; mkdir -p "$BASE/rt" "$BASE/home/.config/canoe" "$OUT"
 chmod 700 "$BASE/rt"
@@ -69,6 +71,7 @@ while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
         \#*) ;;
         shot\ *) sleep 0.35; grim -c "$OUT/${line#shot }.png" ;;
+        toplevels\ *) sleep 0.2; "$WLTOPLEVEL" list >"$OUT/${line#toplevels }.txt" ;;
         spawn\ *) bash -c "${line#spawn }" >>"$BASE/clients.log" 2>&1 & PIDS+=($!) ;;
         run\ *) bash -c "${line#run }" ;;
         sleep\ *) sleep "$(python3 -c "print(${line#sleep }/1000)")" ;;

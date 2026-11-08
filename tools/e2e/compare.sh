@@ -13,3 +13,12 @@ for f in "$OUT"/river/*.png; do
     diff=$(compare -metric AE -fuzz 2% "$f" "$OUT/smithay/$b" null: 2>&1)
     echo "$NAME/$b: differing pixels: $diff"
 done
+for f in "$OUT"/river/*.txt; do
+    [ -f "$f" ] || continue
+    b=$(basename "$f")
+    if diff -u "$f" "$OUT/smithay/$b" >"$OUT/diff-$b.txt"; then
+        echo "$NAME/$b: same"
+    else
+        echo "$NAME/$b: differs, see $OUT/diff-$b.txt"
+    fi
+done

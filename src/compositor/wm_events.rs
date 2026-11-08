@@ -76,6 +76,7 @@ impl State {
         phases.push(("focus", t.elapsed()));
         let t = Instant::now();
         self.update_surface_outputs();
+        self.update_wlr_toplevels();
         phases.push(("outputs", t.elapsed()));
         self.queue_redraw_all();
         self.maybe_launch_startup_commands();
@@ -219,8 +220,10 @@ impl State {
             x11_size: None,
             // Announced to taskbars and capture clients once mapped.
             foreign: None,
+            wlr_toplevel: None,
             pos: (0, 0).into(),
             hidden: false,
+            maximized: false,
             fullscreen: None,
             clip: Default::default(),
             content_clip: Default::default(),
@@ -362,6 +365,9 @@ impl State {
             self.image_capture_state.toplevel_closed(foreign);
             foreign.send_closed();
             self.foreign_toplevel_state.remove_toplevel(foreign);
+        }
+        if let Some(toplevel) = window.wlr_toplevel.as_ref() {
+            self.foreign_toplevel_manager_state.close(toplevel);
         }
         if self.wm_focus == Some(window.key) {
             self.wm_focus = None;
@@ -1511,7 +1517,7 @@ impl State {
 
 /// The app id and title a window set (for X11 windows, their class and
 /// title).
-fn shell_properties(shell: &Shell) -> (Option<String>, Option<String>) {
+pub(super) fn shell_properties(shell: &Shell) -> (Option<String>, Option<String>) {
     match shell {
         Shell::Xdg(toplevel) => with_states(toplevel.wl_surface(), |states| {
             let data = states
