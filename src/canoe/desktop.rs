@@ -4,6 +4,7 @@
 use resvg::{tiny_skia, usvg};
 use std::rc::Rc;
 
+use super::app_info::xdg_data_dirs;
 use super::render::{ColorGlyphs, Renderer};
 use super::scale::{FractionalSurface, Origin, Scale};
 use super::surface::{Buffer, LayerSurface, Region, Surface};
@@ -680,50 +681,17 @@ fn load_png_file(path: &std::path::Path, size: u32) -> Option<tiny_skia::Pixmap>
 
 /// Look up an icon via XDG desktop files and the hicolor icon theme.
 fn load_xdg_icon(app_id: &str, size: u32) -> Option<tiny_skia::Pixmap> {
-    let icon_name = read_desktop_icon_name(app_id)?;
+    let info = super::app_info::app_info(app_id)?;
+    let icon_name = info.icon.as_deref()?;
 
     // If the Icon value is an absolute path, load it directly.
-    let icon_path = std::path::Path::new(&icon_name);
+    let icon_path = std::path::Path::new(icon_name);
     if icon_path.is_absolute() {
         return load_icon_by_path(icon_path, size);
     }
 
     // Search hicolor icon theme across XDG data directories.
-    find_hicolor_icon(&icon_name, size)
-}
-
-/// Find `<app-id>.desktop` in XDG data dirs and return the `Icon=` value.
-fn read_desktop_icon_name(app_id: &str) -> Option<String> {
-    let filename = format!("{}.desktop", app_id);
-    for dir in xdg_data_dirs() {
-        let path = dir.join("applications").join(&filename);
-        if let Some(name) = parse_desktop_icon(&path) {
-            return Some(name);
-        }
-    }
-    None
-}
-
-/// Parse a .desktop file and return the Icon= value from [Desktop Entry].
-fn parse_desktop_icon(path: &std::path::Path) -> Option<String> {
-    let content = std::fs::read_to_string(path).ok()?;
-    let mut in_entry = false;
-    for line in content.lines() {
-        let line = line.trim();
-        if line.starts_with('[') {
-            in_entry = line == "[Desktop Entry]";
-            continue;
-        }
-        if in_entry {
-            if let Some(value) = line.strip_prefix("Icon=") {
-                let value = value.trim();
-                if !value.is_empty() {
-                    return Some(value.to_string());
-                }
-            }
-        }
-    }
-    None
+    find_hicolor_icon(icon_name, size)
 }
 
 /// Load an icon from an absolute file path (SVG or PNG).
@@ -788,35 +756,6 @@ fn find_hicolor_icon(icon_name: &str, size: u32) -> Option<tiny_skia::Pixmap> {
     }
 
     None
-}
-
-/// Return XDG data directories: $XDG_DATA_HOME then $XDG_DATA_DIRS.
-fn xdg_data_dirs() -> Vec<std::path::PathBuf> {
-    let mut dirs = Vec::new();
-
-    // $XDG_DATA_HOME (default: $HOME/.local/share)
-    if let Ok(v) = std::env::var("XDG_DATA_HOME") {
-        if !v.is_empty() {
-            dirs.push(std::path::PathBuf::from(v));
-        }
-    } else if let Ok(home) = std::env::var("HOME") {
-        dirs.push(std::path::PathBuf::from(home).join(".local").join("share"));
-    }
-
-    // $XDG_DATA_DIRS (default: /usr/local/share:/usr/share)
-    let data_dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_default();
-    if data_dirs.is_empty() {
-        dirs.push(std::path::PathBuf::from("/usr/local/share"));
-        dirs.push(std::path::PathBuf::from("/usr/share"));
-    } else {
-        for p in data_dirs.split(':') {
-            if !p.is_empty() {
-                dirs.push(std::path::PathBuf::from(p));
-            }
-        }
-    }
-
-    dirs
 }
 
 /// Scale a pixmap to the target size, preserving aspect ratio and centering.

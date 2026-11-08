@@ -38,6 +38,12 @@ Xwayland. (#66)
   would rather draw its own decorations, and GTK 3 and plain GTK 4 apps now
   leave theirs off: they ask to be decorated through KDE's server decoration
   protocol, which Canoe now offers. (#66)
+- The window menu and Super+Tab lead each title with the name of its
+  application, from its desktop entry: "~: fish" shows as
+  "Alacritty — ~: fish", and "Page - Google Chrome" as
+  "Google Chrome — Page". The menu of one application's windows has that
+  name as its header instead of the app id. Desktop entries are also found
+  by lower-case app id and by `StartupWMClass`, for names and icons alike. (#73)
 
 ### Fixed
 
