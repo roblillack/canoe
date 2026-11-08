@@ -16,6 +16,7 @@ use super::protocols::output_power::{
 use super::protocols::virtual_pointer::{
     delegate_virtual_pointer, VirtualPointer, VirtualPointerEvent, VirtualPointerHandler,
 };
+use super::protocols::xdg_foreign::{delegate_xdg_foreign, XdgForeignHandler, XdgForeignState};
 use super::State;
 use crate::wm::OutputHandle;
 use smithay::desktop::space::SpaceElement;
@@ -153,6 +154,12 @@ impl GammaControlHandler for State {
     }
 }
 
+impl XdgForeignHandler for State {
+    fn xdg_foreign_state(&mut self) -> &mut XdgForeignState {
+        &mut self.xdg_foreign_state
+    }
+}
+
 impl OutputPowerHandler for State {
     fn output_power_state(&mut self) -> &mut OutputPowerManagerState {
         &mut self.output_power_state
@@ -246,3 +253,4 @@ delegate_virtual_pointer!(State);
 delegate_output_management!(State);
 delegate_output_power!(State);
 delegate_gamma_control!(State);
+delegate_xdg_foreign!(State);

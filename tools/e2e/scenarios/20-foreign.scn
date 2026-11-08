@@ -1,0 +1,28 @@
+# xdg-foreign: windows of other clients attached to an exported window, as
+# portal dialogs attach to the app that opened them. They are styled and
+# placed as the host's dialogs and stay above it; when the host goes away
+# they become ordinary windows.
+spawn $WLTEST --app-id host --title Host --size 700x450 --export $XDG_RUNTIME_DIR/host.handle & echo $! >$XDG_RUNTIME_DIR/host.pid; wait
+wait-toplevel host 4000
+# Parent set before the first commit: centred on the host.
+spawn $WLTEST --app-id portal --title "Open File" --size 360x240 --color d08030 --import-parent $XDG_RUNTIME_DIR/host.handle
+wait-toplevel portal 4000
+sleep 400
+toplevels 01-imported
+shot 01-imported
+# Clicking the host focuses it; the dialog stays above it.
+move 600 450 ; btn click left
+shot 02-host-clicked
+# Parent set on a mapped window.
+spawn $WLTEST --app-id late --title Late --size 300x200 --color 50a050 --import-parent $XDG_RUNTIME_DIR/host.handle --import-delay 500
+wait-toplevel late 4000
+sleep 1000
+toplevels 03-imported-after-map
+shot 03-imported-after-map
+move 600 450 ; btn click left
+shot 04-host-clicked-again
+# The host exits: its export is revoked and the dialogs lose their parent.
+run kill $(cat $XDG_RUNTIME_DIR/host.pid)
+sleep 500
+toplevels 05-host-gone
+shot 05-host-gone

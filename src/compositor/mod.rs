@@ -255,6 +255,7 @@ pub struct State {
     pub output_power_state: protocols::output_power::OutputPowerManagerState,
     pub gamma_control_state: protocols::gamma_control::GammaControlManagerState,
     pub virtual_pointer_state: protocols::virtual_pointer::VirtualPointerManagerState,
+    pub xdg_foreign_state: protocols::xdg_foreign::XdgForeignState,
     pub dmabuf: Option<handlers::DmabufGlobal>,
     pub popups: PopupManager,
     pub xwayland_shell_state: smithay::wayland::xwayland_shell::XWaylandShellState,
@@ -387,6 +388,7 @@ impl State {
         let virtual_pointer_state =
             protocols::virtual_pointer::VirtualPointerManagerState::new::<State, _>(&dh, |_| true);
         protocols::virtual_keyboard::VirtualKeyboardManagerState::new::<State>(&dh);
+        let xdg_foreign_state = protocols::xdg_foreign::XdgForeignState::new::<State>(&dh);
         let xwayland_shell_state =
             smithay::wayland::xwayland_shell::XWaylandShellState::new::<State>(&dh);
 
@@ -465,6 +467,7 @@ impl State {
             output_power_state,
             gamma_control_state,
             virtual_pointer_state,
+            xdg_foreign_state,
             dmabuf: None,
             popups: PopupManager::default(),
             xwayland_shell_state,

@@ -2,7 +2,8 @@
 //!
 //! Maps one xdg_toplevel (optionally with a parent or a child dialog) or one
 //! zwlr_layer_surface_v1, draws it with wl_shm and reports configures and
-//! input events on stdout, one line each.
+//! input events on stdout, one line each. With xdg-foreign it can export its
+//! window, or attach it to a window another client exported.
 
 use std::io::Write as _;
 use std::os::fd::AsFd;
@@ -27,6 +28,12 @@ use wayland_client::{delegate_noop, Connection, Dispatch, EventQueue, Proxy, Que
 use wayland_protocols::xdg::decoration::zv1::client::{
     zxdg_decoration_manager_v1::ZxdgDecorationManagerV1,
     zxdg_toplevel_decoration_v1::{self, ZxdgToplevelDecorationV1},
+};
+use wayland_protocols::xdg::foreign::zv2::client::{
+    zxdg_exported_v2::{self, ZxdgExportedV2},
+    zxdg_exporter_v2::ZxdgExporterV2,
+    zxdg_imported_v2::{self, ZxdgImportedV2},
+    zxdg_importer_v2::ZxdgImporterV2,
 };
 use wayland_protocols::xdg::shell::client::{
     xdg_surface::{self, XdgSurface},
@@ -67,6 +74,14 @@ Parent / dialog:
                          child properties (defaults: dialog, 240x160, d08030)
   In two-window modes output lines are prefixed with [parent] or [child].
 
+xdg-foreign:
+  --export FILE          export the window once it is configured and write
+                         its handle to FILE
+  --import-parent FILE   wait for FILE (up to 10 s), import the handle in it
+                         and make that window this window's parent
+  --import-delay MS      set that parent MS after the first configure
+                         instead of before the first commit
+
 Layer surface:
   --layer background|bottom|top|overlay   create a layer surface instead
   --anchor LIST          comma list of top,bottom,left,right
@@ -78,7 +93,7 @@ Layer surface:
 Output: configure: WxH states=[...] | decoration: client_side|server_side |
   layer configure: WxH | pointer enter X Y | pointer leave |
   pointer button BTN pressed|released X Y | keyboard enter | keyboard leave |
-  key SYM pressed|released | closed";
+  key SYM pressed|released | closed | exported: HANDLE | import destroyed";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -114,6 +129,9 @@ struct Options {
     exclusive: i32,
     keyboard: zwlr_layer_surface_v1::KeyboardInteractivity,
     output: Option<String>,
+    export: Option<String>,
+    import_parent: Option<String>,
+    import_delay: Option<u64>,
 }
 
 fn parse_size(s: &str) -> Result<(u32, u32)> {
@@ -152,6 +170,9 @@ fn parse_args() -> Result<Options> {
         exclusive: 0,
         keyboard: zwlr_layer_surface_v1::KeyboardInteractivity::None,
         output: None,
+        export: None,
+        import_parent: None,
+        import_delay: None,
     };
     let parent_default = || WinSpec {
         title: "parent".into(),
@@ -209,6 +230,9 @@ fn parse_args() -> Result<Options> {
             "--exclusive",
             "--keyboard",
             "--output",
+            "--export",
+            "--import-parent",
+            "--import-delay",
         ];
         if !VALUED.contains(&flag.as_str()) {
             return Err(format!("unknown option {flag:?} (see --help)"));
@@ -296,6 +320,11 @@ fn parse_args() -> Result<Options> {
                 }
             }
             "--output" => o.output = Some(val),
+            "--export" => o.export = Some(val),
+            "--import-parent" => o.import_parent = Some(val),
+            "--import-delay" => {
+                o.import_delay = Some(val.parse().map_err(|_| format!("bad delay {val:?}"))?)
+            }
             _ => return Err(format!("unknown option {flag:?} (see --help)")),
         }
     }
@@ -315,6 +344,15 @@ fn parse_args() -> Result<Options> {
     }
     if o.layer.is_some() && (o.parent.is_some() || o.dialog.is_some()) {
         return Err("--layer cannot be combined with parent/dialog options".into());
+    }
+    if o.layer.is_some() && (o.export.is_some() || o.import_parent.is_some()) {
+        return Err("--layer cannot be combined with --export or --import-parent".into());
+    }
+    if o.import_parent.is_some() && o.parent.is_some() {
+        return Err("--import-parent and --parent-* are mutually exclusive".into());
+    }
+    if o.import_delay.is_some() && o.import_parent.is_none() {
+        return Err("--import-delay needs --import-parent".into());
     }
     Ok(o)
 }
@@ -607,6 +645,41 @@ impl Dispatch<ZwlrLayerSurfaceV1, usize> for State {
     }
 }
 
+impl Dispatch<ZxdgExportedV2, String> for State {
+    fn event(
+        state: &mut Self,
+        _: &ZxdgExportedV2,
+        event: zxdg_exported_v2::Event,
+        path: &String,
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zxdg_exported_v2::Event::Handle { handle } = event {
+            // Write it atomically: the importer waits for the file to appear.
+            let tmp = format!("{path}.tmp");
+            if let Err(e) = std::fs::write(&tmp, &handle).and_then(|()| std::fs::rename(&tmp, path)) {
+                eprintln!("wltest: writing {path}: {e}");
+            }
+            state.say(None, format_args!("exported: {handle}"));
+        }
+    }
+}
+
+impl Dispatch<ZxdgImportedV2, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &ZxdgImportedV2,
+        event: zxdg_imported_v2::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        if let zxdg_imported_v2::Event::Destroyed = event {
+            state.say(None, format_args!("import destroyed"));
+        }
+    }
+}
+
 impl Dispatch<WlBuffer, ()> for State {
     fn event(
         _: &mut Self,
@@ -817,6 +890,8 @@ delegate_noop!(State: WlCompositor);
 delegate_noop!(State: ignore WlSurface);
 delegate_noop!(State: ZxdgDecorationManagerV1);
 delegate_noop!(State: ZwlrLayerShellV1);
+delegate_noop!(State: ZxdgExporterV2);
+delegate_noop!(State: ZxdgImporterV2);
 
 // ---------------------------------------------------------------------------
 // Setup and main loop
@@ -851,6 +926,7 @@ impl App {
         spec: &WinSpec,
         deco: Deco,
         parent: Option<&XdgToplevel>,
+        foreign_parent: Option<&ZxdgImportedV2>,
     ) -> Result<usize> {
         let wm: XdgWmBase = bind(&self.globals, &self.qh, 1..=6)?;
         let idx = self.state.windows.len();
@@ -867,6 +943,9 @@ impl App {
         }
         if let Some(p) = parent {
             top.set_parent(Some(p));
+        }
+        if let Some(imported) = foreign_parent {
+            imported.set_parent_of(&surface);
         }
         let deco = if deco == Deco::None {
             None
@@ -1001,6 +1080,18 @@ impl App {
     }
 }
 
+/// The xdg-foreign handle in `path`, waiting up to 10 s for the file.
+fn wait_for_handle(path: &str) -> Result<String> {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match std::fs::read_to_string(path) {
+            Ok(handle) if !handle.trim().is_empty() => return Ok(handle.trim().to_string()),
+            _ if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+            _ => return Err(format!("no handle in {path} after 10 s")),
+        }
+    }
+}
+
 fn wl_err(e: impl std::fmt::Display) -> String {
     format!("wayland: {e}")
 }
@@ -1050,28 +1141,46 @@ fn run(opts: Options) -> Result<()> {
     };
     app.queue.roundtrip(&mut app.state).map_err(wl_err)?;
 
+    let imported = match &opts.import_parent {
+        Some(path) => {
+            let handle = wait_for_handle(path)?;
+            let importer: ZxdgImporterV2 = bind(&app.globals, &app.qh, 1..=1)?;
+            Some(importer.import_toplevel(handle, &app.qh, ()))
+        }
+        None => None,
+    };
+    // Set right away unless delayed.
+    let early_parent = imported.as_ref().filter(|_| opts.import_delay.is_none());
+
     let main_idx = if let Some(layer) = opts.layer {
         app.create_layer(&opts, layer)?
     } else if let Some(parent) = &opts.parent {
-        let p = app.create_toplevel(Some("parent"), parent, opts.deco, None)?;
+        let p = app.create_toplevel(Some("parent"), parent, opts.deco, None, None)?;
         app.wait_configured(p)?;
         let Role::Toplevel { top, .. } = &app.state.windows[p].role else {
             unreachable!()
         };
         let top = top.clone();
-        app.create_toplevel(Some("child"), &opts.main, opts.deco, Some(&top))?
+        app.create_toplevel(Some("child"), &opts.main, opts.deco, Some(&top), None)?
     } else if let Some(dialog) = &opts.dialog {
-        let p = app.create_toplevel(Some("parent"), &opts.main, opts.deco, None)?;
+        let p = app.create_toplevel(Some("parent"), &opts.main, opts.deco, None, None)?;
         app.wait_configured(p)?;
         let Role::Toplevel { top, .. } = &app.state.windows[p].role else {
             unreachable!()
         };
         let top = top.clone();
-        app.create_toplevel(Some("child"), dialog, opts.deco, Some(&top))?;
+        app.create_toplevel(Some("child"), dialog, opts.deco, Some(&top), None)?;
         p
     } else {
-        app.create_toplevel(None, &opts.main, opts.deco, None)?
+        app.create_toplevel(None, &opts.main, opts.deco, None, early_parent)?
     };
+    if let Some(path) = &opts.export {
+        app.wait_configured(main_idx)?;
+        let exporter: ZxdgExporterV2 = bind(&app.globals, &app.qh, 1..=1)?;
+        let surface = app.state.windows[main_idx].surface.clone();
+        let _exported = exporter.export_toplevel(&surface, &app.qh, path.clone());
+    }
+    let mut late_parent = imported.filter(|_| opts.import_delay.is_some());
 
     let mut request = opts.request.clone();
     let mut main_configured_at = None;
@@ -1082,7 +1191,20 @@ fn run(opts: Options) -> Result<()> {
         if app.state.windows.iter().all(|w| !w.alive) {
             return Ok(());
         }
-        let mut timeout = None;
+        let mut timeout: Option<Duration> = None;
+        if let (Some(imported), Some(t0)) = (&late_parent, main_configured_at) {
+            let due = t0 + Duration::from_millis(opts.import_delay.unwrap_or(0));
+            let now = Instant::now();
+            if now >= due {
+                let w = &app.state.windows[main_idx];
+                if w.alive {
+                    imported.set_parent_of(&w.surface);
+                }
+                late_parent = None;
+                continue;
+            }
+            timeout = Some(due - now);
+        }
         if let (Some(req), Some(t0)) = (&request, main_configured_at) {
             let due = t0 + Duration::from_millis(opts.request_delay);
             let now = Instant::now();
@@ -1098,7 +1220,7 @@ fn run(opts: Options) -> Result<()> {
                 request = None;
                 continue;
             }
-            timeout = Some(due - now);
+            timeout = Some(timeout.map_or(due - now, |t| t.min(due - now)));
         }
         app.dispatch_timeout(timeout)?;
     }

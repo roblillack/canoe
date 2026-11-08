@@ -433,9 +433,11 @@ screen-sharing picks, configuration and rules give the same results.
 
 Supported: xdg-shell (with xdg-decoration and popups), wlr-layer-shell,
 ext-session-lock, wlr-screencopy and ext-image-copy-capture (outputs and
-single windows), ext-foreign-toplevel-list, wlr-output-management,
-fractional scaling and viewporter, cursor-shape, data device, primary
-selection and wlr-data-control, xdg-activation, presentation-time,
+single windows), ext-foreign-toplevel-list, wlr-foreign-toplevel-management
+(taskbars that control windows), wlr-output-management, xdg-foreign (portal
+dialogs attached to their app's window), fractional scaling and viewporter,
+cursor-shape, data device, primary selection and wlr-data-control,
+xdg-activation, presentation-time,
 idle-notify and idle-inhibit, wlr-output-power-management,
 wlr-gamma-control (night-light tools such as wlsunset or gammastep), pointer
 constraints and relative pointer, virtual keyboard and pointer, linux-dmabuf,
@@ -448,8 +450,7 @@ Missing:
   outputs), and X11 programs can't activate their own windows.
 - **DRM/KMS**: the `udev` backend (real monitors) uses only one GPU and has
   no direct scanout tuning, adaptive sync or DRM leasing.
-- No wlr-foreign-toplevel-management (taskbars that control windows), no
-  tablet, touch or gesture input, no text-input/input-method.
+- No tablet, touch or gesture input, no text-input/input-method.
 - Input devices take libinput's defaults, apart from tap-to-click.
 
 ## Requirements

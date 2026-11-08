@@ -286,6 +286,7 @@ impl XdgShellHandler for State {
     }
 
     fn toplevel_destroyed(&mut self, surface: ToplevelSurface) {
+        super::protocols::xdg_foreign::toplevel_destroyed(self, surface.wl_surface());
         self.remove_toplevel(surface.wl_surface());
     }
 
