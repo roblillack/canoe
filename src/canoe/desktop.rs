@@ -562,29 +562,82 @@ fn rgba_to_premultiplied_argb(rgba: u32) -> u32 {
     (a << 24) | (r << 16) | (g << 8) | b
 }
 
-/// Load an icon for the given app_id.
-///
-/// Priority: user override (`~/.config/canoe/icons/`) > XDG desktop icon > None (first-char).
-pub fn load_icon_for_app(app_id: &str, size_px: i32) -> Option<tiny_skia::Pixmap> {
-    let size = size_px.max(1) as u32;
+/// The user's own icon for `app_id`, from `~/.config/canoe/icons/`. It
+/// beats every other source, the client's own icon included.
+pub fn load_user_icon(app_id: &str, size_px: i32) -> Option<tiny_skia::Pixmap> {
+    let home = std::env::var("HOME").ok()?;
+    let dir = std::path::PathBuf::from(home)
+        .join(".config")
+        .join("canoe")
+        .join("icons");
+    load_icon_file(&dir, app_id, size_px.max(1) as u32)
+}
 
-    // 1. User override from ~/.config/canoe/icons/
-    if let Ok(home) = std::env::var("HOME") {
-        let dir = std::path::PathBuf::from(home)
-            .join(".config")
-            .join("canoe")
-            .join("icons");
-        if let Some(pixmap) = load_icon_file(&dir, app_id, size) {
-            return Some(pixmap);
+/// The icon of the desktop entry named after `app_id`, the fallback for
+/// windows whose client set no icon.
+pub fn load_desktop_entry_icon(app_id: &str, size_px: i32) -> Option<tiny_skia::Pixmap> {
+    load_xdg_icon(app_id, size_px.max(1) as u32)
+}
+
+/// Images of a client icon larger than this many pixels across are scaled
+/// down to it when the icon is set: icons are drawn at most 48 logical
+/// pixels across.
+pub const CLIENT_ICON_MAX_EDGE: u32 = 256;
+/// How many of a client icon's images are kept, the largest ones.
+const CLIENT_ICON_MAX_IMAGES: usize = 8;
+
+/// The icon a client set for one of its windows (xdg-toplevel-icon): a
+/// name to look up in the icon theme, square images of different sizes, or
+/// both.
+#[derive(Debug)]
+pub struct ClientIcon {
+    name: Option<String>,
+    /// Ascending by size, at most one of each size.
+    images: Vec<tiny_skia::Pixmap>,
+}
+
+impl ClientIcon {
+    /// `None` for an icon with neither a name nor an image, which the
+    /// protocol treats like no icon at all.
+    pub fn new(name: Option<String>, images: Vec<tiny_skia::Pixmap>) -> Option<Self> {
+        let name = name.filter(|n| !n.is_empty());
+        let mut images: Vec<tiny_skia::Pixmap> = images
+            .into_iter()
+            .filter_map(|image| {
+                if image.width() > CLIENT_ICON_MAX_EDGE || image.height() > CLIENT_ICON_MAX_EDGE {
+                    resample(&image, CLIENT_ICON_MAX_EDGE)
+                } else {
+                    Some(image)
+                }
+            })
+            .collect();
+        images.sort_by_key(|image| std::cmp::Reverse(image.width()));
+        images.dedup_by_key(|image| image.width());
+        images.truncate(CLIENT_ICON_MAX_IMAGES);
+        images.reverse();
+        if name.is_none() && images.is_empty() {
+            return None;
         }
+        Some(Self { name, images })
     }
 
-    // 2. XDG desktop file icon lookup
-    if let Some(pixmap) = load_xdg_icon(app_id, size) {
-        return Some(pixmap);
+    /// The icon drawn `size_px` across. The client's pixels win when it
+    /// gave any, since canoe looks names up in the hicolor theme only, not
+    /// in the theme the client drew them from; they are scaled from the
+    /// smallest image at least that large. Without pixels the name is
+    /// looked up.
+    pub fn render(&self, size_px: i32) -> Option<tiny_skia::Pixmap> {
+        let size = size_px.max(1) as u32;
+        let source = self
+            .images
+            .iter()
+            .find(|image| image.width() >= size)
+            .or_else(|| self.images.last());
+        if let Some(source) = source {
+            return resample(source, size);
+        }
+        find_hicolor_icon(self.name.as_deref()?, size)
     }
-
-    None
 }
 
 /// Try loading `<name>.svg` or `<name>.png` from the given directory.
@@ -768,6 +821,42 @@ fn xdg_data_dirs() -> Vec<std::path::PathBuf> {
 
 /// Scale a pixmap to the target size, preserving aspect ratio and centering.
 fn scale_pixmap(src: &tiny_skia::Pixmap, size: u32) -> Option<tiny_skia::Pixmap> {
+    draw_scaled(src, size, tiny_skia::FilterQuality::Nearest)
+}
+
+/// Like [`scale_pixmap`], but smooth: it halves the image with bilinear
+/// filtering (averaging each 2x2 block) until it is less than twice the
+/// target size, so every source pixel counts, then scales the rest of the
+/// way bicubically.
+fn resample(src: &tiny_skia::Pixmap, size: u32) -> Option<tiny_skia::Pixmap> {
+    let mut current = std::borrow::Cow::Borrowed(src);
+    while current.width() / 2 >= size && current.height() / 2 >= size {
+        let (width, height) = (current.width() / 2, current.height() / 2);
+        let mut half = tiny_skia::Pixmap::new(width, height)?;
+        half.draw_pixmap(
+            0,
+            0,
+            tiny_skia::Pixmap::as_ref(&current),
+            &tiny_skia::PixmapPaint {
+                quality: tiny_skia::FilterQuality::Bilinear,
+                ..Default::default()
+            },
+            tiny_skia::Transform::from_scale(
+                width as f32 / current.width() as f32,
+                height as f32 / current.height() as f32,
+            ),
+            None,
+        );
+        current = std::borrow::Cow::Owned(half);
+    }
+    draw_scaled(&current, size, tiny_skia::FilterQuality::Bicubic)
+}
+
+fn draw_scaled(
+    src: &tiny_skia::Pixmap,
+    size: u32,
+    quality: tiny_skia::FilterQuality,
+) -> Option<tiny_skia::Pixmap> {
     if src.width() == size && src.height() == size {
         return Some(src.clone());
     }
@@ -784,7 +873,10 @@ fn scale_pixmap(src: &tiny_skia::Pixmap, size: u32) -> Option<tiny_skia::Pixmap>
         0,
         0,
         src.as_ref(),
-        &tiny_skia::PixmapPaint::default(),
+        &tiny_skia::PixmapPaint {
+            quality,
+            ..Default::default()
+        },
         transform,
         None,
     );
@@ -802,7 +894,21 @@ impl Drop for DesktopSurface {
 
 #[cfg(test)]
 mod tests {
-    use super::{desktop_input_area, rgba_to_premultiplied_argb};
+    use super::{desktop_input_area, rgba_to_premultiplied_argb, ClientIcon, CLIENT_ICON_MAX_EDGE};
+    use resvg::tiny_skia::{Color, Pixmap};
+
+    fn solid(size: u32, color: Color) -> Pixmap {
+        let mut pixmap = Pixmap::new(size, size).unwrap();
+        pixmap.fill(color);
+        pixmap
+    }
+
+    fn center(pixmap: &Pixmap) -> (u8, u8, u8, u8) {
+        let c = pixmap
+            .pixel(pixmap.width() / 2, pixmap.height() / 2)
+            .unwrap();
+        (c.red(), c.green(), c.blue(), c.alpha())
+    }
 
     #[test]
     fn desktop_input_area_leaves_out_exclusive_zones() {
@@ -830,5 +936,45 @@ mod tests {
         assert_eq!(rgba_to_premultiplied_argb(0x008080FF), 0xFF008080);
         assert_eq!(rgba_to_premultiplied_argb(0xFFFFFF80), 0x80808080);
         assert_eq!(rgba_to_premultiplied_argb(0x12345600), 0x00000000);
+    }
+
+    #[test]
+    fn client_icon_without_name_or_images_is_none() {
+        assert!(ClientIcon::new(None, Vec::new()).is_none());
+        assert!(ClientIcon::new(Some(String::new()), Vec::new()).is_none());
+        assert!(ClientIcon::new(Some("firefox".into()), Vec::new()).is_some());
+    }
+
+    #[test]
+    fn client_icon_scales_the_closest_larger_image() {
+        let icon = ClientIcon::new(
+            None,
+            vec![
+                solid(16, Color::from_rgba8(255, 0, 0, 255)),
+                solid(64, Color::from_rgba8(0, 255, 0, 255)),
+                solid(128, Color::from_rgba8(0, 0, 255, 255)),
+            ],
+        )
+        .unwrap();
+        let drawn = icon.render(48).unwrap();
+        assert_eq!((drawn.width(), drawn.height()), (48, 48));
+        assert_eq!(center(&drawn), (0, 255, 0, 255));
+        assert_eq!(center(&icon.render(96).unwrap()), (0, 0, 255, 255));
+        // Larger than every image: the largest, scaled up.
+        assert_eq!(center(&icon.render(200).unwrap()), (0, 0, 255, 255));
+        assert_eq!(center(&icon.render(16).unwrap()), (255, 0, 0, 255));
+    }
+
+    #[test]
+    fn client_icon_shrinks_huge_images_and_keeps_colors() {
+        let icon =
+            ClientIcon::new(None, vec![solid(1000, Color::from_rgba8(10, 200, 30, 255))]).unwrap();
+        assert_eq!(icon.images.len(), 1);
+        assert_eq!(icon.images[0].width(), CLIENT_ICON_MAX_EDGE);
+        let drawn = icon.render(48).unwrap();
+        assert_eq!(center(&drawn), (10, 200, 30, 255));
+        // Edges stay opaque: no transparent border creeps in.
+        let corner = drawn.pixel(0, 0).unwrap();
+        assert_eq!(corner.alpha(), 255);
     }
 }

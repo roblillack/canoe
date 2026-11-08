@@ -8,7 +8,8 @@ use crate::config::WindowDecoration;
 use crate::wm::{Capabilities, Edges, NodeHandle, OutputHandle, WindowHandle};
 use std::cell::RefCell;
 use std::collections::VecDeque;
-use std::rc::Weak;
+use std::rc::{Rc, Weak};
+use std::sync::Arc;
 
 /// Window identifier
 pub type WindowId = usize;
@@ -110,6 +111,10 @@ pub struct Window {
     pub app_id: Option<String>,
     /// Window title
     pub title: Option<String>,
+    /// The icon the client set for this window (xdg-toplevel-icon), if any
+    pub client_icon: Option<Arc<super::ClientIcon>>,
+    /// `client_icon` drawn at a size in pixels; cleared when it changes
+    pub client_icon_pixmap: Option<(i32, Option<Rc<resvg::tiny_skia::Pixmap>>)>,
     /// Compositor-assigned identifier, shared with ext-foreign-toplevel-list-v1
     /// (river_window_v1 version 4 and later)
     pub identifier: Option<String>,
@@ -200,6 +205,8 @@ impl Window {
             pid: 0,
             app_id: None,
             title: None,
+            client_icon: None,
+            client_icon_pixmap: None,
             identifier: None,
             parent: None,
             swallow_top: 0,

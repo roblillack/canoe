@@ -3,7 +3,8 @@
 //! Maps one xdg_toplevel (optionally with a parent or a child dialog) or one
 //! zwlr_layer_surface_v1, draws it with wl_shm and reports configures and
 //! input events on stdout, one line each. With xdg-foreign it can export its
-//! window, or attach it to a window another client exported.
+//! window, or attach it to a window another client exported. With
+//! xdg-toplevel-icon it sets its window's icon, and can change it later.
 
 use std::io::Write as _;
 use std::os::fd::AsFd;
@@ -39,6 +40,9 @@ use wayland_protocols::xdg::shell::client::{
     xdg_surface::{self, XdgSurface},
     xdg_toplevel::{self, XdgToplevel},
     xdg_wm_base::{self, XdgWmBase},
+};
+use wayland_protocols::xdg::toplevel_icon::v1::client::{
+    xdg_toplevel_icon_manager_v1::XdgToplevelIconManagerV1, xdg_toplevel_icon_v1::XdgToplevelIconV1,
 };
 use wayland_protocols_wlr::layer_shell::v1::client::{
     zwlr_layer_shell_v1::{self, ZwlrLayerShellV1},
@@ -82,6 +86,14 @@ xdg-foreign:
   --import-delay MS      set that parent MS after the first configure
                          instead of before the first commit
 
+xdg-toplevel-icon (repeatable; applies to the window --title etc. describe):
+  --icon ICON[@MS]       set the icon before the first commit, or MS after
+                         the first configure. ICON is RRGGBB (images of 24
+                         and 48 px, and 96 px at scale 2, in that color with
+                         a white top left quarter), name=NAME (an icon
+                         theme name), empty (an icon with neither) or none
+                         (reset to the default icon)
+
 Layer surface:
   --layer background|bottom|top|overlay   create a layer surface instead
   --anchor LIST          comma list of top,bottom,left,right
@@ -93,7 +105,8 @@ Layer surface:
 Output: configure: WxH states=[...] | decoration: client_side|server_side |
   layer configure: WxH | pointer enter X Y | pointer leave |
   pointer button BTN pressed|released X Y | keyboard enter | keyboard leave |
-  key SYM pressed|released | closed | exported: HANDLE | import destroyed";
+  key SYM pressed|released | closed | exported: HANDLE | import destroyed |
+  icon: ICON";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -132,6 +145,50 @@ struct Options {
     export: Option<String>,
     import_parent: Option<String>,
     import_delay: Option<u64>,
+    /// Icons to set, each with its delay after the first configure (`None`:
+    /// before the first commit).
+    icons: Vec<(IconSpec, Option<u64>)>,
+}
+
+#[derive(Clone, PartialEq)]
+enum IconSpec {
+    Color(u32),
+    Name(String),
+    Empty,
+    None,
+}
+
+impl std::fmt::Display for IconSpec {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IconSpec::Color(c) => write!(f, "{c:06x}"),
+            IconSpec::Name(n) => write!(f, "name={n}"),
+            IconSpec::Empty => write!(f, "empty"),
+            IconSpec::None => write!(f, "none"),
+        }
+    }
+}
+
+fn parse_icon(s: &str) -> Result<(IconSpec, Option<u64>)> {
+    let (icon, delay) = match s.rsplit_once('@') {
+        Some((icon, ms)) => (
+            icon,
+            Some(
+                ms.parse()
+                    .map_err(|_| format!("--icon: bad delay {ms:?}"))?,
+            ),
+        ),
+        None => (s, None),
+    };
+    let icon = match icon {
+        "none" => IconSpec::None,
+        "empty" => IconSpec::Empty,
+        _ => match icon.strip_prefix("name=") {
+            Some(name) => IconSpec::Name(name.into()),
+            None => IconSpec::Color(parse_color(icon)?),
+        },
+    };
+    Ok((icon, delay))
 }
 
 fn parse_size(s: &str) -> Result<(u32, u32)> {
@@ -173,6 +230,7 @@ fn parse_args() -> Result<Options> {
         export: None,
         import_parent: None,
         import_delay: None,
+        icons: Vec::new(),
     };
     let parent_default = || WinSpec {
         title: "parent".into(),
@@ -233,6 +291,7 @@ fn parse_args() -> Result<Options> {
             "--export",
             "--import-parent",
             "--import-delay",
+            "--icon",
         ];
         if !VALUED.contains(&flag.as_str()) {
             return Err(format!("unknown option {flag:?} (see --help)"));
@@ -325,6 +384,7 @@ fn parse_args() -> Result<Options> {
             "--import-delay" => {
                 o.import_delay = Some(val.parse().map_err(|_| format!("bad delay {val:?}"))?)
             }
+            "--icon" => o.icons.push(parse_icon(&val)?),
             _ => return Err(format!("unknown option {flag:?} (see --help)")),
         }
     }
@@ -353,6 +413,9 @@ fn parse_args() -> Result<Options> {
     }
     if o.import_delay.is_some() && o.import_parent.is_none() {
         return Err("--import-delay needs --import-parent".into());
+    }
+    if o.layer.is_some() && !o.icons.is_empty() {
+        return Err("--layer cannot be combined with --icon".into());
     }
     Ok(o)
 }
@@ -385,6 +448,7 @@ struct Win {
 
 struct State {
     shm: WlShm,
+    icon_manager: Option<XdgToplevelIconManagerV1>,
     windows: Vec<Win>,
     outputs: Vec<(WlOutput, Option<String>)>,
     pointer: Option<WlPointer>,
@@ -452,6 +516,87 @@ impl State {
         w.surface.damage_buffer(0, 0, width as i32, height as i32);
         w.surface.commit();
         Ok(())
+    }
+
+    /// Set `icon` on window `idx`, to be applied by its next commit. The
+    /// icon object and its buffers are destroyed right away, which the
+    /// protocol allows once the icon is set.
+    fn set_icon(&self, idx: usize, icon: &IconSpec, qh: &QueueHandle<Self>) -> Result<()> {
+        let Some(manager) = self.icon_manager.as_ref() else {
+            return Ok(());
+        };
+        let Role::Toplevel { top, .. } = &self.windows[idx].role else {
+            return Err("--icon needs a toplevel".into());
+        };
+        let mut buffers = Vec::new();
+        let object = match icon {
+            IconSpec::None => None,
+            IconSpec::Empty => Some(manager.create_icon(qh, ())),
+            IconSpec::Name(name) => {
+                let object = manager.create_icon(qh, ());
+                object.set_name(name.clone());
+                Some(object)
+            }
+            IconSpec::Color(color) => {
+                let object = manager.create_icon(qh, ());
+                for (size, scale) in [(24, 1), (48, 1), (96, 2)] {
+                    let buffer = self.icon_buffer(size, *color, qh)?;
+                    object.add_buffer(&buffer, scale);
+                    buffers.push(buffer);
+                }
+                Some(object)
+            }
+        };
+        manager.set_icon(top, object.as_ref());
+        if let Some(object) = object {
+            object.destroy();
+        }
+        for buffer in buffers {
+            buffer.destroy();
+        }
+        self.say(Some(idx), format_args!("icon: {icon}"));
+        Ok(())
+    }
+
+    /// A square icon image `size` pixels across: `color` with a white top
+    /// left quarter and a darker border.
+    fn icon_buffer(&self, size: u32, color: u32, qh: &QueueHandle<Self>) -> Result<WlBuffer> {
+        let fill = 0xff00_0000 | color;
+        let ch = |s: u32| (((color >> s) & 0xff) / 2) << s;
+        let border = 0xff00_0000 | ch(16) | ch(8) | ch(0);
+        let edge = (size / 12).max(1);
+        let mut data = Vec::with_capacity((size * size * 4) as usize);
+        for y in 0..size {
+            for x in 0..size {
+                let px = if x < edge || y < edge || x + edge >= size || y + edge >= size {
+                    border
+                } else if x < size / 2 && y < size / 2 {
+                    0xffff_ffff
+                } else {
+                    fill
+                };
+                data.extend_from_slice(&px.to_le_bytes());
+            }
+        }
+        let fd = rustix::fs::memfd_create("wltest-icon", rustix::fs::MemfdFlags::CLOEXEC)
+            .map_err(|e| format!("memfd_create: {e}"))?;
+        let mut file = std::fs::File::from(fd);
+        file.write_all(&data)
+            .map_err(|e| format!("writing icon: {e}"))?;
+        let pool = self
+            .shm
+            .create_pool(file.as_fd(), data.len() as i32, qh, ());
+        let buffer = pool.create_buffer(
+            0,
+            size as i32,
+            size as i32,
+            size as i32 * 4,
+            wl_shm::Format::Argb8888,
+            qh,
+            (),
+        );
+        pool.destroy();
+        Ok(buffer)
     }
 
     fn close(&mut self, idx: usize) {
@@ -892,6 +1037,8 @@ delegate_noop!(State: ZxdgDecorationManagerV1);
 delegate_noop!(State: ZwlrLayerShellV1);
 delegate_noop!(State: ZxdgExporterV2);
 delegate_noop!(State: ZxdgImporterV2);
+delegate_noop!(State: ignore XdgToplevelIconManagerV1);
+delegate_noop!(State: XdgToplevelIconV1);
 
 // ---------------------------------------------------------------------------
 // Setup and main loop
@@ -927,6 +1074,7 @@ impl App {
         deco: Deco,
         parent: Option<&XdgToplevel>,
         foreign_parent: Option<&ZxdgImportedV2>,
+        icons: &[IconSpec],
     ) -> Result<usize> {
         let wm: XdgWmBase = bind(&self.globals, &self.qh, 1..=6)?;
         let idx = self.state.windows.len();
@@ -959,10 +1107,9 @@ impl App {
             }
             Some(d)
         };
-        surface.commit();
         self.state.windows.push(Win {
             label,
-            surface,
+            surface: surface.clone(),
             role: Role::Toplevel { xdg, top, deco },
             spec: spec.clone(),
             size: spec.size,
@@ -972,6 +1119,10 @@ impl App {
             deco_mode: None,
             alive: true,
         });
+        for icon in icons {
+            self.state.set_icon(idx, icon, &self.qh)?;
+        }
+        surface.commit();
         Ok(idx)
     }
 
@@ -1110,6 +1261,7 @@ fn run(opts: Options) -> Result<()> {
 
     let mut state = State {
         shm,
+        icon_manager: None,
         windows: Vec::new(),
         outputs: Vec::new(),
         pointer: None,
@@ -1140,6 +1292,26 @@ fn run(opts: Options) -> Result<()> {
         compositor,
     };
     app.queue.roundtrip(&mut app.state).map_err(wl_err)?;
+    if !opts.icons.is_empty() {
+        // Without it the window maps all the same, so that scenarios run
+        // on such compositors too.
+        app.state.icon_manager = bind(&app.globals, &app.qh, 1..=1)
+            .map_err(|e| eprintln!("wltest: {e}; ignoring --icon"))
+            .ok();
+    }
+    let early_icons: Vec<IconSpec> = opts
+        .icons
+        .iter()
+        .filter(|(_, delay)| delay.is_none())
+        .map(|(icon, _)| icon.clone())
+        .collect();
+    let mut late_icons: Vec<(u64, IconSpec)> = opts
+        .icons
+        .iter()
+        .filter_map(|(icon, delay)| delay.map(|ms| (ms, icon.clone())))
+        .collect();
+    late_icons.sort_by_key(|(ms, _)| *ms);
+    late_icons.reverse();
 
     let imported = match &opts.import_parent {
         Some(path) => {
@@ -1155,24 +1327,45 @@ fn run(opts: Options) -> Result<()> {
     let main_idx = if let Some(layer) = opts.layer {
         app.create_layer(&opts, layer)?
     } else if let Some(parent) = &opts.parent {
-        let p = app.create_toplevel(Some("parent"), parent, opts.deco, None, None)?;
+        let p = app.create_toplevel(Some("parent"), parent, opts.deco, None, None, &[])?;
         app.wait_configured(p)?;
         let Role::Toplevel { top, .. } = &app.state.windows[p].role else {
             unreachable!()
         };
         let top = top.clone();
-        app.create_toplevel(Some("child"), &opts.main, opts.deco, Some(&top), None)?
+        app.create_toplevel(
+            Some("child"),
+            &opts.main,
+            opts.deco,
+            Some(&top),
+            None,
+            &early_icons,
+        )?
     } else if let Some(dialog) = &opts.dialog {
-        let p = app.create_toplevel(Some("parent"), &opts.main, opts.deco, None, None)?;
+        let p = app.create_toplevel(
+            Some("parent"),
+            &opts.main,
+            opts.deco,
+            None,
+            None,
+            &early_icons,
+        )?;
         app.wait_configured(p)?;
         let Role::Toplevel { top, .. } = &app.state.windows[p].role else {
             unreachable!()
         };
         let top = top.clone();
-        app.create_toplevel(Some("child"), dialog, opts.deco, Some(&top), None)?;
+        app.create_toplevel(Some("child"), dialog, opts.deco, Some(&top), None, &[])?;
         p
     } else {
-        app.create_toplevel(None, &opts.main, opts.deco, None, early_parent)?
+        app.create_toplevel(
+            None,
+            &opts.main,
+            opts.deco,
+            None,
+            early_parent,
+            &early_icons,
+        )?
     };
     if let Some(path) = &opts.export {
         app.wait_configured(main_idx)?;
@@ -1192,6 +1385,19 @@ fn run(opts: Options) -> Result<()> {
             return Ok(());
         }
         let mut timeout: Option<Duration> = None;
+        if let (Some((ms, icon)), Some(t0)) = (late_icons.last(), main_configured_at) {
+            let due = t0 + Duration::from_millis(*ms);
+            let now = Instant::now();
+            if now >= due {
+                if app.state.windows[main_idx].alive {
+                    app.state.set_icon(main_idx, icon, &app.qh)?;
+                    app.state.windows[main_idx].surface.commit();
+                }
+                late_icons.pop();
+                continue;
+            }
+            timeout = Some(due - now);
+        }
         if let (Some(imported), Some(t0)) = (&late_parent, main_configured_at) {
             let due = t0 + Duration::from_millis(opts.import_delay.unwrap_or(0));
             let now = Instant::now();
@@ -1203,7 +1409,7 @@ fn run(opts: Options) -> Result<()> {
                 late_parent = None;
                 continue;
             }
-            timeout = Some(due - now);
+            timeout = Some(timeout.map_or(due - now, |t| t.min(due - now)));
         }
         if let (Some(req), Some(t0)) = (&request, main_configured_at) {
             let due = t0 + Duration::from_millis(opts.request_delay);

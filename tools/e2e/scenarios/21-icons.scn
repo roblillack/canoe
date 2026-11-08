@@ -1,0 +1,24 @@
+# xdg-toplevel-icon: a minimized window's desktop icon is the one its
+# client set, and follows when the client changes it.
+spawn $WLTEST --app-id plain --title Plain --size 300x200
+wait-toplevel plain 4000
+key super+h
+spawn $WLTEST --app-id red --title Red --size 300x200 --color d03030 --icon d03030
+wait-toplevel red 4000
+key super+h
+# Blue at first, green 2.5 s after mapping, then an empty icon: back to
+# the default.
+spawn $WLTEST --app-id live --title Live --size 300x200 --icon 3070d0 --icon 30a050@2500 --icon empty@4500
+wait-toplevel live 4000
+key super+h
+shot 01-icons
+sleep 2500
+shot 02-changed
+sleep 2000
+shot 03-reset
+# An icon changed while the window is shown is used once it is minimized.
+spawn $WLTEST --app-id shown --title Shown --size 300x200 --icon d0a030 --icon 8030c0@1000
+wait-toplevel shown 4000
+sleep 1500
+key super+h
+shot 04-changed-while-shown

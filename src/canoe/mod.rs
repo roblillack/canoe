@@ -16,7 +16,10 @@ pub mod titlebar;
 pub mod window;
 
 pub use context::Context;
-pub use desktop::{desktop_input_area, regular_weight_font_query, DesktopSurface, IconTheme};
+pub use desktop::{
+    desktop_input_area, regular_weight_font_query, ClientIcon, DesktopSurface, IconTheme,
+    CLIENT_ICON_MAX_EDGE, ICON_SIZE,
+};
 pub use menu::{MenuItem, MenuTheme, WindowMenu};
 pub use output::{Output, OutputId};
 pub use seat::{PointerTarget, Seat, SeatId};
