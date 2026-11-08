@@ -246,6 +246,7 @@ pub struct State {
     pub image_capture_state: protocols::image_capture::ImageCopyCaptureState,
     pub output_management_state: protocols::output_management::OutputManagementState,
     pub output_power_state: protocols::output_power::OutputPowerManagerState,
+    pub gamma_control_state: protocols::gamma_control::GammaControlManagerState,
     pub virtual_pointer_state: protocols::virtual_pointer::VirtualPointerManagerState,
     pub dmabuf: Option<handlers::DmabufGlobal>,
     pub popups: PopupManager,
@@ -372,6 +373,8 @@ impl State {
             protocols::output_management::OutputManagementState::new::<State>(&dh);
         let output_power_state =
             protocols::output_power::OutputPowerManagerState::new::<State>(&dh);
+        let gamma_control_state =
+            protocols::gamma_control::GammaControlManagerState::new::<State>(&dh);
         let virtual_pointer_state =
             protocols::virtual_pointer::VirtualPointerManagerState::new::<State, _>(&dh, |_| true);
         protocols::virtual_keyboard::VirtualKeyboardManagerState::new::<State>(&dh);
@@ -450,6 +453,7 @@ impl State {
             image_capture_state,
             output_management_state,
             output_power_state,
+            gamma_control_state,
             virtual_pointer_state,
             dmabuf: None,
             popups: PopupManager::default(),

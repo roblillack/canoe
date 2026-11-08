@@ -436,18 +436,18 @@ ext-session-lock, wlr-screencopy and ext-image-copy-capture (outputs and
 single windows), ext-foreign-toplevel-list, wlr-output-management,
 fractional scaling and viewporter, cursor-shape, data device, primary
 selection and wlr-data-control, xdg-activation, presentation-time,
-idle-notify and idle-inhibit, wlr-output-power-management, pointer
+idle-notify and idle-inhibit, wlr-output-power-management,
+wlr-gamma-control (night-light tools such as wlsunset or gammastep), pointer
 constraints and relative pointer, virtual keyboard and pointer, linux-dmabuf,
 and X11 programs through Xwayland (with clipboard and primary selection
 shared both ways).
 
-Missing or untested:
+Missing:
 
 - **Xwayland**: X11 windows are drawn at scale 1 (blurry on scaled
   outputs), and X11 programs can't activate their own windows.
-- **DRM/KMS**: the `udev` backend (real monitors) uses one GPU, has no
-  direct scanout tuning, adaptive sync, gamma control or DRM leasing, and has
-  only been compile-tested so far.
+- **DRM/KMS**: the `udev` backend (real monitors) uses only one GPU and has
+  no direct scanout tuning, adaptive sync or DRM leasing.
 - No wlr-foreign-toplevel-management (taskbars that control windows), no
   tablet, touch or gesture input, no text-input/input-method.
 - Input devices take libinput's defaults, apart from tap-to-click.

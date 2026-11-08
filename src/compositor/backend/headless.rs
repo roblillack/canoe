@@ -22,6 +22,10 @@ use crate::compositor::State;
 
 const REFRESH: Duration = Duration::from_micros(16_667);
 
+/// The size of the gamma ramps headless outputs pretend to have. Ramps set
+/// through gamma control are accepted and have no effect.
+pub const GAMMA_SIZE: u32 = 256;
+
 pub struct HeadlessData {
     pub renderer: PixmanRenderer,
     outputs: Vec<HeadlessOutput>,

@@ -121,4 +121,29 @@ impl Backend {
             _ => state.queue_redraw_all(),
         }
     }
+
+    /// The number of entries in each of `output`'s gamma ramps, or `None`
+    /// if its gamma can't be set.
+    pub fn gamma_size(state: &State, output: &Output) -> Option<u32> {
+        match state.backend {
+            Backend::Headless(_) => Some(headless::GAMMA_SIZE),
+            Backend::Udev(ref data) => data.gamma_size(output),
+            // The host compositor owns the monitor.
+            _ => None,
+        }
+    }
+
+    /// Apply gamma ramps (red, green and blue, each `gamma_size` entries)
+    /// to `output`, or linear ones for `None`. Returns whether that worked.
+    pub fn set_gamma(state: &mut State, output: &Output, ramps: Option<&[u16]>) -> bool {
+        match state.backend {
+            // No monitor to apply them to; accepted so tests can use the
+            // protocol.
+            Backend::Headless(_) => {
+                ramps.is_none_or(|r| r.len() == 3 * headless::GAMMA_SIZE as usize)
+            }
+            Backend::Udev(ref mut data) => data.set_gamma(output, ramps),
+            _ => false,
+        }
+    }
 }

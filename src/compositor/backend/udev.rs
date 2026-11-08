@@ -4,6 +4,12 @@
 //! shown on its connectors. Hotplugging connectors, VT switching and mode
 //! changes through wlr-output-management are supported; multi-GPU setups
 //! and DRM leasing are not.
+//!
+//! Gamma ramps from gamma control go to the CRTC through the legacy gamma
+//! ioctl. The kernel turns it into a blocking atomic commit on drivers
+//! that are atomic, which waits for a page flip in flight and the next
+//! vblank: up to two frames per change. Night-light tools change ramps
+//! rarely enough for that.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Duration;
@@ -48,6 +54,9 @@ struct Surface {
     /// powered off: the CRTC is then blank (DPMS off) until the next frame
     /// is queued after it lights up again.
     lit: bool,
+    /// Gamma ramps a client set (red, green, blue). Without, the CRTC has
+    /// linear ramps.
+    gamma: Option<Vec<u16>>,
 }
 
 impl Surface {
@@ -106,6 +115,38 @@ impl UdevData {
             .values()
             .find(|s| &s.output == output)
             .is_some_and(|s| s.modes.iter().any(|m| Mode::from(*m) == mode))
+    }
+
+    pub fn gamma_size(&self, output: &Output) -> Option<u32> {
+        let crtc = self.crtc_for(output)?;
+        crtc_gamma_size(self.manager.device(), crtc)
+    }
+
+    /// Apply gamma ramps to an output's CRTC, or linear ones. While another
+    /// session has the display they are applied when canoe gets it back.
+    pub fn set_gamma(&mut self, output: &Output, ramps: Option<&[u16]>) -> bool {
+        let Some(crtc) = self.crtc_for(output) else {
+            return false;
+        };
+        let Some(size) = crtc_gamma_size(self.manager.device(), crtc) else {
+            return false;
+        };
+        if ramps.is_some_and(|r| r.len() != 3 * size as usize) {
+            return false;
+        }
+        if self.active {
+            if let Err(err) = apply_gamma(self.manager.device(), crtc, size, ramps) {
+                eprintln!(
+                    "canoe: setting the gamma of {} failed: {err}",
+                    output.name()
+                );
+                return false;
+            }
+        }
+        if let Some(surface) = self.surfaces.get_mut(&crtc) {
+            surface.gamma = ramps.map(<[u16]>::to_vec);
+        }
+        true
     }
 
     fn crtc_for(&self, output: &Output) -> Option<crtc::Handle> {
@@ -233,6 +274,19 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
                     for surface in data.surfaces.values_mut().filter(|s| !s.lit) {
                         surface.blank();
                     }
+                    // Or changed their gamma.
+                    for (crtc, surface) in &data.surfaces {
+                        let device = data.manager.device();
+                        if let Some(size) = crtc_gamma_size(device, *crtc) {
+                            let ramps = surface.gamma.as_deref();
+                            if let Err(err) = apply_gamma(device, *crtc, size, ramps) {
+                                eprintln!(
+                                    "canoe: restoring the gamma of {} failed: {err}",
+                                    surface.output.name()
+                                );
+                            }
+                        }
+                    }
                 }
                 for output in &mut state.outputs {
                     output.frame_pending = false;
@@ -243,6 +297,35 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
 
     scan_connectors(state);
     Ok(())
+}
+
+/// The number of entries in each of a CRTC's gamma ramps, if it has any.
+fn crtc_gamma_size(device: &impl ControlDevice, crtc: crtc::Handle) -> Option<u32> {
+    let size = device.get_crtc(crtc).ok()?.gamma_length();
+    (size > 1).then_some(size)
+}
+
+/// Set a CRTC's gamma ramps: `ramps` holds the red, green and blue ramps of
+/// `size` entries each; `None` sets linear ones.
+fn apply_gamma(
+    device: &impl ControlDevice,
+    crtc: crtc::Handle,
+    size: u32,
+    ramps: Option<&[u16]>,
+) -> std::io::Result<()> {
+    let size = size as usize;
+    let linear: Vec<u16>;
+    let ramps = match ramps {
+        Some(ramps) => ramps,
+        None => {
+            let ramp = (0..size).map(|i| (i * 0xffff / (size - 1)) as u16);
+            linear = ramp.clone().chain(ramp.clone()).chain(ramp).collect();
+            &linear
+        }
+    };
+    let (red, rest) = ramps.split_at(size);
+    let (green, blue) = rest.split_at(size);
+    device.set_gamma(crtc, red, green, blue)
 }
 
 /// Touchpads tap to click, like everywhere else.
@@ -373,8 +456,19 @@ fn connector_connected(state: &mut State, info: connector::Info, crtc: crtc::Han
             drm_output,
             modes: info.modes().to_vec(),
             lit: true,
+            gamma: None,
         },
     );
+    // Don't keep ramps an earlier session left on the CRTC.
+    let device = data.manager.device();
+    if let Some(size) = crtc_gamma_size(device, crtc) {
+        if let Err(err) = apply_gamma(device, crtc, size, None) {
+            eprintln!(
+                "canoe: resetting the gamma of {} failed: {err}",
+                output.name()
+            );
+        }
+    }
     state.add_output(output);
     state.queue_redraw_all();
 }

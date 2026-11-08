@@ -3,6 +3,9 @@
 use smithay::backend::input::ButtonState;
 use smithay::output::{Mode, Scale};
 
+use super::protocols::gamma_control::{
+    delegate_gamma_control, GammaControlHandler, GammaControlManagerState,
+};
 use super::protocols::output_management::{
     delegate_output_management, HeadConfiguration, ModeConfiguration, OutputManagementHandler,
     OutputManagementState,
@@ -93,6 +96,9 @@ impl State {
             self.output_changed(output);
         } else {
             self.output_power_state.output_removed(output);
+            // The output keeps its CRTC: don't leave a client's ramps on it.
+            self.gamma_control_state.output_removed(output);
+            super::backend::Backend::set_gamma(self, output, None);
             let id = self.outputs[index].id;
             let layers: Vec<_> = smithay::desktop::layer_map_for_output(output)
                 .layers()
@@ -129,6 +135,21 @@ impl State {
         super::backend::Backend::update_output_power(self, output);
         let mode = if on { PowerMode::On } else { PowerMode::Off };
         self.output_power_state.mode_changed(output, mode);
+    }
+}
+
+impl GammaControlHandler for State {
+    fn gamma_control_state(&mut self) -> &mut GammaControlManagerState {
+        &mut self.gamma_control_state
+    }
+
+    fn gamma_size(&self, output: &smithay::output::Output) -> Option<u32> {
+        self.managed_output(output).filter(|o| o.enabled)?;
+        super::backend::Backend::gamma_size(self, output)
+    }
+
+    fn set_gamma(&mut self, output: &smithay::output::Output, ramps: Option<&[u16]>) -> bool {
+        super::backend::Backend::set_gamma(self, output, ramps)
     }
 }
 
@@ -224,3 +245,4 @@ impl OutputManagementHandler for State {
 delegate_virtual_pointer!(State);
 delegate_output_management!(State);
 delegate_output_power!(State);
+delegate_gamma_control!(State);
