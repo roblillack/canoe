@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 use smithay::desktop::space::SpaceElement;
 use smithay::desktop::{layer_map_for_output, Window};
 use smithay::output::Output;
+use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+use smithay::reexports::wayland_server::backend::GlobalId;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::Resource;
 use smithay::utils::{Logical, Rectangle, Serial};
@@ -35,6 +37,10 @@ use crate::wm::WindowKey;
 /// How long a window's new position waits for the client to take the size
 /// proposed with it.
 pub(super) const POSITION_SYNC_TIMEOUT: Duration = Duration::from_millis(150);
+
+/// How long the global of an output that went away stays, disabled, for
+/// clients that bind it before they hear it is gone.
+const RETIRED_GLOBAL_LINGER: Duration = Duration::from_secs(5);
 
 impl State {
     // ------------------------------------------------------------------
@@ -674,15 +680,29 @@ impl State {
             return;
         };
         let managed = self.outputs.remove(index);
-        if let Some(global) = managed.global {
-            self.display_handle.remove_global::<State>(global);
-        }
         self.output_management_state.remove_head(output);
         self.output_power_state.output_removed(output);
         self.gamma_control_state.output_removed(output);
         self.screencopy_state.output_removed(output);
         self.image_capture_state.output_removed(output);
         self.output_management_state.update::<State>();
+        self.retire_output(output, managed.global);
+        self.context.borrow_mut().destroy_output(managed.id);
+        if self.default_layer_output == Some(managed.key) {
+            self.default_layer_output = None;
+        }
+        self.schedule_wm();
+    }
+
+    /// Let clients know `output`, no longer among the active outputs, is
+    /// going away: its layer surfaces close, surfaces leave it and taskbars
+    /// stop listing windows on it, all before its global goes. A client
+    /// that destroys its `wl_output` as the global goes gets anything that
+    /// names it afterwards with a null output, which e.g. kitty crashes on.
+    /// The global is disabled at once and removed a moment later, so a
+    /// client binding it meanwhile isn't killed for binding a global that
+    /// is gone.
+    pub fn retire_output(&mut self, output: &Output, global: Option<GlobalId>) {
         let layers: Vec<_> = layer_map_for_output(output).layers().cloned().collect();
         for layer in layers {
             layer.layer_surface().send_close();
@@ -691,11 +711,22 @@ impl State {
         for window in &self.windows {
             window.window.output_leave(output);
         }
-        self.context.borrow_mut().destroy_output(managed.id);
-        if self.default_layer_output == Some(managed.key) {
-            self.default_layer_output = None;
+        self.update_wlr_toplevels();
+        let Some(global) = global else {
+            return;
+        };
+        self.display_handle.disable_global::<State>(global.clone());
+        let timer = Timer::from_duration(RETIRED_GLOBAL_LINGER);
+        let inserted = self.loop_handle.insert_source(timer, move |_, _, state| {
+            state.display_handle.remove_global::<State>(global.clone());
+            TimeoutAction::Drop
+        });
+        if let Err(err) = inserted {
+            eprintln!(
+                "canoe: cannot remove the global of {}: {err}",
+                output.name()
+            );
         }
-        self.schedule_wm();
     }
 
     /// Report an output's position, size and scale after they changed.

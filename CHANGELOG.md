@@ -73,6 +73,8 @@ Xwayland. (#66)
   session is locked, instead of taking over and stranding the first. (#77)
 - Monitors that come and go while another VT has the display are set up again
   on switching back, instead of staying dark until replugged. (#77)
+- Clients like kitty no longer crash when a monitor is unplugged or turned
+  off. (#77)
 
 ## [0.6.2] - 2026-11-07
 
