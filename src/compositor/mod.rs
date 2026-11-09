@@ -65,9 +65,20 @@ use smithay::wayland::xdg_activation::XdgActivationState;
 use crate::canoe::{self, Context};
 use crate::wm::{self, ClipBox, CursorShape, OutputKey, Requests, WindowKey};
 
-/// Where a window goes once its client drew the size proposed with it, and
-/// since when it waits.
-pub type PendingPosition = (Point<i32, Logical>, Size<i32, Logical>, Instant);
+/// Where a window goes once its client drew the size proposed with it.
+#[derive(Clone, Copy, Debug)]
+pub struct PendingPosition {
+    pub pos: Point<i32, Logical>,
+    /// The size proposed along with the position.
+    pub size: Size<i32, Logical>,
+    /// Keep the right and the bottom edge where the window manager put them
+    /// should the client draw another size than proposed, as a terminal
+    /// does that only takes whole cells. Set while the user drags the left
+    /// or top edge.
+    pub anchor: (bool, bool),
+    /// Since when it waits.
+    pub since: Instant,
+}
 
 /// What a window's client draws it with.
 pub enum Shell {
@@ -109,10 +120,10 @@ pub struct ManagedWindow {
     pub reported_hints: Option<(i32, i32, i32, i32)>,
     /// Pending state changed; a configure must be sent.
     pub needs_configure: bool,
-    /// A position to apply only once the client has drawn the size proposed
-    /// along with it, so resizing from the left or top edge doesn't make the
-    /// content jitter (River does this with transactions).
-    pub pending_position: Option<PendingPosition>,
+    /// Positions to apply only once the client has drawn the sizes proposed
+    /// along with them, oldest first, so resizing from the left or top edge
+    /// doesn't make the content jitter (River does this with transactions).
+    pub pending_positions: Vec<PendingPosition>,
     /// The client made its initial commit.
     pub initial_commit: bool,
 }
@@ -130,6 +141,52 @@ impl Shell {
 impl ManagedWindow {
     pub fn wl_surface(&self) -> &WlSurface {
         &self.surface
+    }
+
+    /// Where the window manager last put the window, even if it still
+    /// waits for its client there.
+    pub fn target_position(&self) -> Point<i32, Logical> {
+        self.pending_positions.last().map_or(self.pos, |p| p.pos)
+    }
+
+    /// Move the window to the newest waiting position whose size the client
+    /// acknowledged and drew now, or to the newest one if the oldest waited
+    /// too long. Returns whether the window moved somewhere else than the
+    /// window manager put it, to keep an edge in place.
+    pub fn settle_position(&mut self) -> bool {
+        let acked = self
+            .toplevel()
+            .and_then(|toplevel| toplevel.current_state().size);
+        let ready = acked.and_then(|acked| {
+            self.pending_positions
+                .iter()
+                .rposition(|pending| pending.size == acked)
+        });
+        let expired = self
+            .pending_positions
+            .first()
+            .is_some_and(|p| p.since.elapsed() >= wm_events::POSITION_SYNC_TIMEOUT);
+        let index = match ready {
+            Some(index) => index,
+            None if expired => self.pending_positions.len() - 1,
+            None => return false,
+        };
+        let pending = self.pending_positions[index];
+        self.pending_positions.drain(..=index);
+        // The size the client took is final, even if it is another than
+        // proposed; keep the edge opposite of the one dragged in place.
+        let drawn = self.window.geometry().size;
+        let mut pos = pending.pos;
+        if ready.is_some() {
+            if pending.anchor.0 {
+                pos.x += pending.size.w - drawn.w;
+            }
+            if pending.anchor.1 {
+                pos.y += pending.size.h - drawn.h;
+            }
+        }
+        self.pos = pos;
+        pos != pending.pos
     }
 
     pub fn toplevel(&self) -> Option<&ToplevelSurface> {

@@ -110,9 +110,9 @@ impl State {
             .fullscreen
             .and_then(|key| self.output_by_key(key))
             .and_then(|o| self.output_geometry(&o.output));
-        let rect = match (fullscreen_area, window.pending_position) {
+        let rect = match (fullscreen_area, window.pending_positions.last()) {
             (Some(area), _) => area,
-            (None, Some((pos, size, _))) => Rectangle::new(pos, size),
+            (None, Some(pending)) => Rectangle::new(pending.pos, pending.size),
             (None, None) => Rectangle::new(window.pos, window.window.geometry().size),
         };
         let mut on: Vec<Output> = outputs

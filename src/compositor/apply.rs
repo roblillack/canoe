@@ -1,26 +1,30 @@
 //! Carry out what the window manager asked for (see `crate::wm::Request`).
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::{
     State as XdgState, WmCapabilities,
 };
-use smithay::utils::Size;
+use smithay::utils::{Logical, Size};
 
-use super::{PointerOp, Shell, State};
+use super::{PendingPosition, PointerOp, Shell, State};
 use crate::wm::{Capabilities, Edges, Request, WindowKey};
 
 impl State {
     /// Apply every queued request, in order.
     pub fn apply_requests(&mut self) {
         let requests = self.requests.drain();
-        // Windows asked to take a new size in this batch: a position set
-        // along with it waits for the client (see set_window_position).
-        let resized: std::collections::HashSet<WindowKey> = requests
+        // Windows asked to take a new size in this batch, and the last size
+        // asked for: a position set along with it waits for the client
+        // (see set_window_position).
+        let resized: HashMap<WindowKey, Size<i32, Logical>> = requests
             .iter()
             .filter_map(|request| match request {
-                Request::ProposeDimensions(key, w, h) if *w > 0 && *h > 0 => Some(*key),
+                Request::ProposeDimensions(key, w, h) if *w > 0 && *h > 0 => {
+                    Some((*key, Size::from((*w, *h))))
+                }
                 _ => None,
             })
             .collect();
@@ -31,17 +35,35 @@ impl State {
 
     /// Apply positions that waited too long for their client.
     pub fn apply_expired_positions(&mut self) {
-        for window in &mut self.windows {
-            if let Some((pos, _, since)) = window.pending_position {
-                if since.elapsed() >= super::wm_events::POSITION_SYNC_TIMEOUT {
-                    window.pos = pos;
-                    window.pending_position = None;
-                }
-            }
+        let waiting: Vec<WindowKey> = self
+            .windows
+            .iter()
+            .filter(|window| !window.pending_positions.is_empty())
+            .map(|window| window.key)
+            .collect();
+        for key in waiting {
+            self.settle_position(key);
         }
     }
 
-    fn apply_request(&mut self, request: Request, resized: &std::collections::HashSet<WindowKey>) {
+    /// Move a window to where it waits to go, if its client is ready (see
+    /// [`super::ManagedWindow::settle_position`]), and tell the window
+    /// manager if that isn't quite where it put the window.
+    pub fn settle_position(&mut self, key: WindowKey) {
+        let Some(window) = self.window_by_key_mut(key) else {
+            return;
+        };
+        if !window.settle_position() {
+            return;
+        }
+        let (id, pos) = (window.id, window.pos);
+        if let Some(w) = self.context.borrow().windows.get(&id) {
+            w.borrow_mut().update_position(pos.x, pos.y);
+        }
+        self.schedule_wm();
+    }
+
+    fn apply_request(&mut self, request: Request, resized: &HashMap<WindowKey, Size<i32, Logical>>) {
         match request {
             Request::ManageDirty => self.wm_dirty = true,
 
@@ -181,7 +203,7 @@ impl State {
             }
 
             Request::SetPosition(key, x, y) => {
-                self.set_window_position(key, x, y, resized.contains(&key))
+                self.set_window_position(key, x, y, resized.get(&key).copied())
             }
             Request::PlaceTop(key) => {
                 if let Some(index) = self.windows.iter().position(|w| w.key == key) {
@@ -272,24 +294,37 @@ impl State {
     /// Move a window. When the window manager proposed a new size along
     /// with the position, the move waits until the client draws that size,
     /// so a resize from the left or top edge doesn't make the content jump.
-    fn set_window_position(&mut self, key: WindowKey, x: i32, y: i32, resized: bool) {
+    fn set_window_position(
+        &mut self,
+        key: WindowKey,
+        x: i32,
+        y: i32,
+        proposed: Option<Size<i32, Logical>>,
+    ) {
         let Some(window) = self.window_by_key_mut(key) else {
             return;
         };
         let target = (x, y).into();
         // An X11 window takes position and size at once.
-        let proposed = window
-            .toplevel()
-            .and_then(|toplevel| toplevel.with_pending_state(|state| state.size))
-            .filter(|_| resized && window.configurable());
+        let proposed = proposed.filter(|_| window.toplevel().is_some() && window.configurable());
         let current = window.window.geometry().size;
         match proposed {
             Some(size) if size != current && window.reported_size.is_some() => {
-                window.pending_position = Some((target, size, Instant::now()));
+                // Dragging the left or top edge moves it, and only it.
+                let resizing = window.toplevel().is_some_and(|toplevel| {
+                    toplevel.with_pending_state(|state| state.states.contains(XdgState::Resizing))
+                });
+                let last = window.target_position();
+                window.pending_positions.push(PendingPosition {
+                    pos: target,
+                    size,
+                    anchor: (resizing && x != last.x, resizing && y != last.y),
+                    since: Instant::now(),
+                });
             }
             _ => {
                 window.pos = target;
-                window.pending_position = None;
+                window.pending_positions.clear();
             }
         }
     }

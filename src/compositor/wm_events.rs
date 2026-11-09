@@ -231,7 +231,7 @@ impl State {
             reported_size: None,
             reported_hints: None,
             needs_configure: false,
-            pending_position: None,
+            pending_positions: Vec::new(),
             initial_commit: false,
         });
         self.schedule_wm();
@@ -267,13 +267,8 @@ impl State {
             return;
         }
         let size = window.window.geometry().size;
-        if let Some((pos, wanted, since)) = window.pending_position {
-            if size == wanted || since.elapsed() >= POSITION_SYNC_TIMEOUT {
-                window.pos = pos;
-                window.pending_position = None;
-            }
-        }
         let key = window.key;
+        self.settle_position(key);
         self.capture_window_damage(key);
         let window = self.window_by_key_mut(key).unwrap();
         if size.w > 0 && size.h > 0 && window.reported_size != Some(size) {

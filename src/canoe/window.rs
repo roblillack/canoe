@@ -399,6 +399,20 @@ impl Window {
         }
     }
 
+    /// Update the window's position without moving it (called when the
+    /// compositor kept an edge in place because the client took another
+    /// size than proposed)
+    pub fn update_position(&mut self, x: i32, y: i32) {
+        self.x = x;
+        self.y = y;
+        if matches!(self.fullscreen, FullscreenState::None) && !self.pending_unfullscreen_restore {
+            if let Some(ref mut saved) = self.pre_fullscreen {
+                saved.x = x;
+                saved.y = y;
+            }
+        }
+    }
+
     /// Update window dimensions (called when compositor confirms dimensions)
     pub fn update_dimensions(&mut self, width: i32, height: i32) {
         self.width = width;
