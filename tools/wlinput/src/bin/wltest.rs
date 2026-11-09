@@ -5,6 +5,8 @@
 //! input events on stdout, one line each. With xdg-foreign it can export its
 //! window, or attach it to a window another client exported. With
 //! xdg-toplevel-icon it sets its window's icon, and can change it later.
+//! With canoe's xx-iconlet-v1 it draws that icon with a surface of its own,
+//! declares the window an iconlet and reports where its icon is.
 
 use std::io::Write as _;
 use std::os::fd::AsFd;
@@ -52,6 +54,29 @@ use xkbcommon::xkb;
 
 type Result<T> = std::result::Result<T, String>;
 
+/// Client side of canoe's experimental xx-iconlet-v1.
+#[allow(clippy::all)]
+mod iconlet {
+    use wayland_client;
+    use wayland_client::protocol::*;
+    use wayland_protocols::xdg::shell::client::*;
+
+    pub mod __interfaces {
+        use wayland_client::backend as wayland_backend;
+        use wayland_client::protocol::__interfaces::*;
+        use wayland_protocols::xdg::shell::client::__interfaces::*;
+        wayland_scanner::generate_interfaces!("../../src/compositor/protocols/xx-iconlet-v1.xml");
+    }
+    use self::__interfaces::*;
+
+    wayland_scanner::generate_client_code!("../../src/compositor/protocols/xx-iconlet-v1.xml");
+}
+use iconlet::{
+    xx_icon_surface_v1::{self, XxIconSurfaceV1},
+    xx_iconic_toplevel_v1::{self, XxIconicToplevelV1},
+    xx_iconlet_manager_v1::XxIconletManagerV1,
+};
+
 const USAGE: &str = "\
 usage: wltest [OPTIONS]
 
@@ -95,6 +120,15 @@ xdg-toplevel-icon (repeatable; applies to the window --title etc. describe):
                          a white top left quarter), name=NAME (an icon
                          theme name), empty (an icon with neither) or none
                          (reset to the default icon)
+
+xx-iconlet-v1 (canoe's; reports icon: shown X Y WxH | icon: hidden |
+icon: activated | icon surface: WxH):
+  --iconlet              declare the window an iconlet before its first commit
+  --icon-surface RRGGBB[@MS]
+                         draw the window's icon with a surface of its own, in
+                         that color with a white top left quarter, from before
+                         the first commit, or in a new color MS after the
+                         first configure (repeatable)
 
 Layer surface:
   --layer background|bottom|top|overlay   create a layer surface instead
@@ -152,6 +186,10 @@ struct Options {
     icons: Vec<(IconSpec, Option<u64>)>,
     /// Titles to change to, each with its delay after the first configure.
     retitles: Vec<(String, u64)>,
+    iconlet: bool,
+    /// Colors to draw the icon surface in, each with its delay after the
+    /// first configure (`None`: from the start).
+    icon_surfaces: Vec<(u32, Option<u64>)>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -236,6 +274,8 @@ fn parse_args() -> Result<Options> {
         import_delay: None,
         icons: Vec::new(),
         retitles: Vec::new(),
+        iconlet: false,
+        icon_surfaces: Vec::new(),
     };
     let parent_default = || WinSpec {
         title: "parent".into(),
@@ -265,6 +305,10 @@ fn parse_args() -> Result<Options> {
         if flag == "-h" || flag == "--help" {
             println!("{USAGE}");
             std::process::exit(0);
+        }
+        if flag == "--iconlet" {
+            o.iconlet = true;
+            continue;
         }
         if flag == "--dialog" {
             want_dialog = true;
@@ -298,6 +342,7 @@ fn parse_args() -> Result<Options> {
             "--import-delay",
             "--icon",
             "--retitle",
+            "--icon-surface",
         ];
         if !VALUED.contains(&flag.as_str()) {
             return Err(format!("unknown option {flag:?} (see --help)"));
@@ -391,11 +436,26 @@ fn parse_args() -> Result<Options> {
                 o.import_delay = Some(val.parse().map_err(|_| format!("bad delay {val:?}"))?)
             }
             "--icon" => o.icons.push(parse_icon(&val)?),
+            "--icon-surface" => {
+                let (color, delay) = match val.rsplit_once('@') {
+                    Some((color, ms)) => (
+                        color,
+                        Some(
+                            ms.parse()
+                                .map_err(|_| format!("--icon-surface: bad delay {ms:?}"))?,
+                        ),
+                    ),
+                    None => (val.as_str(), None),
+                };
+                o.icon_surfaces.push((parse_color(color)?, delay));
+            }
             "--retitle" => {
                 let (title, ms) = val
                     .rsplit_once('@')
                     .ok_or_else(|| format!("--retitle: expected T@MS, got {val:?}"))?;
-                let ms = ms.parse().map_err(|_| format!("--retitle: bad delay {ms:?}"))?;
+                let ms = ms
+                    .parse()
+                    .map_err(|_| format!("--retitle: bad delay {ms:?}"))?;
                 o.retitles.push((title.into(), ms));
             }
             _ => return Err(format!("unknown option {flag:?} (see --help)")),
@@ -433,6 +493,13 @@ fn parse_args() -> Result<Options> {
     if o.layer.is_some() && !o.retitles.is_empty() {
         return Err("--layer cannot be combined with --retitle".into());
     }
+    let iconic = o.iconlet || !o.icon_surfaces.is_empty();
+    if iconic && (o.layer.is_some() || o.parent.is_some() || o.dialog.is_some()) {
+        return Err(
+            "--iconlet and --icon-surface need a single toplevel (no --layer, --parent-*, --dialog)"
+                .into(),
+        );
+    }
     Ok(o)
 }
 
@@ -462,9 +529,19 @@ struct Win {
     alive: bool,
 }
 
+/// The window's icon through xx-iconlet-v1.
+struct Iconic {
+    /// Kept for as long as the window lives; destroying it would end the
+    /// iconlet.
+    _object: XxIconicToplevelV1,
+    /// The icon surface, its role object, its size and color.
+    surface: Option<(WlSurface, XxIconSurfaceV1, (i32, i32), u32)>,
+}
+
 struct State {
     shm: WlShm,
     icon_manager: Option<XdgToplevelIconManagerV1>,
+    iconic: Option<Iconic>,
     windows: Vec<Win>,
     outputs: Vec<(WlOutput, Option<String>)>,
     pointer: Option<WlPointer>,
@@ -613,6 +690,24 @@ impl State {
         );
         pool.destroy();
         Ok(buffer)
+    }
+
+    /// Draw the icon surface in its size and color.
+    fn draw_icon_surface(&self, qh: &QueueHandle<Self>) -> Result<()> {
+        let Some((surface, _, (w, h), color)) =
+            self.iconic.as_ref().and_then(|i| i.surface.as_ref())
+        else {
+            return Ok(());
+        };
+        if *w <= 0 || *w != *h {
+            return Ok(());
+        }
+        let buffer = self.icon_buffer(*w as u32, *color, qh)?;
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage_buffer(0, 0, *w, *h);
+        surface.commit();
+        buffer.destroy();
+        Ok(())
     }
 
     fn close(&mut self, idx: usize) {
@@ -1055,6 +1150,55 @@ delegate_noop!(State: ZxdgExporterV2);
 delegate_noop!(State: ZxdgImporterV2);
 delegate_noop!(State: ignore XdgToplevelIconManagerV1);
 delegate_noop!(State: XdgToplevelIconV1);
+delegate_noop!(State: XxIconletManagerV1);
+
+impl Dispatch<XxIconicToplevelV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &XxIconicToplevelV1,
+        event: xx_iconic_toplevel_v1::Event,
+        _: &(),
+        _: &Connection,
+        _: &QueueHandle<Self>,
+    ) {
+        match event {
+            xx_iconic_toplevel_v1::Event::IconGeometry {
+                x,
+                y,
+                width,
+                height,
+                ..
+            } => state.say(None, format_args!("icon: shown {x} {y} {width}x{height}")),
+            xx_iconic_toplevel_v1::Event::IconHidden => {
+                state.say(None, format_args!("icon: hidden"))
+            }
+            xx_iconic_toplevel_v1::Event::Activate { token } => {
+                let token = if token.is_empty() { " (no token)" } else { "" };
+                state.say(None, format_args!("icon: activated{token}"));
+            }
+        }
+    }
+}
+
+impl Dispatch<XxIconSurfaceV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        _: &XxIconSurfaceV1,
+        event: xx_icon_surface_v1::Event,
+        _: &(),
+        _: &Connection,
+        qh: &QueueHandle<Self>,
+    ) {
+        let xx_icon_surface_v1::Event::Configure { width, height } = event;
+        state.say(None, format_args!("icon surface: {width}x{height}"));
+        if let Some((_, _, size, _)) = state.iconic.as_mut().and_then(|i| i.surface.as_mut()) {
+            *size = (width, height);
+        }
+        if let Err(e) = state.draw_icon_surface(qh) {
+            eprintln!("wltest: {e}");
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Setup and main loop
@@ -1066,6 +1210,16 @@ struct App {
     state: State,
     globals: GlobalList,
     compositor: WlCompositor,
+    /// For the next toplevel: whether it is an iconlet, and the first
+    /// color of its icon surface.
+    iconic: Option<(bool, Option<u32>)>,
+}
+
+fn top_of(win: &Win) -> XdgToplevel {
+    match &win.role {
+        Role::Toplevel { top, .. } => top.clone(),
+        Role::Layer(_) => unreachable!("only toplevels get an iconic object"),
+    }
 }
 
 fn bind<I>(
@@ -1137,6 +1291,23 @@ impl App {
         });
         for icon in icons {
             self.state.set_icon(idx, icon, &self.qh)?;
+        }
+        if let Some((iconlet, color)) = self.iconic.take() {
+            let manager: XxIconletManagerV1 = bind(&self.globals, &self.qh, 1..=1)?;
+            let object =
+                manager.get_iconic_toplevel(&top_of(&self.state.windows[idx]), &self.qh, ());
+            if iconlet {
+                object.set_iconlet();
+            }
+            let surface = color.map(|color| {
+                let surface = self.compositor.create_surface(&self.qh, ());
+                let role = object.get_icon_surface(&surface, &self.qh, ());
+                (surface, role, (0, 0), color)
+            });
+            self.state.iconic = Some(Iconic {
+                _object: object,
+                surface,
+            });
         }
         surface.commit();
         Ok(idx)
@@ -1278,6 +1449,7 @@ fn run(opts: Options) -> Result<()> {
     let mut state = State {
         shm,
         icon_manager: None,
+        iconic: None,
         windows: Vec::new(),
         outputs: Vec::new(),
         pointer: None,
@@ -1306,6 +1478,13 @@ fn run(opts: Options) -> Result<()> {
         state,
         globals,
         compositor,
+        iconic: (opts.iconlet || !opts.icon_surfaces.is_empty()).then(|| {
+            let first = opts.icon_surfaces.iter().find(|(_, delay)| delay.is_none());
+            let first = first
+                .or(opts.icon_surfaces.first())
+                .map(|(color, _)| *color);
+            (opts.iconlet, first)
+        }),
     };
     app.queue.roundtrip(&mut app.state).map_err(wl_err)?;
     if !opts.icons.is_empty() {
@@ -1331,6 +1510,13 @@ fn run(opts: Options) -> Result<()> {
     let mut retitles = opts.retitles.clone();
     retitles.sort_by_key(|(_, ms)| *ms);
     retitles.reverse();
+    let mut icon_colors: Vec<(u64, u32)> = opts
+        .icon_surfaces
+        .iter()
+        .filter_map(|(color, delay)| delay.map(|ms| (ms, *color)))
+        .collect();
+    icon_colors.sort_by_key(|(ms, _)| *ms);
+    icon_colors.reverse();
 
     let imported = match &opts.import_parent {
         Some(path) => {
@@ -1416,6 +1602,23 @@ fn run(opts: Options) -> Result<()> {
                 continue;
             }
             timeout = Some(due - now);
+        }
+        if let (Some((ms, color)), Some(t0)) = (icon_colors.last(), main_configured_at) {
+            let due = t0 + Duration::from_millis(*ms);
+            let now = Instant::now();
+            if now >= due {
+                if let Some((_, _, _, c)) =
+                    app.state.iconic.as_mut().and_then(|i| i.surface.as_mut())
+                {
+                    *c = *color;
+                }
+                app.state
+                    .say(None, format_args!("icon surface: {color:06x}"));
+                app.state.draw_icon_surface(&app.qh)?;
+                icon_colors.pop();
+                continue;
+            }
+            timeout = Some(timeout.map_or(due - now, |t| t.min(due - now)));
         }
         if let (Some((title, ms)), Some(t0)) = (retitles.last(), main_configured_at) {
             let due = t0 + Duration::from_millis(*ms);
