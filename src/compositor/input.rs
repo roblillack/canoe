@@ -281,6 +281,7 @@ impl State {
             pointer.frame(self);
             self.wm_pointer_position(location.x.round() as i32, location.y.round() as i32);
             self.wm_op_delta(delta.x.round() as i32, delta.y.round() as i32);
+            self.update_capture_cursors();
             self.queue_redraw_all();
             return;
         }
@@ -308,6 +309,7 @@ impl State {
         }
         pointer.frame(self);
         self.wm_pointer_position(location.x.round() as i32, location.y.round() as i32);
+        self.update_capture_cursors();
         self.queue_redraw_all();
     }
 
