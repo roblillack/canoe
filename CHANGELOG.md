@@ -71,6 +71,8 @@ Xwayland. (#66)
   opened. (#74)
 - A second screen locker, e.g. from an idle daemon, is refused while the
   session is locked, instead of taking over and stranding the first. (#77)
+- Monitors that come and go while another VT has the display are set up again
+  on switching back, instead of staying dark until replugged. (#77)
 
 ## [0.6.2] - 2026-11-07
 

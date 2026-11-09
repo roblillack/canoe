@@ -51,6 +51,12 @@ use crate::compositor::State;
 /// is started over.
 const FLIP_TIMEOUT: Duration = Duration::from_secs(1);
 
+/// How often to look again at a connector that is connected but has no
+/// modes yet, e.g. while its monitor is still being probed, and how long
+/// apart. No further hotplug event need come once it has them.
+const PROBE_RETRIES: u32 = 10;
+const PROBE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
+
 type CanoeDrmOutput =
     DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
 
@@ -141,6 +147,10 @@ pub struct UdevData {
     active: bool,
     /// The timer that checks frames reach the screen is running.
     watchdog_armed: bool,
+    /// How many more times to look again at connectors without modes.
+    probe_retries: u32,
+    /// The timer that looks at the connectors again is running.
+    rescan_armed: bool,
 }
 
 impl UdevData {
@@ -261,6 +271,8 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
         surfaces: HashMap::new(),
         active: true,
         watchdog_armed: false,
+        probe_retries: PROBE_RETRIES,
+        rescan_armed: false,
     });
 
     // Page flips.
@@ -277,6 +289,9 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
         .loop_handle
         .insert_source(udev_backend, move |event, _, state| match event {
             UdevEvent::Changed { device_id } if device_id == primary.dev_id() => {
+                if let Backend::Udev(ref mut data) = state.backend {
+                    data.probe_retries = PROBE_RETRIES;
+                }
                 scan_connectors(state)
             }
             _ => {}
@@ -347,6 +362,11 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
                     output.frame_pending = false;
                 }
                 state.queue_redraw_all();
+                // Monitors may have come and gone meanwhile.
+                if let Backend::Udev(ref mut data) = state.backend {
+                    data.probe_retries = PROBE_RETRIES;
+                }
+                scan_connectors(state);
             }
         })?;
 
@@ -388,11 +408,18 @@ fn configure_device(device: &mut smithay::reexports::input::Device) {
     let _ = device.config_tap_set_enabled(true);
 }
 
-/// Set up connected connectors, tear down disconnected ones.
+/// Set up connected connectors, tear down disconnected ones. Without the
+/// display, activating the session does it: whoever has it meanwhile
+/// may make monitors come and go just by setting their modes, and canoe
+/// can't set up new ones.
 fn scan_connectors(state: &mut State) {
     let Backend::Udev(ref mut data) = state.backend else {
         return;
     };
+    if !data.active {
+        return;
+    }
+    let mut probing = false;
     let device = data.manager.device();
     let Ok(resources) = device.resource_handles() else {
         return;
@@ -406,12 +433,19 @@ fn scan_connectors(state: &mut State) {
             continue;
         }
         if info.modes().is_empty() {
-            // E.g. while a monitor is still being probed.
-            eprintln!(
-                "canoe: {} is connected but has no modes yet",
-                connector_name(&info)
-            );
-            continue;
+            // E.g. while a monitor is still being probed: look again soon.
+            if data.probe_retries == PROBE_RETRIES {
+                eprintln!(
+                    "canoe: {} is connected but has no modes yet",
+                    connector_name(&info)
+                );
+            }
+            probing = true;
+            // An output set up already stays, rather than going and coming
+            // back, which clients may not survive.
+            if !data.surfaces.values().any(|s| s.connector == info.handle()) {
+                continue;
+            }
         }
         connected.push(info);
     }
@@ -463,6 +497,40 @@ fn scan_connectors(state: &mut State) {
     }
     for (info, crtc) in new {
         connector_connected(state, info, crtc);
+    }
+    if probing {
+        arm_rescan(state);
+    }
+}
+
+/// Look at the connectors again in a moment, for those without modes yet,
+/// up to `PROBE_RETRIES` times since the last hotplug event.
+fn arm_rescan(state: &mut State) {
+    let Backend::Udev(ref mut data) = state.backend else {
+        return;
+    };
+    if data.rescan_armed {
+        return;
+    }
+    if data.probe_retries == 0 {
+        eprintln!("canoe: giving up on connectors that have no modes");
+        return;
+    }
+    data.probe_retries -= 1;
+    data.rescan_armed = true;
+    let timer = Timer::from_duration(PROBE_RETRY_INTERVAL);
+    let inserted = state.loop_handle.insert_source(timer, |_, _, state| {
+        if let Backend::Udev(ref mut data) = state.backend {
+            data.rescan_armed = false;
+        }
+        scan_connectors(state);
+        TimeoutAction::Drop
+    });
+    if let Err(err) = inserted {
+        eprintln!("canoe: cannot look at the connectors again: {err}");
+        if let Backend::Udev(ref mut data) = state.backend {
+            data.rescan_armed = false;
+        }
     }
 }
 
