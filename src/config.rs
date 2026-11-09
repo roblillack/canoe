@@ -178,6 +178,23 @@ pub struct UiConfig {
     /// Text color for the selected icon and its label. When `None`, falls
     /// back to [`UiConfig::menu_highlight_text`].
     pub icons_highlight_text: Option<u32>,
+    /// Whether windows glide and stretch into place when they are
+    /// maximized, snapped or restored.
+    pub animations_enabled: bool,
+    /// How long those animations take, in milliseconds; 0 turns them off.
+    pub animations_duration: u32,
+}
+
+/// Longest animation duration accepted from the config file, in
+/// milliseconds.
+const MAX_ANIMATION_DURATION: u32 = 5000;
+
+impl UiConfig {
+    /// How long window animations take, or `None` if they are off.
+    pub fn animation_duration(&self) -> Option<std::time::Duration> {
+        (self.animations_enabled && self.animations_duration > 0)
+            .then(|| std::time::Duration::from_millis(self.animations_duration.into()))
+    }
 }
 
 impl Default for UiConfig {
@@ -211,6 +228,8 @@ impl Default for UiConfig {
             icons_text: None,
             icons_highlight_bg: None,
             icons_highlight_text: None,
+            animations_enabled: true,
+            animations_duration: 150,
         }
     }
 }
@@ -403,6 +422,8 @@ struct UiConfigFile {
     icons_highlight_bg: Option<u32>,
     #[serde(default, deserialize_with = "deserialize_opt_color")]
     icons_highlight_text: Option<u32>,
+    animations_enabled: Option<bool>,
+    animations_duration: Option<u32>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -524,6 +545,12 @@ impl UiConfig {
         }
         if let Some(color) = overrides.icons_highlight_text {
             self.icons_highlight_text = Some(color);
+        }
+        if let Some(enabled) = overrides.animations_enabled {
+            self.animations_enabled = enabled;
+        }
+        if let Some(duration) = overrides.animations_duration {
+            self.animations_duration = duration.min(MAX_ANIMATION_DURATION);
         }
     }
 }
@@ -1079,6 +1106,40 @@ mod tests {
         assert!(!config.env.is_empty());
         assert!(!config.hotkeys.is_empty());
         assert!(!config.rules.is_empty());
+    }
+
+    #[test]
+    fn test_animations_config() {
+        let ui = UiConfig::default();
+        assert_eq!(
+            ui.animation_duration(),
+            Some(std::time::Duration::from_millis(150))
+        );
+
+        let parse = |contents: &str| {
+            let file_config = toml::from_str::<FileConfig>(contents).expect("parse config");
+            let mut ui = UiConfig::default();
+            ui.apply(file_config.ui.expect("ui present"));
+            ui
+        };
+        let ui = parse("[ui]\nanimations_duration = 250\n");
+        assert_eq!(
+            ui.animation_duration(),
+            Some(std::time::Duration::from_millis(250))
+        );
+        assert_eq!(
+            parse("[ui]\nanimations_enabled = false\n").animation_duration(),
+            None
+        );
+        assert_eq!(
+            parse("[ui]\nanimations_duration = 0\n").animation_duration(),
+            None
+        );
+        assert_eq!(
+            parse("[ui]\nanimations_duration = 60000\n").animations_duration,
+            MAX_ANIMATION_DURATION
+        );
+        assert!(toml::from_str::<FileConfig>("[ui]\nanimations_duration = -1\n").is_err());
     }
 
     #[test]

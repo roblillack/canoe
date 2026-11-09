@@ -237,6 +237,7 @@ impl State {
             decoration_mode_dirty: false,
             pending_positions: Vec::new(),
             initial_commit: false,
+            warp: None,
         });
         self.schedule_wm();
         key

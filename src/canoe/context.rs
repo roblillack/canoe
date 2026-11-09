@@ -1701,6 +1701,7 @@ impl Context {
             }
             w.snap_state = Some(super::window::SnapState::Maximized);
             w.floating = true;
+            self.animate_window_to(&w, content_x, content_y, content_w, content_h);
             w.set_position(content_x, content_y);
             w.propose_dimensions(content_w, content_h);
             w.maximized = true;
@@ -1745,11 +1746,24 @@ impl Context {
             let mut w = window.borrow_mut();
             w.maximized = false;
             if let Some(saved) = w.pre_snap.take() {
+                self.animate_window_to(&w, saved.x, saved.y, saved.width, saved.height);
                 w.set_position(saved.x, saved.y);
                 w.propose_dimensions(saved.width, saved.height);
             }
             w.snap_state = None;
             w.inform_unmaximized();
+        }
+    }
+
+    /// Let `w` glide and stretch to `x`, `y` and `width` x `height` if
+    /// animations are on and that changes anything. Call it right before
+    /// placing and sizing the window.
+    fn animate_window_to(&self, w: &Window, x: i32, y: i32, width: i32, height: i32) {
+        let Some(duration) = self.config.ui.animation_duration() else {
+            return;
+        };
+        if (w.x, w.y, w.width, w.height) != (x, y, width, height) {
+            w.animate_geometry(duration);
         }
     }
 
@@ -1836,6 +1850,16 @@ impl Context {
 
         if w.snap_state == Some(target_snap) {
             return;
+        }
+
+        // Snapping to the other side restores the window, see below.
+        let target = if w.snap_state == Some(target_snap.opposite()) {
+            w.pre_snap.map(|s| (s.x, s.y, s.width, s.height))
+        } else {
+            Some((content_x, content_y, content_w, content_h))
+        };
+        if let Some((x, y, width, height)) = target {
+            self.animate_window_to(&w, x, y, width, height);
         }
 
         if w.snap_state == Some(target_snap.opposite()) {

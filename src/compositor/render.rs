@@ -26,6 +26,7 @@ use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
 use smithay::wayland::compositor::{with_states, with_surface_tree_downward, TraversalAction};
 use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 
+use super::warp::{Fit, FrameMapping, WarpedElement};
 use super::{LockState, State};
 use crate::canoe;
 
@@ -35,6 +36,7 @@ smithay::backend::renderer::element::render_elements! {
     Cropped=CropRenderElement<WaylandSurfaceRenderElement<R>>,
     Memory=MemoryRenderBufferRenderElement<R>,
     Solid=SolidColorRenderElement,
+    Warped=WarpedElement<CanoeElement<R>>,
 }
 
 /// Colors drawn where nothing else is.
@@ -291,7 +293,8 @@ impl State {
             &mut bottom_up,
         );
 
-        // Windows.
+        // Windows. One being animated is drawn where its animation is.
+        let now = std::time::Instant::now();
         for window in &self.windows {
             if window.hidden || window.fullscreen.is_some() {
                 continue;
@@ -306,13 +309,24 @@ impl State {
                 continue;
             }
             let pos = window.pos.to_f64();
+            let mapping = window
+                .warp_frame(now)
+                .map(|frame| FrameMapping::new(&frame, output_loc, scale));
+            let fit = |elements: Vec<CanoeElement<R>>, fit: Fit| match &mapping {
+                Some(mapping) => elements
+                    .into_iter()
+                    .flat_map(|e| mapping.place(e, fit, scale))
+                    .map(CanoeElement::Warped)
+                    .collect(),
+                None => elements,
+            };
             if let Some(shadow) = w.shadow.as_ref() {
                 if let canoe::surface::Role::Decoration { offset, .. } = shadow.surface.role() {
                     let origin = pos + Point::<i32, Logical>::from(offset).to_f64();
                     if let Some(e) =
                         canoe_surface(renderer, &shadow.surface, origin, output_loc, scale)
                     {
-                        bottom_up.push(e);
+                        bottom_up.extend(fit(vec![e], Fit::Slice));
                     }
                 }
             }
@@ -324,22 +338,21 @@ impl State {
                 scale,
             );
             let clip = window.content_clip;
-            if clip.is_enabled() {
+            let main: Vec<CanoeElement<R>> = if clip.is_enabled() {
                 let crop = Rectangle::<f64, Logical>::new(
                     pos + Point::from((clip.x as f64, clip.y as f64)),
                     (clip.width as f64, clip.height as f64).into(),
                 );
                 let crop =
                     Rectangle::new(to_phys(crop.loc), crop.size.to_physical(scale)).to_i32_round();
-                let cropped: Vec<CanoeElement<R>> = main
-                    .into_iter()
+                main.into_iter()
                     .filter_map(|e| CropRenderElement::from_element(e, scale, crop))
                     .map(CanoeElement::Cropped)
-                    .collect();
-                push_top_first(&mut bottom_up, cropped);
+                    .collect()
             } else {
-                push_top_first(&mut bottom_up, main.into_iter().map(Into::into).collect());
-            }
+                main.into_iter().map(Into::into).collect()
+            };
+            push_top_first(&mut bottom_up, fit(main, Fit::Stretch));
             if window.ssd {
                 if let Some(titlebar) = w.titlebar.as_ref() {
                     if let canoe::surface::Role::Decoration { offset, .. } = titlebar.surface.role()
@@ -348,12 +361,13 @@ impl State {
                         if let Some(e) =
                             canoe_surface(renderer, &titlebar.surface, origin, output_loc, scale)
                         {
-                            bottom_up.push(e);
+                            bottom_up.extend(fit(vec![e], Fit::Slice));
                         }
                     }
                 }
             }
-            push_top_first(&mut bottom_up, popups.into_iter().map(Into::into).collect());
+            let popups = popups.into_iter().map(Into::into).collect();
+            push_top_first(&mut bottom_up, fit(popups, Fit::Move));
         }
 
         self.push_layer(

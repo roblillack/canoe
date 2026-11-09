@@ -18,6 +18,7 @@ pub mod protocol_handlers;
 pub mod protocols;
 pub mod render;
 pub mod taskbar;
+pub mod warp;
 pub mod wm_events;
 pub mod wm_glue;
 pub mod xwayland;
@@ -132,6 +133,8 @@ pub struct ManagedWindow {
     pub pending_positions: Vec<PendingPosition>,
     /// The client made its initial commit.
     pub initial_commit: bool,
+    /// The window is animated to a new position and size.
+    pub warp: Option<warp::Warp>,
 }
 
 impl Shell {
@@ -675,6 +678,7 @@ impl State {
     /// Send clients the frame callbacks and other per-frame state after
     /// rendering `output`.
     pub fn post_render(&mut self, output: &Output) {
+        self.advance_warps();
         let time = self.start_time.elapsed();
         for window in &self.windows {
             if window.hidden {
