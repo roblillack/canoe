@@ -101,6 +101,7 @@ fn surface_with_popups<R>(
     surface: &WlSurface,
     location: Point<f64, Physical>,
     scale: Scale<f64>,
+    alpha: f32,
 ) -> (
     Vec<WaylandSurfaceRenderElement<R>>,
     Vec<WaylandSurfaceRenderElement<R>>,
@@ -118,14 +119,14 @@ where
             popup.wl_surface(),
             at,
             scale,
-            1.0,
+            alpha,
             Kind::Unspecified,
         );
         // Later popups are on top.
         elements.append(&mut popups);
         popups = elements;
     }
-    let main = surface_tree_elements(renderer, surface, location, scale, 1.0, Kind::Unspecified);
+    let main = surface_tree_elements(renderer, surface, location, scale, alpha, Kind::Unspecified);
     (main, popups)
 }
 
@@ -136,6 +137,7 @@ fn canoe_surface<R>(
     origin: Point<f64, Logical>,
     output_loc: Point<f64, Logical>,
     scale: Scale<f64>,
+    alpha: f32,
 ) -> Option<CanoeElement<R>>
 where
     R: Renderer + ImportAll + ImportMem,
@@ -158,7 +160,7 @@ where
             &solid,
             start,
             Scale::from(1.0),
-            1.0,
+            alpha,
             Kind::Unspecified,
         )));
     }
@@ -170,7 +172,7 @@ where
         renderer,
         location,
         &content.buffer,
-        None,
+        (alpha < 1.0).then_some(alpha),
         Some(src),
         Some(content.logical_size.into()),
         Kind::Unspecified,
@@ -252,9 +254,14 @@ impl State {
                 if let Some(origin) =
                     canoe_layer_origin(&background.surface, geometry.loc, output_size)
                 {
-                    if let Some(e) =
-                        canoe_surface(renderer, &background.surface, origin, output_loc, scale)
-                    {
+                    if let Some(e) = canoe_surface(
+                        renderer,
+                        &background.surface,
+                        origin,
+                        output_loc,
+                        scale,
+                        1.0,
+                    ) {
                         bottom_up.push(e);
                     }
                 }
@@ -277,7 +284,7 @@ impl State {
                     canoe_layer_origin(&desktop.surface, geometry.loc, output_size)
                 {
                     if let Some(e) =
-                        canoe_surface(renderer, &desktop.surface, origin, output_loc, scale)
+                        canoe_surface(renderer, &desktop.surface, origin, output_loc, scale, 1.0)
                     {
                         bottom_up.push(e);
                     }
@@ -296,7 +303,13 @@ impl State {
         // Windows. One being animated is drawn where its animation is.
         let now = std::time::Instant::now();
         for window in &self.windows {
-            if window.hidden || window.fullscreen.is_some() {
+            if window.fullscreen.is_some() {
+                continue;
+            }
+            // Hidden windows still show while they fly into their icons.
+            let view = self.warp_view(window, now);
+            let iconify = view.is_some_and(|view| view.iconify);
+            if window.hidden && !iconify {
                 continue;
             }
             let Some(w) = context.windows.get(&window.id) else {
@@ -309,9 +322,14 @@ impl State {
                 continue;
             }
             let pos = window.pos.to_f64();
-            let mapping = window
-                .warp_frame(now)
-                .map(|frame| FrameMapping::new(&frame, output_loc, scale));
+            let alpha = view.map_or(1.0, |view| view.alpha);
+            let mapping = view.map(|view| FrameMapping::new(&view.frame, output_loc, scale));
+            // Flying to or from its icon, the window shrinks as a whole.
+            let (frame_fit, popup_fit) = if iconify {
+                (Fit::Stretch, None)
+            } else {
+                (Fit::Slice, Some(Fit::Move))
+            };
             let fit = |elements: Vec<CanoeElement<R>>, fit: Fit| match &mapping {
                 Some(mapping) => elements
                     .into_iter()
@@ -320,11 +338,11 @@ impl State {
                     .collect(),
                 None => elements,
             };
-            if let Some(shadow) = w.shadow.as_ref() {
+            if let Some(shadow) = w.shadow.as_ref().filter(|_| !iconify) {
                 if let canoe::surface::Role::Decoration { offset, .. } = shadow.surface.role() {
                     let origin = pos + Point::<i32, Logical>::from(offset).to_f64();
                     if let Some(e) =
-                        canoe_surface(renderer, &shadow.surface, origin, output_loc, scale)
+                        canoe_surface(renderer, &shadow.surface, origin, output_loc, scale, 1.0)
                     {
                         bottom_up.extend(fit(vec![e], Fit::Slice));
                     }
@@ -336,6 +354,7 @@ impl State {
                 window.wl_surface(),
                 to_phys(surface_origin),
                 scale,
+                alpha,
             );
             let clip = window.content_clip;
             let main: Vec<CanoeElement<R>> = if clip.is_enabled() {
@@ -358,16 +377,23 @@ impl State {
                     if let canoe::surface::Role::Decoration { offset, .. } = titlebar.surface.role()
                     {
                         let origin = pos + Point::<i32, Logical>::from(offset).to_f64();
-                        if let Some(e) =
-                            canoe_surface(renderer, &titlebar.surface, origin, output_loc, scale)
-                        {
-                            bottom_up.extend(fit(vec![e], Fit::Slice));
+                        if let Some(e) = canoe_surface(
+                            renderer,
+                            &titlebar.surface,
+                            origin,
+                            output_loc,
+                            scale,
+                            alpha,
+                        ) {
+                            bottom_up.extend(fit(vec![e], frame_fit));
                         }
                     }
                 }
             }
-            let popups = popups.into_iter().map(Into::into).collect();
-            push_top_first(&mut bottom_up, fit(popups, Fit::Move));
+            if let Some(popup_fit) = popup_fit {
+                let popups = popups.into_iter().map(Into::into).collect();
+                push_top_first(&mut bottom_up, fit(popups, popup_fit));
+            }
         }
 
         self.push_layer(
@@ -401,7 +427,7 @@ impl State {
             )));
             let origin = window.surface_origin(Some(geometry.loc)).to_f64();
             let (main, popups) =
-                surface_with_popups(renderer, window.wl_surface(), to_phys(origin), scale);
+                surface_with_popups(renderer, window.wl_surface(), to_phys(origin), scale, 1.0);
             push_top_first(&mut bottom_up, main.into_iter().map(Into::into).collect());
             push_top_first(&mut bottom_up, popups.into_iter().map(Into::into).collect());
         }
@@ -436,7 +462,7 @@ impl State {
             if menu.output_id == output_id {
                 if let Some(origin) = canoe_layer_origin(&menu.surface, geometry.loc, output_size) {
                     if let Some(e) =
-                        canoe_surface(renderer, &menu.surface, origin, output_loc, scale)
+                        canoe_surface(renderer, &menu.surface, origin, output_loc, scale, 1.0)
                     {
                         bottom_up.push(e);
                     }
@@ -449,7 +475,7 @@ impl State {
                     canoe_layer_origin(&surface.surface, geometry.loc, output_size)
                 {
                     if let Some(e) =
-                        canoe_surface(renderer, &surface.surface, origin, output_loc, scale)
+                        canoe_surface(renderer, &surface.surface, origin, output_loc, scale, 1.0)
                     {
                         bottom_up.push(e);
                     }
@@ -484,7 +510,7 @@ impl State {
             };
             let location = layer_geo.loc.to_f64().to_physical(scale);
             let (main, popups) =
-                surface_with_popups(renderer, surface.wl_surface(), location, scale);
+                surface_with_popups(renderer, surface.wl_surface(), location, scale, 1.0);
             bottom_up.extend(main.into_iter().rev().map(Into::into));
             bottom_up.extend(popups.into_iter().rev().map(Into::into));
         }

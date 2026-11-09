@@ -89,7 +89,8 @@
 #icons_text = "#000000"         # default: menu_text
 #icons_highlight_bg = "#000080" # default: menu_highlight_bg
 #icons_highlight_text = "#FFFFFF" # default: menu_highlight_text
-# Windows glide into place when maximized, snapped or restored.
+# Windows glide into place when maximized, snapped or restored, and shrink
+# into their desktop icons when minimized.
 #animations_enabled = true
 #animations_duration = 150      # milliseconds; 0 turns animations off
 

@@ -875,6 +875,7 @@ pub(super) fn render_all_desktop_surfaces(state: &mut State) {
         render_desktop_background(state, output_id);
         render_desktop_surface(state, output_id);
     }
+    state.update_icon_geometry();
 }
 
 /// Answer a `canoe --share-picker` request without asking the user.
@@ -1278,8 +1279,13 @@ impl State {
             for (&window_id, window) in &context.windows {
                 let mut w = window.borrow_mut();
 
-                let hide_titlebar = w.hidden || w.decoration == Some(config::WindowDecoration::Csd);
-                if hide_titlebar {
+                // A minimized window keeps its frame as it was, to fly into
+                // its icon with. Nothing shows it or sends it input until
+                // the window is shown again, which redraws it.
+                if w.hidden {
+                    continue;
+                }
+                if w.decoration == Some(config::WindowDecoration::Csd) {
                     if let Some(ref mut titlebar) = w.titlebar {
                         if titlebar.mapped {
                             titlebar.sync_next_commit();

@@ -1,6 +1,7 @@
 //! Warp animations: a window maximized, snapped or restored glides and
 //! stretches from where it was shown to where the window manager put it,
-//! instead of jumping there.
+//! instead of jumping there. A window minimized shrinks into its desktop
+//! icon and fades out; brought back, it grows out of the icon again.
 //!
 //! Nothing is rendered offscreen. The client's current buffer is stretched
 //! into the rectangle the animation is at: its old content at first, while
@@ -8,6 +9,7 @@
 //! it arrives. Canoe's own frame and shadow are cut at the content's edges
 //! into nine pieces like a nine-patch, so borders, the titlebar's height and
 //! the shadow's corners keep their size while the rest stretches along.
+//! Flying to and from its icon, a window shrinks as a whole, frame and all.
 
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -25,13 +27,43 @@ use crate::wm::WindowKey;
 /// size it ends at, showing the old content stretched meanwhile.
 const CATCH_UP_TIMEOUT: Duration = Duration::from_millis(500);
 
+/// What a window's animation shows.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WarpKind {
+    /// The window moves to a new position and size.
+    Geometry,
+    /// The window is minimized into its desktop icon.
+    ToIcon,
+    /// The window comes back out of its desktop icon.
+    FromIcon,
+}
+
+impl WarpKind {
+    fn iconify(self) -> bool {
+        self != WarpKind::Geometry
+    }
+}
+
 /// A window's animation in progress.
 #[derive(Debug, Clone, Copy)]
 pub struct Warp {
-    /// Where the window's content was shown when the animation began.
+    /// Where the window was shown when the animation began: its content,
+    /// or for an icon animation its content and frame.
     from: Rectangle<f64, Logical>,
     start: Instant,
     duration: Duration,
+    kind: WarpKind,
+}
+
+impl Warp {
+    /// How far the animation is, from 0 to 1.
+    fn progress(&self, now: Instant) -> f64 {
+        if self.duration.is_zero() {
+            return 1.0;
+        }
+        (now.saturating_duration_since(self.start).as_secs_f64() / self.duration.as_secs_f64())
+            .min(1.0)
+    }
 }
 
 /// Where a window's content is in one frame of its animation.
@@ -42,6 +74,17 @@ pub struct WarpFrame {
     pub drawn: Rectangle<f64, Logical>,
     /// Where it is shown instead.
     pub shown: Rectangle<f64, Logical>,
+}
+
+/// One frame of a window's animation, as it is drawn.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WarpView {
+    pub frame: WarpFrame,
+    /// The window flies to or from its icon: it shrinks as a whole, without
+    /// its shadow and popups.
+    pub iconify: bool,
+    /// How opaque the window is.
+    pub alpha: f32,
 }
 
 /// How an element of a warped window follows its content.
@@ -63,6 +106,16 @@ fn ease(t: f64) -> f64 {
 
 fn lerp(a: f64, b: f64, t: f64) -> f64 {
     a + (b - a) * t
+}
+
+/// Where a window goes without an icon to fly to: a fifth of its size, in
+/// its middle.
+fn shrunk(rect: Rectangle<f64, Logical>) -> Rectangle<f64, Logical> {
+    let size = rect.size.to_point().upscale(0.2);
+    Rectangle::new(
+        rect.loc + (rect.size.to_point() - size).downscale(2.0),
+        (size.x, size.y).into(),
+    )
 }
 
 fn lerp_rect(
@@ -113,68 +166,174 @@ impl ManagedWindow {
         Rectangle::new(self.target_position(), size)
     }
 
-    /// Where the window is in its animation at `now`, if it is animated.
-    pub fn warp_frame(&self, now: Instant) -> Option<WarpFrame> {
-        let warp = self.warp.as_ref()?;
-        let drawn = self.drawn_rect();
-        if drawn.is_empty() {
-            return None;
-        }
-        let t = if warp.duration.is_zero() {
-            1.0
-        } else {
-            (now.saturating_duration_since(warp.start).as_secs_f64() / warp.duration.as_secs_f64())
-                .min(1.0)
-        };
-        Some(WarpFrame {
-            drawn: drawn.to_f64(),
-            shown: lerp_rect(warp.from, self.target_rect().to_f64(), ease(t)),
-        })
-    }
-
     /// The animation is over: it reached its end and the client drew what
     /// it ends at (or took too long for that).
     fn warp_finished(&self, now: Instant) -> bool {
         let Some(warp) = self.warp.as_ref() else {
             return false;
         };
-        if self.hidden || self.fullscreen.is_some() {
+        if self.fullscreen.is_some() {
             return true;
         }
         let elapsed = now.saturating_duration_since(warp.start);
-        elapsed >= warp.duration
-            && (self.drawn_rect() == self.target_rect()
-                || elapsed >= warp.duration + CATCH_UP_TIMEOUT)
+        match warp.kind {
+            WarpKind::Geometry => {
+                self.hidden
+                    || elapsed >= warp.duration
+                        && (self.drawn_rect() == self.target_rect()
+                            || elapsed >= warp.duration + CATCH_UP_TIMEOUT)
+            }
+            // Ended early by showing or hiding the window without one.
+            WarpKind::ToIcon => !self.hidden || elapsed >= warp.duration,
+            WarpKind::FromIcon => self.hidden || elapsed >= warp.duration,
+        }
     }
 }
 
 impl State {
+    /// The window's content with canoe's frame around it, unanimated.
+    fn window_bounds(&self, window: &ManagedWindow) -> Rectangle<f64, Logical> {
+        let content = window.drawn_rect().to_f64();
+        if !window.ssd {
+            return content;
+        }
+        let context = self.context.borrow();
+        let Some(w) = context.windows.get(&window.id) else {
+            return content;
+        };
+        let w = w.borrow();
+        let frame = w.titlebar.as_ref().and_then(|titlebar| {
+            let crate::canoe::surface::Role::Decoration { offset, .. } = titlebar.surface.role()
+            else {
+                return None;
+            };
+            let (width, height) = titlebar.surface.content()?.logical_size;
+            Some(Rectangle::<f64, Logical>::new(
+                (window.pos + Point::from(offset)).to_f64(),
+                (width as f64, height as f64).into(),
+            ))
+        });
+        frame.map_or(content, |frame| content.merge(frame))
+    }
+
+    /// How `window` is drawn at `now`, if it is animated.
+    pub fn warp_view(&self, window: &ManagedWindow, now: Instant) -> Option<WarpView> {
+        let warp = window.warp.as_ref()?;
+        let t = warp.progress(now);
+        let (drawn, to) = match warp.kind {
+            WarpKind::Geometry => (window.drawn_rect().to_f64(), window.target_rect().to_f64()),
+            WarpKind::ToIcon => {
+                let bounds = self.window_bounds(window);
+                let icon = window
+                    .icon
+                    .map_or_else(|| shrunk(bounds), |icon| icon.to_f64());
+                (bounds, icon)
+            }
+            WarpKind::FromIcon => {
+                let bounds = self.window_bounds(window);
+                (bounds, bounds)
+            }
+        };
+        if drawn.is_empty() {
+            return None;
+        }
+        // Fading out late on the way into the icon, in early on the way out.
+        let alpha = match warp.kind {
+            WarpKind::Geometry => 1.0,
+            WarpKind::ToIcon => 1.0 - t * t,
+            WarpKind::FromIcon => 1.0 - (1.0 - t) * (1.0 - t),
+        };
+        Some(WarpView {
+            frame: WarpFrame {
+                drawn,
+                shown: lerp_rect(warp.from, to, ease(t)),
+            },
+            iconify: warp.kind.iconify(),
+            alpha: alpha as f32,
+        })
+    }
+
     /// Animate a window from where it is shown now to the position and size
     /// the window manager asks for next.
     pub fn start_warp(&mut self, key: WindowKey, duration: Duration) {
         let now = Instant::now();
-        let Some(window) = self.window_by_key_mut(key) else {
+        let Some(window) = self.window_by_key(key) else {
             return;
         };
         // Only windows shown in their own place are animated.
-        if window.hidden
+        let from = if window.hidden
             || window.fullscreen.is_some()
             || window.reported_size.is_none()
             || window.drawn_rect().is_empty()
         {
-            window.warp = None;
+            None
+        } else {
+            // A window still animating continues from where it is.
+            Some(
+                self.warp_view(window, now)
+                    .filter(|view| !view.iconify)
+                    .map_or(window.drawn_rect().to_f64(), |view| view.frame.shown),
+            )
+        };
+        self.set_warp(key, from, now, duration, WarpKind::Geometry);
+    }
+
+    /// Animate a window into its desktop icon if it is shown, or out of it
+    /// if it is minimized, before the window manager hides or shows it.
+    pub fn start_iconify(&mut self, key: WindowKey, duration: Duration) {
+        let now = Instant::now();
+        let Some(window) = self.window_by_key(key) else {
             return;
-        }
-        // A window still animating continues from where it is.
-        let from = window
-            .warp_frame(now)
-            .map_or(window.drawn_rect().to_f64(), |frame| frame.shown);
-        window.warp = Some(Warp {
+        };
+        let kind = if window.hidden {
+            WarpKind::FromIcon
+        } else {
+            WarpKind::ToIcon
+        };
+        let from = if window.fullscreen.is_some()
+            || window.reported_size.is_none()
+            || window.drawn_rect().is_empty()
+        {
+            None
+        } else {
+            let bounds = self.window_bounds(window);
+            // Turning back halfway continues from where the window is.
+            let current = self
+                .warp_view(window, now)
+                .filter(|view| view.iconify)
+                .map(|view| view.frame.shown);
+            Some(current.unwrap_or_else(|| {
+                match kind {
+                    WarpKind::FromIcon => window
+                        .icon
+                        .map_or_else(|| shrunk(bounds), |icon| icon.to_f64()),
+                    _ => bounds,
+                }
+            }))
+        };
+        self.set_warp(key, from, now, duration, kind);
+    }
+
+    fn set_warp(
+        &mut self,
+        key: WindowKey,
+        from: Option<Rectangle<f64, Logical>>,
+        start: Instant,
+        duration: Duration,
+        kind: WarpKind,
+    ) {
+        let Some(window) = self.window_by_key_mut(key) else {
+            return;
+        };
+        window.warp = from.map(|from| Warp {
             from,
-            start: now,
+            start,
             duration,
+            kind,
         });
-        self.queue_redraw_all();
+        if window.warp.is_some() {
+            self.queue_redraw_all();
+        }
     }
 
     /// After a frame: end finished animations and keep frames coming while

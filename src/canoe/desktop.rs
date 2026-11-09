@@ -392,6 +392,19 @@ impl DesktopSurface {
         None
     }
 
+    /// The window and the rectangle of each icon's image (its label left
+    /// out), in buffer pixels.
+    pub fn icon_rects(&self) -> Vec<(WindowId, (i32, i32, i32, i32))> {
+        let icon_px = self.scale.px(ICON_SIZE);
+        self.icons
+            .iter()
+            .map(|layout| {
+                let x = layout.x + (layout.width - icon_px) / 2;
+                (layout.window_id, (x, layout.y, icon_px, icon_px))
+            })
+            .collect()
+    }
+
     /// Find the index of the currently selected icon.
     pub fn selected_icon_index(&self) -> Option<usize> {
         let selected = self.selected_icon?;

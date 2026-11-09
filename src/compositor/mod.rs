@@ -133,8 +133,11 @@ pub struct ManagedWindow {
     pub pending_positions: Vec<PendingPosition>,
     /// The client made its initial commit.
     pub initial_commit: bool,
-    /// The window is animated to a new position and size.
+    /// The window is animated to a new position and size, or to or from
+    /// its desktop icon.
     pub warp: Option<warp::Warp>,
+    /// Where the window's desktop icon was last shown, globally.
+    pub icon: Option<smithay::utils::Rectangle<i32, Logical>>,
 }
 
 impl Shell {

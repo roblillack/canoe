@@ -1526,6 +1526,9 @@ impl Context {
             let mut w = window.borrow_mut();
             w.minimize_seq = self.next_minimize_seq;
             self.next_minimize_seq += 1;
+            if !w.hidden {
+                self.animate_iconify(&w);
+            }
             w.hide();
         }
         self.mark_all_desktops_dirty();
@@ -1618,6 +1621,7 @@ impl Context {
                 let mut w = window.borrow_mut();
                 w.minimize_seq = self.next_minimize_seq;
                 self.next_minimize_seq += 1;
+                self.animate_iconify(&w);
                 w.hide();
                 windows.push((window_id, w.minimize_seq));
             }
@@ -1652,7 +1656,9 @@ impl Context {
         // them is enough to put them back where they were.
         for window_id in &restored {
             if let Some(window) = self.windows.get(window_id) {
-                window.borrow_mut().show();
+                let mut w = window.borrow_mut();
+                self.animate_iconify(&w);
+                w.show();
             }
         }
         if restored.is_empty() {
@@ -1764,6 +1770,14 @@ impl Context {
         };
         if (w.x, w.y, w.width, w.height) != (x, y, width, height) {
             w.animate_geometry(duration);
+        }
+    }
+
+    /// Let `w` shrink into its desktop icon or grow out of it if animations
+    /// are on. Call it right before hiding or showing the window.
+    fn animate_iconify(&self, w: &Window) {
+        if let Some(duration) = self.config.ui.animation_duration() {
+            w.animate_iconify(duration);
         }
     }
 
@@ -3061,6 +3075,9 @@ impl Context {
         let was_hidden = {
             let mut w = window.borrow_mut();
             let was_hidden = w.hidden;
+            if was_hidden {
+                self.animate_iconify(&w);
+            }
             w.show();
             w.place_top();
             was_hidden
@@ -3283,6 +3300,9 @@ impl Context {
         if let Some(window) = self.windows.get(&window_id) {
             {
                 let mut w = window.borrow_mut();
+                if w.hidden {
+                    self.animate_iconify(&w);
+                }
                 w.show();
                 w.place_top();
             }

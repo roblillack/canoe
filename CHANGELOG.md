@@ -35,8 +35,10 @@ Xwayland. (#66)
 - Windows glide and stretch into place when they are maximized, snapped to
   a half of the screen or restored, instead of jumping there. The frame,
   titlebar and shadow keep their proportions while the content stretches.
-  `animations_enabled` and `animations_duration` (in milliseconds, 150 by
-  default) under `[ui]` turn the animation off or change its speed. (#76)
+  Minimized windows shrink into their desktop icons and fade out, and grow
+  back out of them when brought back. `animations_enabled` and
+  `animations_duration` (in milliseconds, 150 by default) under `[ui]` turn
+  the animations off or change their speed. (#76)
 
 ### Changed
 

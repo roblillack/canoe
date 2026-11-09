@@ -384,7 +384,9 @@ animations_duration = 150       # milliseconds; 0 also turns animations off
 When a window is maximized, snapped to a half of the screen or restored, it
 glides and stretches into its new place instead of jumping there. The
 client's content stretches along, while the frame's borders, the titlebar's
-height and the shadow's corners keep their size.
+height and the shadow's corners keep their size. A minimized window shrinks
+into its desktop icon and fades out, and grows back out of it when it is
+brought back.
 
 #### Desktop and wallpapers
 

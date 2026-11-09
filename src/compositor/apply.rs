@@ -198,6 +198,7 @@ impl State {
             }
 
             Request::AnimateGeometry(key, duration) => self.start_warp(key, duration),
+            Request::AnimateIconify(key, duration) => self.start_iconify(key, duration),
 
             Request::SetPosition(key, x, y) => {
                 self.set_window_position(key, x, y, resized.get(&key).copied())
