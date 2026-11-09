@@ -545,6 +545,16 @@ A minimized window's icon is the first of these that exists:
 3. the `Icon=` of the program's desktop entry, `<app-id>.desktop`;
 4. the first letter of the window's title.
 
+Programs can also draw a minimized window's icon themselves, live, and learn
+where on the screen it is, with canoe's experimental `xx-iconlet-v1`
+protocol (`src/compositor/protocols/xx-iconlet-v1.xml`). Such an icon wins
+over all of the above. A program can also declare itself an *iconlet*, a
+program that lives only as its icon, like a clock or a battery gauge: its
+window starts out minimized and never comes up, double-clicking its icon
+tells the program instead, it stays out of the window menu, Super+Tab and
+taskbars, and its icon comes before those of other minimized windows, so it
+keeps its place.
+
 **If you use a separate program to show a background image** (`swaybg`,
 `shaderbg`, `wpaperd`, …), set:
 
@@ -611,7 +621,8 @@ single windows, and cursor sessions telling where the pointer is),
 ext-foreign-toplevel-list, wlr-foreign-toplevel-management
 (taskbars that control windows), wlr-output-management, xdg-foreign (portal
 dialogs attached to their app's window), xdg-toplevel-icon (window icons,
-shown for minimized windows), KDE's org_kde_plasma_shell (only
+shown for minimized windows), canoe's experimental xx-iconlet-v1 (icons
+drawn and placed for programs, iconlets), KDE's org_kde_plasma_shell (only
 `set_skip_switcher`: such windows stay out of the window menu, Super+Tab and
 focus cycling), fractional scaling and viewporter,
 cursor-shape, data device, primary selection and wlr-data-control,

@@ -334,6 +334,36 @@ impl State {
                 }
             }
         }
+        // Desktop icons their clients draw (xx-iconlet-v1), in the places
+        // the desktop left for them.
+        for (window_id, icon_output, rect) in self.desktop_icon_rects() {
+            if &icon_output != output {
+                continue;
+            }
+            let Some(icon) = self
+                .window_by_id(window_id)
+                .and_then(|w| super::protocols::iconlet::icon_surface(w.wl_surface()))
+            else {
+                continue;
+            };
+            let origin = output_loc + rect.loc.to_f64();
+            let elements = surface_tree_elements(
+                renderer,
+                &icon,
+                to_phys(origin),
+                scale,
+                1.0,
+                Kind::Unspecified,
+            );
+            let crop = Rectangle::new(to_phys(origin), rect.size.to_f64().to_physical(scale))
+                .to_i32_round();
+            let cropped: Vec<CanoeElement<R>> = elements
+                .into_iter()
+                .filter_map(|e| CropRenderElement::from_element(e, scale, crop))
+                .map(CanoeElement::Cropped)
+                .collect();
+            push_top_first(&mut bottom_up, cropped);
+        }
         self.push_layer(
             renderer,
             output,

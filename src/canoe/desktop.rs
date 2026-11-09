@@ -25,6 +25,8 @@ pub struct DesktopIcon {
     pub title: String,
     pub app_id: Option<String>,
     pub icon: Option<Rc<tiny_skia::Pixmap>>,
+    /// The client draws the icon image itself, so only the label is drawn.
+    pub client_drawn: bool,
 }
 
 /// Computed icon cell on the desktop surface, in buffer pixels.
@@ -283,7 +285,9 @@ impl DesktopSurface {
 
                 let has_icon_image = icon.icon.is_some();
 
-                if !has_icon_image {
+                if icon.client_drawn {
+                    // The compositor draws the client's icon surface here.
+                } else if !has_icon_image {
                     // Draw icon background (32x32 area)
                     renderer.fill_rect(ix + icon_offset_x, iy, icon_px, icon_px, icon_bg);
 

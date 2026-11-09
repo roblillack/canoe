@@ -1,0 +1,200 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="xx_iconlet_v1">
+  <copyright>
+    Copyright © 2026 Robert Lillack
+
+    Permission to use, copy, modify, and/or distribute this software for any
+    purpose with or without fee is hereby granted, provided that the above
+    copyright notice and this permission notice appear in all copies.
+
+    THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+    WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+    MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+    ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+    WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+    ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+    OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+  </copyright>
+
+  <description summary="live icons of minimized windows">
+    Some desktops show minimized ("iconic") windows as icons, on the desktop
+    or in a panel. This protocol lets a client learn where the icon of its
+    toplevel is shown, draw that icon itself with an ordinary wl_surface,
+    and mark the toplevel as an iconlet: a program whose icon is its user
+    interface, such as a clock, a battery gauge or a load meter, and whose
+    window is never meant to be shown.
+
+    The icon's position is meant for drawing things that relate to the rest
+    of the screen, such as eyes following the pointer with the help of
+    ext-image-copy-capture-v1's cursor sessions. A compositor may hide this
+    global from clients it doesn't trust with it.
+
+    This is an experimental protocol: backward-incompatible changes may be
+    made, and the interface names carry the "xx" prefix until it is
+    stabilized.
+  </description>
+
+  <interface name="xx_iconlet_manager_v1" version="1">
+    <description summary="iconic toplevel factory">
+      The global object for creating xx_iconic_toplevel_v1 objects.
+    </description>
+
+    <enum name="error">
+      <entry name="already_constructed" value="0"
+        summary="the toplevel already has an xx_iconic_toplevel_v1 object"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Destroy the manager. Objects created with it are unaffected.
+      </description>
+    </request>
+
+    <request name="get_iconic_toplevel">
+      <description summary="extend a toplevel with icon state">
+        Create an xx_iconic_toplevel_v1 object for the toplevel. Creating a
+        second one for the same toplevel while the first exists raises the
+        already_constructed error.
+
+        It may be created at any time, but a client that means to call
+        set_iconlet should do so before the toplevel's initial commit, so
+        that it is never shown.
+      </description>
+      <arg name="id" type="new_id" interface="xx_iconic_toplevel_v1"/>
+      <arg name="toplevel" type="object" interface="xdg_toplevel"/>
+    </request>
+  </interface>
+
+  <interface name="xx_iconic_toplevel_v1" version="1">
+    <description summary="the icon of a toplevel">
+      Tells where the icon of a toplevel is shown while it is minimized, and
+      lets the client draw that icon and declare the toplevel an iconlet.
+
+      If the xdg_toplevel is destroyed first, this object becomes inert: it
+      gets no more events and its requests are ignored.
+    </description>
+
+    <enum name="error">
+      <entry name="icon_surface_exists" value="0"
+        summary="the toplevel already has an icon surface"/>
+      <entry name="role" value="1"
+        summary="the wl_surface already has another role"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the object">
+        Destroy the object. The toplevel stops being an iconlet if it was
+        one; whether it is then shown is up to the compositor. An icon
+        surface created from this object stays alive but is no longer shown.
+      </description>
+    </request>
+
+    <request name="set_iconlet">
+      <description summary="declare the toplevel an iconlet">
+        Declare the toplevel an iconlet: a program whose icon and title are
+        its whole user interface. Unlike most surface state this applies
+        right away, not with the next commit.
+
+        The compositor should then keep the toplevel minimized from the
+        start and never show it, also not when the user activates its icon
+        (it sends the activate event instead) and not when a taskbar or an
+        xdg_activation_v1 token asks for it. It should leave the toplevel
+        out of window lists, window switchers and focus cycling, and should
+        give its icon a prominent and stable place, ahead of the icons of
+        other minimized windows, so that it doesn't move when those come and
+        go.
+
+        The toplevel still needs a buffer to be mapped; a single pixel will
+        do.
+      </description>
+    </request>
+
+    <request name="get_icon_surface">
+      <description summary="draw the icon with a surface">
+        Give the wl_surface the xx_icon_surface_v1 role: while the toplevel
+        is minimized, the compositor shows the surface's content as the
+        toplevel's icon, in place of the one set with xdg-toplevel-icon-v1
+        or picked by the compositor. Until the surface has a buffer, the
+        compositor shows its usual icon.
+
+        The surface works like any other: buffers can be changed at any time
+        and are not required to stay unchanged, frame callbacks pace
+        updates, and wl_surface.preferred_buffer_scale, fractional scaling
+        and viewporter apply. Subsurfaces may be added. It gets no input
+        events: the compositor keeps handling clicks on the icon. Frame
+        callbacks are only sent while the icon is shown.
+
+        Raises icon_surface_exists if the toplevel already has an icon
+        surface, and role if the wl_surface has a role other than
+        xx_icon_surface_v1.
+      </description>
+      <arg name="id" type="new_id" interface="xx_icon_surface_v1"/>
+      <arg name="surface" type="object" interface="wl_surface"/>
+    </request>
+
+    <event name="icon_geometry">
+      <description summary="the icon is shown">
+        The toplevel's icon is shown, or moved, to the given rectangle on an
+        output, in logical coordinates relative to the output's top-left
+        corner. The rectangle is the icon image, not including a label the
+        compositor may show with it.
+
+        The output is null if the client has no wl_output object for it.
+
+        This event is sent whenever the rectangle changes; icon_hidden ends
+        it.
+      </description>
+      <arg name="output" type="object" interface="wl_output" allow-null="true"/>
+      <arg name="x" type="int"/>
+      <arg name="y" type="int"/>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </event>
+
+    <event name="icon_hidden">
+      <description summary="the icon is no longer shown">
+        The toplevel's icon is no longer shown, for example because the
+        toplevel was restored. Sent only after icon_geometry.
+      </description>
+    </event>
+
+    <event name="activate">
+      <description summary="the user activated an iconlet's icon">
+        The user activated the icon of an iconlet, for example by
+        double-clicking it. The compositor didn't show the toplevel; the
+        client may respond by opening another window.
+
+        The token is an xdg_activation_v1 token that lets such a window take
+        focus. It may be empty if the compositor doesn't offer one.
+
+        Only sent after set_iconlet.
+      </description>
+      <arg name="token" type="string"/>
+    </event>
+  </interface>
+
+  <interface name="xx_icon_surface_v1" version="1">
+    <description summary="a surface drawing a toplevel's icon">
+      The role object of an icon surface, see
+      xx_iconic_toplevel_v1.get_icon_surface.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="remove the role">
+        The surface is no longer shown as the icon; the compositor shows its
+        usual one again. The wl_surface keeps the role and may only be used
+        again for another xx_icon_surface_v1.
+      </description>
+    </request>
+
+    <event name="configure">
+      <description summary="the icon's size">
+        The size of the icon in logical pixels. It is sent once the role is
+        assigned and whenever it changes. Content of another size is scaled
+        or cropped by the compositor.
+      </description>
+      <arg name="width" type="int"/>
+      <arg name="height" type="int"/>
+    </event>
+  </interface>
+</protocol>

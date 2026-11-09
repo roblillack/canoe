@@ -64,6 +64,9 @@ pub struct Context {
     next_minimize_seq: u64,
     /// Windows minimized by the last Super+D, for the next one to bring back.
     show_desktop: Option<ShowDesktop>,
+    /// Iconlets whose icon the user activated, for the compositor to tell
+    /// their clients.
+    pub iconlet_activations: Vec<WindowId>,
 
     // Configuration
     pub config: Config,
@@ -160,6 +163,7 @@ impl Context {
             next_seat_id: 0,
             next_minimize_seq: 0,
             show_desktop: None,
+            iconlet_activations: Vec::new(),
 
             config: load_config(skip_config),
             skip_config,
@@ -658,7 +662,7 @@ impl Context {
             .iter()
             .filter(|(_, w)| {
                 let w = w.borrow();
-                w.is_visible_on(&output) && !w.skip_switcher
+                w.is_visible_on(&output) && !w.skips_switcher()
             })
             .map(|(&id, _)| id)
             .collect();
@@ -952,7 +956,7 @@ impl Context {
                 && self
                     .windows
                     .get(&id)
-                    .is_some_and(|w| !w.borrow().skip_switcher)
+                    .is_some_and(|w| !w.borrow().skips_switcher())
         });
         match top {
             Some(window_id) => self.focus(window_id),
@@ -1857,6 +1861,9 @@ impl Context {
     /// Let `w` shrink into its desktop icon or grow out of it if animations
     /// are on. Call it right before hiding or showing the window.
     fn animate_iconify(&self, w: &Window) {
+        if w.iconlet {
+            return;
+        }
         if let Some(duration) = self.config.ui.animation_duration() {
             w.animate_iconify(duration);
         }
@@ -2325,14 +2332,19 @@ impl Context {
     }
 
     /// Handle a window event
-    /// Focus a window that was just mapped, unless it asked to start
-    /// minimized.
+    /// Focus a window that was just mapped; an iconlet starts out minimized
+    /// instead, and one that asked to start minimized stays unfocused.
     fn focus_new_window(&mut self, window_id: WindowId) {
-        let hidden = match self.windows.get(&window_id) {
-            Some(window) => window.borrow().hidden,
-            None => return,
+        let Some(window) = self.windows.get(&window_id) else {
+            return;
         };
-        if !hidden {
+        let (iconlet, hidden) = {
+            let w = window.borrow();
+            (w.iconlet, w.hidden)
+        };
+        if iconlet {
+            self.hide_window(window_id);
+        } else if !hidden {
             self.focus(window_id);
         }
     }
@@ -2969,7 +2981,7 @@ impl Context {
     /// doesn't skip switchers and, unless the lists show every window, is
     /// on that output.
     fn in_window_list(&self, window_id: WindowId, w: &Window, output_id: OutputId) -> bool {
-        !w.skip_switcher
+        !w.skips_switcher()
             && match self.config.window_list_scope {
                 crate::config::WindowListScope::All => true,
                 crate::config::WindowListScope::Output => {
@@ -3111,7 +3123,9 @@ impl Context {
             .and_then(|id| self.get_icon(IconSource::DesktopEntry, id, size_px))
     }
 
-    /// Collect minimized windows for an output, sorted by minimize order.
+    /// Collect minimized windows for an output: iconlets first, then the
+    /// others, each in minimize order, so iconlets keep their place when
+    /// other windows are minimized and restored.
     pub fn collect_minimized_icons(
         &mut self,
         output_id: OutputId,
@@ -3127,7 +3141,8 @@ impl Context {
 
         // Collect window data into a temp vec to avoid holding borrow of self.windows
         // while calling self.get_icon.
-        let mut entries: Vec<(u64, WindowId, String, Option<String>)> = self
+        #[allow(clippy::type_complexity)]
+        let mut entries: Vec<((bool, u64), WindowId, String, Option<String>, bool)> = self
             .windows
             .iter()
             .filter_map(|(&window_id, window)| {
@@ -3152,22 +3167,28 @@ impl Context {
                     .or_else(|| w.app_id.clone())
                     .unwrap_or_else(|| format!("Window {}", window_id));
                 let app_id = w.app_id.clone();
-                Some((w.minimize_seq, window_id, title, app_id))
+                let order = (!w.iconlet, w.minimize_seq);
+                Some((order, window_id, title, app_id, w.icon_surface))
             })
             .collect();
         drop(output_ref);
 
-        entries.sort_by_key(|(seq, _, _, _)| *seq);
+        entries.sort_by_key(|(order, ..)| *order);
 
         entries
             .into_iter()
-            .map(|(_, window_id, title, app_id)| {
-                let icon = self.window_icon(window_id, icon_size_px);
+            .map(|(_, window_id, title, app_id, client_drawn)| {
+                let icon = if client_drawn {
+                    None
+                } else {
+                    self.window_icon(window_id, icon_size_px)
+                };
                 super::desktop::DesktopIcon {
                     window_id,
                     title,
                     app_id,
                     icon,
+                    client_drawn,
                 }
             })
             .collect()
@@ -3202,11 +3223,16 @@ impl Context {
         self.activate_window(window_id);
     }
 
-    /// Restore a window if it is minimized, raise and focus it.
+    /// Restore a window if it is minimized, raise and focus it. An iconlet
+    /// stays minimized: its client hears that it was activated.
     pub fn activate_window(&mut self, window_id: WindowId) {
         let Some(window) = self.windows.get(&window_id) else {
             return;
         };
+        if window.borrow().iconlet {
+            self.iconlet_activations.push(window_id);
+            return;
+        }
         let was_hidden = {
             let mut w = window.borrow_mut();
             let was_hidden = w.hidden;
@@ -3466,6 +3492,15 @@ impl Context {
             self.exit_icon_focus(seat_id);
             return;
         };
+        if self
+            .windows
+            .get(&window_id)
+            .is_some_and(|w| w.borrow().iconlet)
+        {
+            self.iconlet_activations.push(window_id);
+            self.exit_icon_focus(seat_id);
+            return;
+        }
         // Show and focus the window
         if let Some(window) = self.windows.get(&window_id) {
             {
@@ -5447,5 +5482,53 @@ mod tests {
 
         ctx.config.window_list_scope = crate::config::WindowListScope::All;
         assert_eq!(ids(ctx.collect_menu_items(1)), vec![10, 21, 20]);
+    }
+
+    fn make_iconlet(ctx: &Context, id: WindowId) {
+        ctx.windows[&id].borrow_mut().iconlet = true;
+    }
+
+    #[test]
+    fn activating_an_iconlet_tells_its_client_instead_of_showing_it() {
+        let mut ctx = context_with_output_ids(&[1]);
+        add_stacked_window(&mut ctx, 10, 1, false);
+        add_stacked_window(&mut ctx, 11, 1, true);
+        make_iconlet(&ctx, 11);
+        ctx.focus(10);
+
+        ctx.activate_window(11);
+
+        assert!(hidden(&ctx, 11));
+        assert_eq!(ctx.focused_window, Some(10));
+        assert_eq!(ctx.iconlet_activations, vec![11]);
+        // Nothing else shows it either.
+        ctx.windows[&11].borrow_mut().show();
+        assert!(hidden(&ctx, 11));
+    }
+
+    #[test]
+    fn iconlets_stay_out_of_the_window_menu_and_come_first_among_icons() {
+        let mut ctx = context_with_output_ids(&[1]);
+        add_stacked_window(&mut ctx, 10, 1, false);
+        add_stacked_window(&mut ctx, 11, 1, false);
+        add_stacked_window(&mut ctx, 12, 1, true);
+        make_iconlet(&ctx, 12);
+        ctx.hide_window(10);
+        ctx.hide_window(11);
+        // Minimized last, but an iconlet.
+        ctx.windows[&12].borrow_mut().minimize_seq = 100;
+
+        let menu: Vec<WindowId> = ctx
+            .collect_menu_items(1)
+            .iter()
+            .map(|item| item.window_id)
+            .collect();
+        assert!(!menu.contains(&12) && menu.contains(&10) && menu.contains(&11));
+        let icons: Vec<WindowId> = ctx
+            .collect_minimized_icons(1)
+            .iter()
+            .map(|icon| icon.window_id)
+            .collect();
+        assert_eq!(icons, vec![12, 10, 11]);
     }
 }

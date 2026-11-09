@@ -386,6 +386,7 @@ pub struct State {
     pub xdg_foreign_state: protocols::xdg_foreign::XdgForeignState,
     pub toplevel_icon_state: protocols::toplevel_icon::ToplevelIconManagerState,
     pub plasma_shell_state: protocols::plasma_shell::PlasmaShellState,
+    pub iconlet_state: protocols::iconlet::IconletManagerState,
     pub primary_output_state: protocols::primary_output::PrimaryOutputState,
     /// Output layouts remembered per set of monitors.
     pub output_profiles: output_profiles::OutputProfiles,
@@ -546,6 +547,7 @@ impl State {
         let toplevel_icon_state =
             protocols::toplevel_icon::ToplevelIconManagerState::new::<State>(&dh);
         let plasma_shell_state = protocols::plasma_shell::PlasmaShellState::new::<State>(&dh);
+        let iconlet_state = protocols::iconlet::IconletManagerState::new::<State>(&dh);
         let primary_output_state = protocols::primary_output::PrimaryOutputState::new::<State>(&dh);
         let xwayland_shell_state =
             smithay::wayland::xwayland_shell::XWaylandShellState::new::<State>(&dh);
@@ -629,6 +631,7 @@ impl State {
             xdg_foreign_state,
             toplevel_icon_state,
             plasma_shell_state,
+            iconlet_state,
             primary_output_state,
             output_profiles: Default::default(),
             dmabuf: None,
@@ -794,6 +797,23 @@ impl State {
                 |_, _| Some(output.clone()),
             );
         }
+        for (window_id, icon_output, _) in self.desktop_icon_rects() {
+            if &icon_output != output {
+                continue;
+            }
+            if let Some(icon) = self
+                .window_by_id(window_id)
+                .and_then(|w| protocols::iconlet::icon_surface(w.wl_surface()))
+            {
+                smithay::desktop::utils::send_frames_surface_tree(
+                    &icon,
+                    output,
+                    time,
+                    Some(Duration::ZERO),
+                    |_, _| Some(output.clone()),
+                );
+            }
+        }
         if let smithay::input::pointer::CursorImageStatus::Surface(ref surface) = self.client_cursor
         {
             smithay::desktop::utils::send_frames_surface_tree(
@@ -829,6 +849,7 @@ impl State {
         self.foreign_toplevel_state.cleanup_closed_handles();
         // Windows and outputs move under a pointer that stays put.
         self.update_capture_cursors();
+        self.send_iconlet_activations();
         let _ = self.display_handle.flush_clients();
     }
 }

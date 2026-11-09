@@ -1,0 +1,30 @@
+# xx-iconlet-v1: windows whose clients draw their desktop icons with a
+# surface of their own, and iconlets, which start out minimized, come first
+# among the icons and stay minimized when their icon is activated.
+spawn $WLTEST --app-id plain --title Plain --size 300x200
+wait-toplevel plain 4000
+key super+h
+# Drawn by its client, which changes the color 2.5 s after mapping.
+spawn $WLTEST --app-id drawn --title Drawn --size 300x200 --icon-surface d03030 --icon-surface 30a050@2500
+wait-toplevel drawn 4000
+key super+h
+# An iconlet: never shown, its icon ahead of the two others.
+spawn $WLTEST --app-id clock --title Clock --size 300x200 --iconlet --icon-surface 3070d0
+wait-toplevel clock 4000
+sleep 300
+shot 01-icons
+sleep 2500
+shot 02-redrawn
+# Double-clicking the iconlet's icon tells its client instead of showing it.
+move 53 667 ; btn click left ; btn click left
+sleep 300
+shot 03-iconlet-activated
+# The window menu doesn't list it.
+move 1000 400 ; btn click right
+sleep 200
+shot 04-menu
+move 1000 300 ; btn click left
+# Restoring the drawn window hides its icon; the others move up.
+move 245 667 ; btn click left ; btn click left
+sleep 300
+shot 05-restored
