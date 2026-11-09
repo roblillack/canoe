@@ -217,6 +217,19 @@ impl OutputManagementHandler for State {
             return true;
         }
 
+        // Move the layout so it starts at 0,0 at the least: Xwayland's
+        // screen starts there, and the pointer can't reach X11 windows on
+        // parts of outputs above or left of it.
+        let (min_x, min_y) = config
+            .iter()
+            .filter(|head| head.enabled)
+            .map(|head| {
+                head.position
+                    .unwrap_or_else(|| head.output.current_location())
+            })
+            .fold((0, 0), |(x, y), pos| (x.min(pos.x), y.min(pos.y)));
+        let shift = smithay::utils::Point::from((-min_x, -min_y));
+
         for head in config {
             let output = head.output.clone();
             if !head.enabled {
@@ -239,7 +252,7 @@ impl OutputManagementHandler for State {
                 None,
                 head.transform,
                 head.scale.map(Scale::Fractional),
-                head.position,
+                Some(head.position.unwrap_or_else(|| output.current_location()) + shift),
             );
             self.set_output_enabled(&output, true);
             self.output_changed(&output);

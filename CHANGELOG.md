@@ -10,6 +10,12 @@ While pre-1.0, the minor version is bumped for breaking changes.
 
 ## [Unreleased] - ReleaseDate
 
+### Fixed
+
+- X11 programs take clicks and notice the pointer on outputs placed above or
+  left of others (at negative positions, e.g. by kanshi). Such a layout is
+  moved so it starts at 0,0, as Xwayland's screen does. (#66)
+
 ## [0.6.2] - 2026-11-07
 
 ### Fixed
