@@ -138,6 +138,8 @@ pub struct Context {
     /// The primary output was chosen or came back: new windows go there
     /// (see [`Self::focus_output`]). Waits while the session is locked.
     pub pending_primary_output: Option<OutputId>,
+    /// The primary output, if there is one: iconlets start there.
+    pub primary_output: Option<OutputId>,
 }
 
 impl Context {
@@ -197,6 +199,7 @@ impl Context {
             pending_output_resizes: Vec::new(),
             pending_usable_area_changes: Vec::new(),
             pending_primary_output: None,
+            primary_output: None,
             pending_output_orphans: Vec::new(),
             pending_fullscreen_exits: Vec::new(),
         }
@@ -1246,6 +1249,9 @@ impl Context {
     }
 
     fn preferred_output_for_window_id(&self, window_id: WindowId) -> Option<OutputId> {
+        if let Some(output_id) = self.iconlet_output(window_id) {
+            return Some(output_id);
+        }
         let window = self.windows.get(&window_id)?;
         let w = window.borrow();
         if let Some(parent_id) = w.parent {
@@ -1254,6 +1260,19 @@ impl Context {
             }
         }
         self.current_output_for_new_window()
+    }
+
+    /// The output an iconlet starts on: the primary one, wherever the focus
+    /// is. `None` if `window_id` is no iconlet or there is no primary output.
+    fn iconlet_output(&self, window_id: WindowId) -> Option<OutputId> {
+        let output_id = self
+            .primary_output
+            .filter(|id| self.outputs.contains_key(id))?;
+        self.windows
+            .get(&window_id)?
+            .borrow()
+            .iconlet
+            .then_some(output_id)
     }
 
     fn parent_output_if_visible(&self, parent_id: WindowId) -> Option<OutputId> {
@@ -2373,6 +2392,12 @@ impl Context {
                     // (min == max) and dialogs naturally end up at their own
                     // requested size through the same path.
                     w.propose_preferred_dimensions();
+                }
+
+                // The window got the output new windows go to before it
+                // could say it is an iconlet.
+                if let Some(output_id) = self.iconlet_output(window_id) {
+                    self.set_window_output(window_id, output_id);
                 }
 
                 // Ask the window to pick a size that fits where it will be
@@ -4774,6 +4799,43 @@ mod tests {
         ctx.handle_manage_start();
         assert_eq!(ctx.focused_window, None);
         assert_eq!(ctx.current_output_for_new_window(), Some(2));
+    }
+
+    #[test]
+    fn iconlets_start_on_the_primary_output() {
+        let mut ctx = context_with_outputs(&[(1, 0, 0, 1920, 1080), (2, 1920, 0, 1920, 1080)]);
+        add_window(&mut ctx, 10, 1, (100, 100, 800, 600));
+        add_window(&mut ctx, 11, 1, (100, 100, 800, 600));
+        make_iconlet(&ctx, 11);
+        ctx.focus(10);
+        ctx.primary_output = Some(2);
+
+        ctx.handle_window_event(11, super::super::window::WindowEvent::Init);
+
+        assert_eq!(assigned_output(&ctx, 11), Some(2));
+        assert_eq!(ctx.preferred_output_for_window_id(11), Some(2));
+        assert_eq!(ctx.current_output, Some(1));
+        // Other windows still open where the focus is.
+        assert_eq!(ctx.preferred_output_for_window_id(10), Some(1));
+    }
+
+    #[test]
+    fn iconlets_open_where_the_focus_is_without_a_primary_output() {
+        let mut ctx = context_with_outputs(&[(1, 0, 0, 1920, 1080), (2, 1920, 0, 1920, 1080)]);
+        add_window(&mut ctx, 10, 1, (100, 100, 800, 600));
+        add_window(&mut ctx, 11, 1, (100, 100, 800, 600));
+        make_iconlet(&ctx, 11);
+        ctx.focus(10);
+        ctx.primary_output = None;
+
+        ctx.handle_window_event(11, super::super::window::WindowEvent::Init);
+
+        assert_eq!(assigned_output(&ctx, 11), Some(1));
+    }
+
+    fn assigned_output(ctx: &Context, id: WindowId) -> Option<OutputId> {
+        let w = ctx.windows[&id].borrow();
+        w.output.as_ref()?.upgrade().map(|o| o.borrow().id)
     }
 
     #[test]
