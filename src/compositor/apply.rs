@@ -3,7 +3,6 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel::{
     State as XdgState, WmCapabilities,
 };
@@ -63,7 +62,11 @@ impl State {
         self.schedule_wm();
     }
 
-    fn apply_request(&mut self, request: Request, resized: &HashMap<WindowKey, Size<i32, Logical>>) {
+    fn apply_request(
+        &mut self,
+        request: Request,
+        resized: &HashMap<WindowKey, Size<i32, Logical>>,
+    ) {
         match request {
             Request::ManageDirty => self.wm_dirty = true,
 
@@ -164,15 +167,7 @@ impl State {
             Request::UseSsd(key, ssd) => {
                 self.with_toplevel(key, |window| {
                     window.ssd = ssd;
-                    if let Some(toplevel) = window.toplevel() {
-                        toplevel.with_pending_state(|state| {
-                            state.decoration_mode = Some(if ssd {
-                                DecorationMode::ServerSide
-                            } else {
-                                DecorationMode::ClientSide
-                            });
-                        });
-                    }
+                    window.send_decoration_mode();
                 });
             }
             Request::SetCapabilities(key, caps) => {

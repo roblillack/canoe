@@ -1,5 +1,7 @@
 //! Smithay protocol handlers: what clients ask the compositor for.
 
+use std::sync::Mutex;
+
 use smithay::backend::renderer::utils::on_commit_buffer_handler;
 use smithay::desktop::{
     find_popup_root_surface, get_popup_toplevel_coords, layer_map_for_output, PopupKeyboardGrab,
@@ -44,6 +46,11 @@ use smithay::wayland::shell::wlr_layer::{
     Layer, LayerSurface as WlrLayerSurface, LayerSurfaceData, WlrLayerShellHandler,
     WlrLayerShellState,
 };
+use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration::{
+    Mode as KdeMode, OrgKdeKwinServerDecoration,
+};
+use smithay::reexports::wayland_server::WEnum;
+use smithay::wayland::shell::kde::decoration::{KdeDecorationHandler, KdeDecorationState};
 use smithay::wayland::shell::xdg::decoration::XdgDecorationHandler;
 use smithay::wayland::shell::xdg::{
     PopupSurface, PositionerState, ToplevelSurface, XdgShellHandler, XdgShellState,
@@ -55,7 +62,7 @@ use smithay::wayland::xdg_activation::{
 use smithay::{
     delegate_compositor, delegate_cursor_shape, delegate_data_control, delegate_data_device,
     delegate_dmabuf, delegate_foreign_toplevel_list, delegate_fractional_scale,
-    delegate_idle_inhibit, delegate_idle_notify, delegate_layer_shell, delegate_output,
+    delegate_idle_inhibit, delegate_kde_decoration, delegate_idle_notify, delegate_layer_shell, delegate_output,
     delegate_pointer_constraints, delegate_presentation, delegate_primary_selection,
     delegate_relative_pointer, delegate_seat, delegate_session_lock,
     delegate_single_pixel_buffer, delegate_viewporter,
@@ -408,7 +415,7 @@ impl XdgDecorationHandler for State {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         // A client that creates a decoration object without a mode has no
         // preference.
-        self.decoration_hint_changed(&toplevel, 3);
+        self.decoration_hint_changed(toplevel.wl_surface(), 3);
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
@@ -417,44 +424,124 @@ impl XdgDecorationHandler for State {
             DecorationMode::ServerSide => 2,
             _ => 3,
         };
-        self.decoration_hint_changed(&toplevel, hint);
+        self.decoration_hint_changed(toplevel.wl_surface(), hint);
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        self.decoration_hint_changed(&toplevel, 3);
+        self.decoration_hint_changed(toplevel.wl_surface(), 3);
+    }
+}
+
+/// A surface's `org_kde_kwin_server_decoration`, through which GTK asks to
+/// be decorated, and the decoration hint its last request amounts to.
+#[derive(Default)]
+struct KdeDecoration {
+    object: Option<OrgKdeKwinServerDecoration>,
+    hint: Option<u32>,
+    /// The mode last sent: whether canoe decorates the surface.
+    sent_ssd: Option<bool>,
+}
+
+type KdeDecorationData = Mutex<KdeDecoration>;
+
+fn with_kde_decoration<T>(surface: &WlSurface, f: impl FnOnce(&mut KdeDecoration) -> T) -> T {
+    with_states(surface, |states| {
+        let data = states
+            .data_map
+            .get_or_insert_threadsafe(KdeDecorationData::default);
+        let mut decoration = data.lock().unwrap();
+        f(&mut decoration)
+    })
+}
+
+/// The decoration hint a toplevel asked for through
+/// `org_kde_kwin_server_decoration`, if it did so before it was managed.
+pub fn kde_decoration_hint(surface: &WlSurface) -> Option<u32> {
+    with_kde_decoration(surface, |decoration| decoration.hint)
+}
+
+/// Tell a toplevel's `org_kde_kwin_server_decoration`, if it has one, who
+/// draws its decorations.
+pub fn send_kde_decoration_mode(surface: &WlSurface, ssd: bool) {
+    with_kde_decoration(surface, |decoration| {
+        if let Some(object) = decoration.object.as_ref() {
+            if decoration.sent_ssd != Some(ssd) {
+                object.mode(if ssd {
+                    KdeMode::Server
+                } else {
+                    KdeMode::Client
+                });
+                decoration.sent_ssd = Some(ssd);
+            }
+        }
+    });
+}
+
+impl KdeDecorationHandler for State {
+    fn kde_decoration_state(&self) -> &KdeDecorationState {
+        &self.kde_decoration_state
+    }
+
+    fn new_decoration(&mut self, surface: &WlSurface, decoration: &OrgKdeKwinServerDecoration) {
+        with_kde_decoration(surface, |d| {
+            *d = KdeDecoration {
+                object: Some(decoration.clone()),
+                hint: Some(3),
+                sent_ssd: None,
+            };
+        });
+        self.decoration_hint_changed(surface, 3);
+    }
+
+    fn request_mode(
+        &mut self,
+        surface: &WlSurface,
+        _decoration: &OrgKdeKwinServerDecoration,
+        mode: WEnum<KdeMode>,
+    ) {
+        // GTK asks for client-side decorations when it draws a header bar
+        // of its own, and never changes its mind over what it is told
+        // back, so only supporting CSD is what such a request amounts to.
+        // `None` (no decorations at all) is no different.
+        let hint = match mode {
+            WEnum::Value(KdeMode::Server) => 2,
+            _ => 0,
+        };
+        with_kde_decoration(surface, |d| d.hint = Some(hint));
+        self.decoration_hint_changed(surface, hint);
+    }
+
+    fn release(&mut self, _decoration: &OrgKdeKwinServerDecoration, surface: &WlSurface) {
+        with_kde_decoration(surface, |d| *d = KdeDecoration::default());
+        self.decoration_hint_changed(surface, 0);
     }
 }
 
 impl State {
     /// Decoration hints as River reports them: 0 only_supports_csd (no
     /// decoration object), 1 prefers_csd, 2 prefers_ssd, 3 no_preference.
-    fn decoration_hint_changed(&mut self, toplevel: &ToplevelSurface, hint: u32) {
-        let key = match self.window_for_surface(toplevel.wl_surface()) {
-            Some(window) => window.key,
-            None => return,
+    fn decoration_hint_changed(&mut self, surface: &WlSurface, hint: u32) {
+        let Some(key) = self.window_for_surface(surface).map(|w| w.key) else {
+            return;
         };
         let id = self.window_by_key(key).map(|w| w.id).unwrap();
-        {
+        let ssd = {
             let context = self.context.borrow();
-            if let Some(window) = context.windows.get(&id) {
-                let mut w = window.borrow_mut();
-                w.decoration_hint = Some(hint);
-                context.apply_rules_to_window(&mut w);
-            }
-        }
-        // The mode the window manager picked must be sent again: the client
-        // just (re)created its decoration object or changed its mind.
+            let Some(window) = context.windows.get(&id) else {
+                return;
+            };
+            let mut w = window.borrow_mut();
+            w.decoration_hint = Some(hint);
+            context.apply_rules_to_window(&mut w);
+            w.decoration != Some(crate::config::WindowDecoration::Csd)
+        };
+        // The mode must be sent again: the client just (re)created its
+        // decoration object or changed its mind. It is sent right away, so
+        // a client setting up its decorations before its first commit is
+        // configured with the mode it gets.
         if let Some(window) = self.window_by_key_mut(key) {
-            let ssd = window.ssd;
-            if let Some(toplevel) = window.toplevel() {
-                toplevel.with_pending_state(|state| {
-                    state.decoration_mode = Some(if ssd {
-                        DecorationMode::ServerSide
-                    } else {
-                        DecorationMode::ClientSide
-                    });
-                });
-            }
+            window.ssd = ssd;
+            window.send_decoration_mode();
             window.needs_configure = true;
         }
         self.schedule_wm();
@@ -854,6 +941,7 @@ impl State {
 delegate_compositor!(State);
 delegate_xdg_shell!(State);
 delegate_xdg_decoration!(State);
+delegate_kde_decoration!(State);
 delegate_layer_shell!(State);
 delegate_seat!(State);
 delegate_data_device!(State);

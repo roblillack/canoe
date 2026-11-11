@@ -97,7 +97,7 @@
 # Rules can also match on title (exact) or title_regex.
 #
 # force_ssd = true makes Canoe draw its own decorations even for windows that
-# ask to draw theirs.
+# only draw their own (csd_only, e.g. libadwaita apps).
 #
 # swallow_top hides the given number of pixels at the top of the window, e.g.
 # to remove an app's own title bar. The right value depends on the app, its

@@ -13,7 +13,9 @@ A stacking Wayland compositor and window manager, written in Rust on top of
 ## Features
 
 - Stacking window management
-- Server-side decorations with classic window borders & titlebars
+- Server-side decorations with classic window borders & titlebars, for every
+  app that can be asked to leave its decorations to the window manager (apps
+  that only draw their own, like libadwaita's, keep them)
 - Titlebar/edge window movement and resizing (Super+Drag anywhere)
 - Multihead support (focus/send windows across outputs, windows follow
   output layout and resolution changes, and move off unplugged outputs)
@@ -412,7 +414,9 @@ match_props = ["toplevel", "csd_only"] # all props must match
 
 Supported `match_props` values:
 - `toplevel` (window has no parent)
-- `csd_only` (client does not support SSD)
+- `csd_only` (client does not support SSD: it draws its own decorations and
+  can't be asked not to, as libadwaita apps or X11 programs that turn the
+  window manager's decorations off)
 
 The matching windows can have parts of their content "swallowed". This removes
 the client-side decoration on my Firefox, for instance:
@@ -434,7 +438,8 @@ and compares screenshots: windows, decorations at fractional scales, menus,
 the window switcher, icons, multiple outputs, layer shell, session locking,
 screen-sharing picks, configuration and rules give the same results.
 
-Supported: xdg-shell (with xdg-decoration and popups), wlr-layer-shell,
+Supported: xdg-shell (with xdg-decoration and popups), KDE's server
+decoration protocol (through which GTK asks to be decorated), wlr-layer-shell,
 ext-session-lock, wlr-screencopy and ext-image-copy-capture (outputs and
 single windows), ext-foreign-toplevel-list, wlr-foreign-toplevel-management
 (taskbars that control windows), wlr-output-management, xdg-foreign (portal

@@ -10,6 +10,15 @@ While pre-1.0, the minor version is bumped for breaking changes.
 
 ## [Unreleased] - ReleaseDate
 
+### Changed
+
+- Windows that only draw their own decorations, as libadwaita apps do, keep
+  them instead of getting Canoe's titlebar on top. A `force_ssd` rule still
+  gives them one. Every other window is decorated by Canoe, even one that
+  would rather draw its own decorations, and GTK 3 and plain GTK 4 apps now
+  leave theirs off: they ask to be decorated through KDE's server decoration
+  protocol, which Canoe now offers. (#66)
+
 ### Fixed
 
 - X11 programs take clicks and notice the pointer on outputs placed above or

@@ -31,11 +31,12 @@ use crate::canoe;
 
 /// The decoration hint (as River reports them, see
 /// `State::decoration_hint_changed`) of an X11 window: the window manager
-/// decorates it unless the client asked for no decorations through its
-/// Motif hints.
+/// decorates it unless the client turned that off through its Motif hints,
+/// to draw its own decorations or none. Unlike a Wayland client's, that
+/// choice can't be renegotiated, so it counts as only supporting CSD.
 pub fn decoration_hint(window: &X11Surface) -> u32 {
     if window.is_decorated() {
-        1
+        0
     } else {
         2
     }

@@ -204,8 +204,10 @@ impl State {
             w.pid = pid;
             w.decoration_hint = Some(match &shell {
                 // What River reports for a client without a decoration
-                // object.
-                Shell::Xdg(_) => 0,
+                // object, unless it asked through KDE's protocol already.
+                Shell::Xdg(toplevel) => {
+                    super::handlers::kde_decoration_hint(toplevel.wl_surface()).unwrap_or(0)
+                }
                 Shell::X11(x11) => super::xwayland::decoration_hint(x11),
             });
             w.queue_event(canoe::WindowEvent::Init);

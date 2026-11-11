@@ -54,6 +54,9 @@ use smithay::wayland::selection::primary_selection::PrimarySelectionState;
 use smithay::wayland::selection::wlr_data_control::DataControlState;
 use smithay::wayland::session_lock::{LockSurface, SessionLockManagerState};
 use smithay::wayland::shell::wlr_layer::WlrLayerShellState;
+use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
+use smithay::reexports::wayland_protocols_misc::server_decoration::server::org_kde_kwin_server_decoration_manager::Mode as KdeDefaultMode;
+use smithay::wayland::shell::kde::decoration::KdeDecorationState;
 use smithay::wayland::shell::xdg::decoration::XdgDecorationState;
 use smithay::wayland::shell::xdg::{ToplevelSurface, XdgShellState};
 use smithay::wayland::shm::ShmState;
@@ -189,6 +192,22 @@ impl ManagedWindow {
         pos != pending.pos
     }
 
+    /// Tell the client whether canoe decorates it, as `ssd` says.
+    pub fn send_decoration_mode(&self) {
+        let Some(toplevel) = self.toplevel() else {
+            return;
+        };
+        let ssd = self.ssd;
+        toplevel.with_pending_state(|state| {
+            state.decoration_mode = Some(if ssd {
+                DecorationMode::ServerSide
+            } else {
+                DecorationMode::ClientSide
+            });
+        });
+        handlers::send_kde_decoration_mode(toplevel.wl_surface(), ssd);
+    }
+
     pub fn toplevel(&self) -> Option<&ToplevelSurface> {
         match &self.shell {
             Shell::Xdg(toplevel) => Some(toplevel),
@@ -286,6 +305,9 @@ pub struct State {
     pub compositor_state: CompositorState,
     pub xdg_shell_state: XdgShellState,
     pub xdg_decoration_state: XdgDecorationState,
+    /// KDE's server decoration protocol, through which GTK asks to be
+    /// decorated; it doesn't use xdg-decoration.
+    pub kde_decoration_state: KdeDecorationState,
     pub layer_shell_state: WlrLayerShellState,
     pub shm_state: ShmState,
     pub seat_state: SeatState<State>,
@@ -411,6 +433,7 @@ impl State {
         let compositor_state = CompositorState::new::<State>(&dh);
         let xdg_shell_state = XdgShellState::new::<State>(&dh);
         let xdg_decoration_state = XdgDecorationState::new::<State>(&dh);
+        let kde_decoration_state = KdeDecorationState::new::<State>(&dh, KdeDefaultMode::Server);
         let layer_shell_state = WlrLayerShellState::new::<State>(&dh);
         let shm_state = ShmState::new::<State>(&dh, vec![]);
         let mut seat_state = SeatState::new();
@@ -498,6 +521,7 @@ impl State {
             compositor_state,
             xdg_shell_state,
             xdg_decoration_state,
+            kde_decoration_state,
             layer_shell_state,
             shm_state,
             seat_state,

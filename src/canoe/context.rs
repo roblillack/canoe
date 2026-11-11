@@ -465,23 +465,23 @@ impl Context {
         // Decoration hints (river_window_v1.decoration_hint):
         //   0 only_supports_csd, 1 prefers_csd, 2 prefers_ssd, 3 no_preference
         //
-        // We default to SSD and only fall back to CSD when the client
-        // *explicitly* asked for client-side decorations (prefers_csd). A value
-        // of "only_supports_csd" is what River reports for a client that never
-        // created an xdg-decoration object at all -- i.e. it does not negotiate
-        // decorations. IMHO the naming of this value is wrong, as quite a few
-        // applications I tested assume SSD and get the 0 decoration_hint:
-        // MATE Terminal, Gimp, Inkscape, ...
-        let prefers_csd = matches!(window.decoration_hint, Some(1));
-
-        let decoration = if applied.force_ssd {
-            WindowDecoration::Ssd
-        } else if prefers_csd {
+        // Canoe decorates every window that can be asked to leave its
+        // decorations to the window manager, even one that would rather
+        // draw its own (prefers_csd). Only a window that can't be asked
+        // keeps drawing its own, unless a rule forces SSD on it: a Wayland
+        // client offering no decoration protocol (as libadwaita apps), or
+        // an X11 window that turned the window manager's decorations off.
+        let decoration = if window.decoration_hint == Some(0) && !applied.force_ssd {
             WindowDecoration::Csd
         } else {
             WindowDecoration::Ssd
         };
-        window.decoration = Some(decoration);
+        // A hint or rule can change once the window is up, e.g. when the
+        // client creates its decoration object after its toplevel.
+        if window.decoration != Some(decoration) {
+            window.decoration = Some(decoration);
+            window.set_decoration(decoration);
+        }
         window.set_swallow_top(applied.swallow_top.unwrap_or(0));
 
         // Inform the client which window-management capabilities apply.
@@ -2077,7 +2077,8 @@ impl Context {
                     let mut w = window.borrow_mut();
                     self.apply_rules_to_window(&mut w);
 
-                    // Apply decoration preference (if any)
+                    // Rules applied before the window was handed over to
+                    // the window manager could not send this yet.
                     if let Some(decoration) = w.decoration {
                         w.set_decoration(decoration);
                     }
@@ -4498,5 +4499,31 @@ mod tests {
         ctx.handle_manage_start();
 
         assert_eq!(ctx.focused_window, None);
+    }
+
+    #[test]
+    fn only_windows_that_cannot_be_asked_keep_their_own_decorations() {
+        let mut ctx = Context::new(false);
+        let decoration = |ctx: &Context, app_id: &str, hint: u32| {
+            let mut window = Window::new(1);
+            window.app_id = Some(app_id.to_string());
+            window.decoration_hint = Some(hint);
+            ctx.apply_rules_to_window(&mut window);
+            window.decoration
+        };
+
+        // 0 only_supports_csd, 1 prefers_csd, 2 prefers_ssd, 3 no_preference
+        assert_eq!(decoration(&ctx, "app", 0), Some(WindowDecoration::Csd));
+        for hint in 1..=3 {
+            assert_eq!(decoration(&ctx, "app", hint), Some(WindowDecoration::Ssd));
+        }
+
+        ctx.config.rules.push(rule::Rule {
+            app_id: Some(vec!["forced".to_string()]),
+            force_ssd: true,
+            ..Default::default()
+        });
+        assert_eq!(decoration(&ctx, "forced", 0), Some(WindowDecoration::Ssd));
+        assert_eq!(decoration(&ctx, "app", 0), Some(WindowDecoration::Csd));
     }
 }
