@@ -20,6 +20,13 @@
 //! EDID go by connector name, and identical monitors without a serial
 //! number get their connector name added.
 //!
+//! A laptop's lid is part of the combination: the same monitors with the
+//! lid open and with it closed have a profile each. Without a profile for
+//! the combination, closing the lid turns the laptop's own panel off
+//! (unless nothing else is on) and opening it turns the panel back on, left
+//! of the other outputs. Whatever is set up with the lid closed (say, the
+//! panel turned on again) is remembered for the lid closed.
+//!
 //! Profiles are kept in `$XDG_STATE_HOME/canoe/outputs.toml`
 //! (`~/.local/state/canoe/outputs.toml`), or in the file
 //! `CANOE_OUTPUT_PROFILES` names. The headless backend, being for tests,
@@ -115,6 +122,70 @@ pub fn profile_names(outputs: &[(String, String)]) -> Vec<String> {
         .collect()
 }
 
+/// Marks an [`Output`] as a laptop's own panel, which the lid covers.
+struct Internal;
+
+/// Mark `output` as a laptop's own panel.
+pub fn set_internal(output: &Output) {
+    output.user_data().insert_if_missing_threadsafe(|| Internal);
+}
+
+/// Whether `output` is a laptop's own panel.
+pub fn is_internal(output: &Output) -> bool {
+    output.user_data().get::<Internal>().is_some()
+}
+
+/// Whether a connector of this kind (`eDP`, `LVDS`, `DSI`) is a laptop's
+/// own panel.
+pub fn is_internal_connector(interface: &str) -> bool {
+    matches!(interface, "eDP" | "LVDS" | "DSI")
+}
+
+/// A laptop's lid.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Lid {
+    #[default]
+    Open,
+    Closed,
+}
+
+impl Lid {
+    fn name(self) -> &'static str {
+        match self {
+            Lid::Open => "open",
+            Lid::Closed => "closed",
+        }
+    }
+}
+
+/// What a profile is looked up by: the connected outputs' names, and the
+/// lid if one of them is a laptop's own panel.
+#[derive(Debug, Clone, Default)]
+struct ProfileKey {
+    /// Sorted.
+    outputs: Vec<String>,
+    lid: Option<Lid>,
+}
+
+/// Profiles from before lids counted are for the lid open.
+impl PartialEq for ProfileKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.outputs == other.outputs
+            && self.lid.unwrap_or_default() == other.lid.unwrap_or_default()
+    }
+}
+
+impl std::fmt::Display for ProfileKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.outputs.join(", "))?;
+        if let Some(lid) = self.lid {
+            write!(f, " (lid {})", lid.name())?;
+        }
+        Ok(())
+    }
+}
+
 // ----------------------------------------------------------------------
 // The file
 
@@ -128,6 +199,10 @@ struct Store {
 /// connected.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Profile {
+    /// The lid, if a laptop's own panel is among the outputs. Left out
+    /// means open.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lid: Option<Lid>,
     /// The primary output's name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary: Option<String>,
@@ -137,11 +212,14 @@ pub struct Profile {
 }
 
 impl Profile {
-    /// The names of its outputs, sorted: what it is looked up by.
-    fn key(&self) -> Vec<String> {
-        let mut key: Vec<String> = self.outputs.iter().map(|o| o.name.clone()).collect();
-        key.sort();
-        key
+    /// What it is looked up by.
+    fn key(&self) -> ProfileKey {
+        let mut outputs: Vec<String> = self.outputs.iter().map(|o| o.name.clone()).collect();
+        outputs.sort();
+        ProfileKey {
+            outputs,
+            lid: self.lid,
+        }
     }
 }
 
@@ -295,9 +373,11 @@ pub struct OutputProfiles {
     store: Store,
     /// The file couldn't be read: leave it alone rather than overwrite it.
     unreadable: bool,
-    /// The connected outputs (sorted profile names) when the layout was
-    /// last restored or saved.
-    current: Vec<String>,
+    /// The connected outputs and the lid when the layout was last restored
+    /// or saved.
+    current: ProfileKey,
+    /// The lid of the laptop canoe runs on (open if it has none).
+    lid: Lid,
     /// The primary output's profile name.
     primary: Option<String>,
     /// A restore is queued for when things settle.
@@ -336,8 +416,8 @@ impl OutputProfiles {
         profiles
     }
 
-    fn find(&self, key: &[String]) -> Option<&Profile> {
-        self.store.profiles.iter().find(|p| p.key() == key)
+    fn find(&self, key: &ProfileKey) -> Option<&Profile> {
+        self.store.profiles.iter().find(|p| p.key() == *key)
     }
 
     /// Keep `profile`, in place of the one for the same outputs, and save.
@@ -397,6 +477,33 @@ impl State {
             .collect()
     }
 
+    /// What the profile for `heads` is looked up by.
+    fn profile_key(&self, heads: &[(Output, String, bool)]) -> ProfileKey {
+        let mut outputs: Vec<String> = heads.iter().map(|(_, name, _)| name.clone()).collect();
+        outputs.sort();
+        let lid = heads
+            .iter()
+            .any(|(output, _, _)| is_internal(output))
+            .then_some(self.output_profiles.lid);
+        ProfileKey { outputs, lid }
+    }
+
+    /// The laptop's lid.
+    pub fn lid(&self) -> Lid {
+        self.output_profiles.lid
+    }
+
+    /// The lid was opened or closed: set up the outputs as remembered for
+    /// that, once things settle.
+    pub fn set_lid(&mut self, lid: Lid) {
+        if self.output_profiles.lid == lid {
+            return;
+        }
+        eprintln!("canoe: lid {}", lid.name());
+        self.output_profiles.lid = lid;
+        self.queue_output_profile();
+    }
+
     /// Monitors came or went: restore the layout for those connected once
     /// things settle.
     pub fn queue_output_profile(&mut self) {
@@ -415,8 +522,7 @@ impl State {
     /// changed since the last time.
     fn restore_output_profile(&mut self) {
         let heads = self.profile_heads();
-        let mut key: Vec<String> = heads.iter().map(|(_, name, _)| name.clone()).collect();
-        key.sort();
+        let key = self.profile_key(&heads);
         if key == self.output_profiles.current {
             return;
         }
@@ -436,9 +542,9 @@ impl State {
                 })
                 .collect();
             if self.check_output_layout(&config) && self.apply_output_layout(config) {
-                eprintln!("canoe: restored the layout of {}", key.join(", "));
+                eprintln!("canoe: restored the layout of {key}");
             } else {
-                eprintln!("canoe: cannot restore the layout of {}", key.join(", "));
+                eprintln!("canoe: cannot restore the layout of {key}");
             }
             self.output_management_state.update::<State>();
             let primary = profile.primary.and_then(|primary| {
@@ -450,12 +556,72 @@ impl State {
                 self.output_profiles.primary = Some(name);
                 self.focus_primary_output(&output);
             }
+        } else if let Some(config) = self.lid_layout(&heads) {
+            if self.check_output_layout(&config) && self.apply_output_layout(config) {
+                eprintln!(
+                    "canoe: turned the laptop's panel {} for {key}",
+                    if self.output_profiles.lid == Lid::Open {
+                        "on"
+                    } else {
+                        "off"
+                    }
+                );
+            }
+            self.output_management_state.update::<State>();
         }
         self.announce_primary_output();
         if !self.output_profiles.pointer_placed {
             self.output_profiles.pointer_placed = true;
             self.center_pointer();
         }
+    }
+
+    /// Without a profile: the laptop's panels turned off while the lid is
+    /// closed, unless nothing else is on, and on again left of the other
+    /// outputs when it opens. `None` if nothing is to change.
+    fn lid_layout(&self, heads: &[(Output, String, bool)]) -> Option<Vec<HeadConfiguration>> {
+        let on = self.output_profiles.lid == Lid::Open;
+        let switch = |output: &Output, enabled: bool| is_internal(output) && enabled != on;
+        if !heads
+            .iter()
+            .any(|(output, _, enabled)| switch(output, *enabled))
+        {
+            return None;
+        }
+        let others: Vec<_> = heads
+            .iter()
+            .filter(|(output, _, enabled)| *enabled && !is_internal(output))
+            .filter_map(|(output, _, _)| self.output_geometry(output))
+            .collect();
+        if !on && others.is_empty() {
+            return None;
+        }
+        let mut left = others.iter().map(|geo| geo.loc.x).min().unwrap_or(0);
+        let top = others.iter().map(|geo| geo.loc.y).min().unwrap_or(0);
+        let config = heads
+            .iter()
+            .map(|(output, _, enabled)| {
+                let mut head = HeadConfiguration {
+                    output: output.clone(),
+                    enabled: *enabled,
+                    mode: None,
+                    position: None,
+                    transform: None,
+                    scale: None,
+                    adaptive_sync: None,
+                };
+                if switch(output, *enabled) {
+                    head.enabled = on;
+                    if on {
+                        let width = self.output_geometry(output).map_or(0, |geo| geo.size.w);
+                        left -= width;
+                        head.position = Some((left, top).into());
+                    }
+                }
+                head
+            })
+            .collect();
+        Some(config)
     }
 
     /// Put the pointer in the middle of the primary output, or else of the
@@ -485,8 +651,8 @@ impl State {
     /// A primary output that was disabled is primary no more.
     pub fn remember_output_layout(&mut self) {
         let heads = self.profile_heads();
-        let mut key: Vec<String> = heads.iter().map(|(_, name, _)| name.clone()).collect();
-        key.sort();
+        let key = self.profile_key(&heads);
+        let lid = key.lid;
         self.output_profiles.current = key;
         let primary = self.output_profiles.primary.take().filter(|primary| {
             heads
@@ -499,6 +665,7 @@ impl State {
             return;
         }
         let profile = Profile {
+            lid,
             primary,
             outputs: heads
                 .iter()
@@ -702,6 +869,7 @@ mod tests {
     fn store_round_trips_through_toml() {
         let store = Store {
             profiles: vec![Profile {
+                lid: Some(Lid::Closed),
                 primary: Some("Dell Inc. DELL U2723QE 5KX".into()),
                 outputs: vec![
                     OutputSetup {
@@ -724,6 +892,7 @@ mod tests {
             }],
         };
         let text = toml::to_string(&store).unwrap();
+        assert!(text.contains("lid = \"closed\""), "{text}");
         assert_eq!(toml::from_str::<Store>(&text).unwrap(), store);
     }
 
@@ -737,13 +906,52 @@ mod tests {
             scale: None,
             transform: None,
         };
+        let key = |outputs: &[&str], lid| ProfileKey {
+            outputs: outputs.iter().map(|o| o.to_string()).collect(),
+            lid,
+        };
         let mut profiles = OutputProfiles::default();
         profiles.store.profiles.push(Profile {
+            lid: None,
             primary: None,
             outputs: vec![setup("B"), setup("A")],
         });
-        assert!(profiles.find(&["A".into(), "B".into()]).is_some());
-        assert!(profiles.find(&["A".into()]).is_none());
+        assert!(profiles.find(&key(&["A", "B"], None)).is_some());
+        assert!(profiles.find(&key(&["A"], None)).is_none());
+        // Without a lid, a profile is for the lid open.
+        assert!(profiles.find(&key(&["A", "B"], Some(Lid::Open))).is_some());
+        assert!(profiles
+            .find(&key(&["A", "B"], Some(Lid::Closed)))
+            .is_none());
+    }
+
+    #[test]
+    fn the_lid_open_and_closed_have_a_profile_each() {
+        let profile = |lid| Profile {
+            lid,
+            primary: None,
+            outputs: vec![OutputSetup {
+                name: "A".into(),
+                enabled: true,
+                mode: None,
+                position: None,
+                scale: None,
+                transform: None,
+            }],
+        };
+        let mut profiles = OutputProfiles::default();
+        profiles.remember(profile(None));
+        profiles.remember(profile(Some(Lid::Closed)));
+        assert_eq!(profiles.store.profiles.len(), 2);
+        // Open replaces the one from before lids counted.
+        profiles.remember(profile(Some(Lid::Open)));
+        assert_eq!(profiles.store.profiles.len(), 2);
+        let closed = ProfileKey {
+            outputs: vec!["A".into()],
+            lid: Some(Lid::Closed),
+        };
+        assert_eq!(profiles.find(&closed).unwrap().lid, Some(Lid::Closed));
+        assert_eq!(closed.to_string(), "A (lid closed)");
     }
 
     #[test]
@@ -752,6 +960,7 @@ mod tests {
         let path = dir.join("state").join("outputs.toml");
         let mut profiles = OutputProfiles::load(Some(path.clone()));
         let profile = |primary: Option<&str>| Profile {
+            lid: None,
             primary: primary.map(Into::into),
             outputs: vec![OutputSetup {
                 name: "A".into(),

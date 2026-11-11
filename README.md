@@ -148,6 +148,13 @@ Monitors are recognized by make, model and serial number, so a layout follows
 a monitor to another port. Two identical monitors without serial numbers are
 told apart by their ports.
 
+On a laptop the lid counts too: the laptop's panel with an external monitor
+and the lid open is another combination than with the lid closed, and each
+has its own layout. Without a layout of its own, closing the lid turns the
+panel off (unless it is the only output) and opening it turns the panel back
+on, left of the other outputs. To keep the panel on with the lid closed, turn
+it on again while the lid is closed; that is remembered like any other change.
+
 Each combination can have a primary output: the one new windows open on when
 monitors come or go, and the one launchers and other panels without an output
 of their own appear on. Choosing it moves the focus there. Canoe starts with

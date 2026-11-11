@@ -3,7 +3,8 @@
 
 use smithay::backend::input::{
     AbsolutePositionEvent, Axis, AxisSource, ButtonState, Event, InputBackend, InputEvent,
-    KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent,
+    KeyState, KeyboardKeyEvent, PointerAxisEvent, PointerButtonEvent, PointerMotionEvent, Switch,
+    SwitchState, SwitchToggleEvent,
 };
 use smithay::desktop::{layer_map_for_output, WindowSurfaceType};
 use smithay::input::keyboard::{FilterResult, KeyboardTarget, Keycode, ModifiersState};
@@ -127,6 +128,12 @@ impl State {
                     }
                 }
                 self.on_pointer_axis(frame);
+            }
+            InputEvent::SwitchToggle { event } if event.switch() == Some(Switch::Lid) => {
+                self.set_lid(match event.state() {
+                    SwitchState::On => super::output_profiles::Lid::Closed,
+                    SwitchState::Off => super::output_profiles::Lid::Open,
+                });
             }
             _ => {}
         }

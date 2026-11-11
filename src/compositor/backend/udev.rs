@@ -39,11 +39,13 @@ use smithay::backend::udev::{self, UdevBackend, UdevEvent};
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
 use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
 use smithay::reexports::drm::control::{connector, crtc, Device as ControlDevice, ModeTypeFlags};
+use smithay::reexports::input::event::switch::Switch;
 use smithay::reexports::input::Libinput;
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::utils::DeviceFd;
 
 use super::{edid, Backend};
+use crate::compositor::output_profiles::{self, Lid};
 use crate::compositor::render::{CanoeElement, CLEAR_COLOR};
 use crate::compositor::State;
 
@@ -309,6 +311,14 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
         .insert_source(libinput_backend, |event, _, state| {
             if let InputEvent::DeviceAdded { mut device } = event {
                 configure_device(&mut device);
+                // libinput tells when the lid opens or closes, but not
+                // reliably whether it is closed to begin with, e.g. when
+                // the session comes back after a VT switch.
+                if device.switch_has_switch(Switch::Lid) == Ok(true) {
+                    if let Some(lid) = read_lid() {
+                        state.set_lid(lid);
+                    }
+                }
                 return;
             }
             state.process_input_event(event);
@@ -370,6 +380,9 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
             }
         })?;
 
+    if let Some(lid) = read_lid() {
+        state.set_lid(lid);
+    }
     scan_connectors(state);
     Ok(())
 }
@@ -401,6 +414,23 @@ fn apply_gamma(
     let (red, rest) = ramps.split_at(size);
     let (green, blue) = rest.split_at(size);
     device.set_gamma(crtc, red, green, blue)
+}
+
+/// Whether the laptop's lid is closed, as ACPI says. libinput only tells
+/// when that changes.
+fn read_lid() -> Option<Lid> {
+    let dirs = std::fs::read_dir("/proc/acpi/button/lid").ok()?;
+    for dir in dirs.flatten() {
+        let Ok(text) = std::fs::read_to_string(dir.path().join("state")) else {
+            continue;
+        };
+        match text.split_once(':').map(|(_, state)| state.trim()) {
+            Some("open") => return Some(Lid::Open),
+            Some("closed") => return Some(Lid::Closed),
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Touchpads tap to click, like everywhere else.
@@ -565,7 +595,10 @@ fn connector_connected(state: &mut State, info: connector::Info, crtc: crtc::Han
             model,
         },
     );
-    crate::compositor::output_profiles::set_serial_number(&output, serial);
+    output_profiles::set_serial_number(&output, serial);
+    if output_profiles::is_internal_connector(info.interface().as_str()) {
+        output_profiles::set_internal(&output);
+    }
     for mode in info.modes() {
         output.add_mode(Mode::from(*mode));
     }
@@ -617,7 +650,7 @@ fn connector_connected(state: &mut State, info: connector::Info, crtc: crtc::Han
     eprintln!(
         "canoe: {} ({}) connected: {}x{}@{}Hz on CRTC {crtc:?}",
         output.name(),
-        crate::compositor::output_profiles::identity(&output),
+        output_profiles::identity(&output),
         drm_mode.size().0,
         drm_mode.size().1,
         drm_mode.vrefresh()

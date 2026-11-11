@@ -65,6 +65,9 @@ Xwayland. (#66)
   `xx-primary-output-v1`. (#82)
 - Monitors report their make, model and serial number from their EDID, so
   output tools can tell them apart. (#82)
+- Closing a laptop's lid turns its panel off, and opening it turns the
+  panel back on, unless the remembered layout says otherwise: the lid
+  open and the lid closed each have a layout of their own. (#82)
 
 ### Changed
 
