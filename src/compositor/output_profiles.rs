@@ -302,6 +302,8 @@ pub struct OutputProfiles {
     primary: Option<String>,
     /// A restore is queued for when things settle.
     restore_queued: bool,
+    /// The pointer was put on the outputs once they first settled.
+    pointer_placed: bool,
 }
 
 impl OutputProfiles {
@@ -450,6 +452,33 @@ impl State {
             }
         }
         self.announce_primary_output();
+        if !self.output_profiles.pointer_placed {
+            self.output_profiles.pointer_placed = true;
+            self.center_pointer();
+        }
+    }
+
+    /// Put the pointer in the middle of the primary output, or else of the
+    /// output it is on (at the start, the one at the top left).
+    fn center_pointer(&mut self) {
+        let primary = self.output_profiles.primary.clone().and_then(|primary| {
+            self.profile_heads()
+                .into_iter()
+                .find(|(_, name, enabled)| *enabled && *name == primary)
+                .map(|(output, _, _)| output)
+        });
+        let Some(output) = primary
+            .or_else(|| self.output_at(self.pointer_location))
+            .or_else(|| self.active_outputs().next().map(|o| o.output.clone()))
+        else {
+            return;
+        };
+        let Some(area) = self.output_geometry(&output) else {
+            return;
+        };
+        let area = area.to_f64();
+        self.pointer_location = area.loc + area.size.downscale(2.0).to_point();
+        self.refresh_pointer_focus();
     }
 
     /// Remember how the outputs are set up now, for the monitors connected.
