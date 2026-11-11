@@ -233,6 +233,7 @@ impl State {
             reported_size: None,
             reported_hints: None,
             needs_configure: false,
+            decoration_mode_dirty: false,
             pending_positions: Vec::new(),
             initial_commit: false,
         });
@@ -383,6 +384,11 @@ impl State {
     /// Send the configures the window manager's requests made necessary.
     pub fn send_pending_configures(&mut self) {
         for window in &mut self.windows {
+            // What the window manager decided last, once per batch: a
+            // decision changing back and forth within it reaches nobody.
+            if std::mem::take(&mut window.decoration_mode_dirty) {
+                window.send_decoration_mode();
+            }
             let Some(toplevel) = window.toplevel() else {
                 continue;
             };

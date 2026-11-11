@@ -123,6 +123,9 @@ pub struct ManagedWindow {
     pub reported_hints: Option<(i32, i32, i32, i32)>,
     /// Pending state changed; a configure must be sent.
     pub needs_configure: bool,
+    /// The decoration mode must be told to the client, with the next
+    /// configure.
+    pub decoration_mode_dirty: bool,
     /// Positions to apply only once the client has drawn the sizes proposed
     /// along with them, oldest first, so resizing from the left or top edge
     /// doesn't make the content jitter (River does this with transactions).

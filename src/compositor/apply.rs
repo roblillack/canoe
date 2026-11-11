@@ -167,7 +167,7 @@ impl State {
             Request::UseSsd(key, ssd) => {
                 self.with_toplevel(key, |window| {
                     window.ssd = ssd;
-                    window.send_decoration_mode();
+                    window.decoration_mode_dirty = true;
                 });
             }
             Request::SetCapabilities(key, caps) => {

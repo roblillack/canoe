@@ -500,9 +500,10 @@ impl KdeDecorationHandler for State {
         mode: WEnum<KdeMode>,
     ) {
         // GTK asks for client-side decorations when it draws a header bar
-        // of its own, and never changes its mind over what it is told
-        // back, so only supporting CSD is what such a request amounts to.
-        // `None` (no decorations at all) is no different.
+        // of its own, and keeps asking whatever it is told back (it only
+        // changes its decorations with a new surface), so only supporting
+        // CSD is what such a request amounts to. `None` (no decorations at
+        // all) is no different.
         let hint = match mode {
             WEnum::Value(KdeMode::Server) => 2,
             _ => 0,
@@ -525,7 +526,7 @@ impl State {
             return;
         };
         let id = self.window_by_key(key).map(|w| w.id).unwrap();
-        let ssd = {
+        {
             let context = self.context.borrow();
             let Some(window) = context.windows.get(&id) else {
                 return;
@@ -533,15 +534,13 @@ impl State {
             let mut w = window.borrow_mut();
             w.decoration_hint = Some(hint);
             context.apply_rules_to_window(&mut w);
-            w.decoration != Some(crate::config::WindowDecoration::Csd)
-        };
-        // The mode must be sent again: the client just (re)created its
-        // decoration object or changed its mind. It is sent right away, so
-        // a client setting up its decorations before its first commit is
-        // configured with the mode it gets.
+        }
+        // The mode must be sent again, as the client just (re)created its
+        // decoration object or changed its mind, but only once the window
+        // manager's decision is applied: a client asking for a mode right
+        // after creating its decoration object gets one answer.
         if let Some(window) = self.window_by_key_mut(key) {
-            window.ssd = ssd;
-            window.send_decoration_mode();
+            window.decoration_mode_dirty = true;
             window.needs_configure = true;
         }
         self.schedule_wm();
