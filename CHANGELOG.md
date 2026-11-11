@@ -16,6 +16,9 @@ While pre-1.0, the minor version is bumped for breaking changes.
   left of others (at negative positions, e.g. by kanshi). Such a layout is
   moved so it starts at 0,0, as Xwayland's screen does. (#66)
 - X11 programs run as root (e.g. `sudo xterm`) can connect to Xwayland. (#66)
+- The first click after moving or resizing a window by its own (client-side)
+  decorations, as in GNOME Calculator, reaches what it is on instead of that
+  window. (#66)
 
 ## [0.6.2] - 2026-11-07
 

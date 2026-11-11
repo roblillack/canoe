@@ -381,13 +381,20 @@ impl State {
     pub fn clear_client_pointer_focus(&mut self) {
         let pointer = self.seat.get_pointer().unwrap();
         let location = self.pointer_location;
+        let time = self.start_time.elapsed().as_millis() as u32;
+        // A client asking to be moved or resized does so while a button
+        // pressed on it is held, so Smithay's implicit grab still keeps
+        // the pointer on it and would ignore the focus change below.
+        if pointer.is_grabbed() {
+            pointer.unset_grab(self, SERIAL_COUNTER.next_serial(), time);
+        }
         pointer.motion(
             self,
             None,
             &MotionEvent {
                 location,
                 serial: SERIAL_COUNTER.next_serial(),
-                time: self.start_time.elapsed().as_millis() as u32,
+                time,
             },
         );
         pointer.frame(self);
@@ -431,6 +438,12 @@ impl State {
         }
 
         if self.pointer_op.is_some() {
+            // No client has pointer focus during the operation, so this
+            // reaches none, but Smithay has to see the button go up:
+            // otherwise it keeps the pointer grabbed for the client the
+            // operation started on and the next click goes there.
+            pointer.button(self, &event);
+            pointer.frame(self);
             self.check_op_release();
             if self.pressed_buttons.is_empty() {
                 self.canoe_grab = None;
