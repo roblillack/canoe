@@ -16,7 +16,7 @@
     OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
   </copyright>
 
-  <description summary="choose the primary output">
+  <description summary="choose the primary output, see the lid">
     With several monitors connected, one of them is usually the main one:
     where new windows open after monitors were plugged in or out, and where
     panels and other layer surfaces go that don't ask for an output. This
@@ -31,6 +31,11 @@
     Choosing a primary output only says where things go from then on;
     windows that are open stay where they are.
 
+    The compositor also tells which outputs are a laptop's own panel and
+    whether its lid is closed over them, so that a configuration tool can
+    show those outputs as asleep. The compositor may set up the outputs
+    differently with the lid closed, e.g. turn the panel off.
+
     This is an experimental protocol: backward-incompatible changes may be
     made, and the interface names carry the "xx" prefix until it is
     stabilized.
@@ -41,7 +46,17 @@
       Right after the global is bound, the compositor sends a primary event
       with the current primary output, and again whenever it changes,
       including when monitors come or go.
+
+      It also sends a lid event for each connected output that is a
+      laptop's own panel right after the global is bound, and again
+      whenever the lid opens or closes or such an output is connected.
     </description>
+
+    <enum name="lid_state">
+      <description summary="the lid over an output"/>
+      <entry name="open" value="0" summary="the lid is open"/>
+      <entry name="closed" value="1" summary="the lid is closed over the output"/>
+    </enum>
 
     <request name="destroy" type="destructor">
       <description summary="destroy the manager">
@@ -74,6 +89,17 @@
       </description>
       <arg name="name" type="string" allow-null="true"
         summary="the output's name, or null"/>
+    </event>
+
+    <event name="lid">
+      <description summary="the lid over a laptop's panel">
+        The named output is a laptop's own panel, and its lid is open or
+        closed. The output may be enabled or not. Outputs never named in a
+        lid event have no lid. Once an output is disconnected, its last
+        lid event no longer applies.
+      </description>
+      <arg name="name" type="string" summary="the output's name"/>
+      <arg name="state" type="uint" enum="lid_state" summary="open or closed"/>
     </event>
   </interface>
 </protocol>

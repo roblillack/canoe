@@ -1,10 +1,11 @@
 //! Server side of `xx-primary-output-v1` (see `xx-primary-output-v1.xml`
 //! next to this file), canoe's protocol for showing and choosing the
-//! primary output.
+//! primary output, and for seeing which outputs a closed lid covers.
 //!
 //! The compositor tells the module which output is primary with
-//! [`PrimaryOutputState::set_primary`], which announces changes to every
-//! bound manager. A client's choice goes to
+//! [`PrimaryOutputState::set_primary`], and which outputs are a laptop's
+//! panel and whether the lid is closed with [`PrimaryOutputState::set_lids`];
+//! both announce changes to every bound manager. A client's choice goes to
 //! [`PrimaryOutputHandler::choose_primary_output`]; the client hears back
 //! either way.
 //!
@@ -32,7 +33,7 @@ pub mod server {
     wayland_scanner::generate_server_code!("src/compositor/protocols/xx-primary-output-v1.xml");
 }
 
-use server::xx_primary_output_manager_v1::{self, XxPrimaryOutputManagerV1};
+use server::xx_primary_output_manager_v1::{self, LidState, XxPrimaryOutputManagerV1};
 
 const VERSION: u32 = 1;
 
@@ -53,6 +54,17 @@ pub struct PrimaryOutputState {
     global: GlobalId,
     managers: Vec<XxPrimaryOutputManagerV1>,
     primary: Option<String>,
+    /// The connected laptop panels by name, and whether the lid is closed.
+    lids: Vec<(String, bool)>,
+}
+
+fn send_lid(manager: &XxPrimaryOutputManagerV1, name: &str, closed: bool) {
+    let state = if closed {
+        LidState::Closed
+    } else {
+        LidState::Open
+    };
+    manager.lid(name.to_string(), state);
 }
 
 impl PrimaryOutputState {
@@ -62,6 +74,7 @@ impl PrimaryOutputState {
             global: display.create_global::<D, XxPrimaryOutputManagerV1, _>(VERSION, ()),
             managers: Vec::new(),
             primary: None,
+            lids: Vec::new(),
         }
     }
 
@@ -89,6 +102,22 @@ impl PrimaryOutputState {
     }
 }
 
+impl PrimaryOutputState {
+    /// The connected laptop panels are those named in `lids`, with the lid
+    /// closed or not. Tell the clients about new panels and changed lids.
+    pub fn set_lids(&mut self, lids: Vec<(String, bool)>) {
+        self.managers.retain(|m| m.is_alive());
+        for (name, closed) in &lids {
+            if !self.lids.contains(&(name.clone(), *closed)) {
+                for manager in &self.managers {
+                    send_lid(manager, name, *closed);
+                }
+            }
+        }
+        self.lids = lids;
+    }
+}
+
 impl<D: PrimaryOutputHandler> GlobalDispatch<XxPrimaryOutputManagerV1, (), D>
     for PrimaryOutputState
 {
@@ -103,6 +132,9 @@ impl<D: PrimaryOutputHandler> GlobalDispatch<XxPrimaryOutputManagerV1, (), D>
         let manager = data_init.init(resource, ());
         let protocol = state.primary_output_state();
         manager.primary(protocol.primary.clone());
+        for (name, closed) in &protocol.lids {
+            send_lid(&manager, name, *closed);
+        }
         protocol.managers.push(manager);
     }
 }

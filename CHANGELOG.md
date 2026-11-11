@@ -67,7 +67,9 @@ Xwayland. (#66)
   output tools can tell them apart. (#82)
 - Closing a laptop's lid turns its panel off, and opening it turns the
   panel back on, unless the remembered layout says otherwise: the lid
-  open and the lid closed each have a layout of their own. (#82)
+  open and the lid closed each have a layout of their own.
+  `xx-primary-output-v1` tells output tools which outputs are a laptop's
+  panel and whether the lid is closed over them. (#82)
 
 ### Changed
 

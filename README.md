@@ -167,7 +167,12 @@ it through Canoe's experimental `xx-primary-output-v1` protocol; for now
 wlprimary              # print the primary output
 wlprimary set DP-1     # make DP-1 primary for the monitors connected now
 wlprimary unset
+wlprimary lids         # print each laptop panel and whether its lid is closed
+wlprimary watch        # print the primary output and lids as they change
 ```
+
+The same protocol tells which outputs are a laptop's panel and whether the
+lid is closed over them, so a configuration tool can show them asleep.
 
 The layouts are kept in `~/.local/state/canoe/outputs.toml` (under
 `$XDG_STATE_HOME` if set). `remember_outputs = false` in the configuration

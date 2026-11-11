@@ -501,7 +501,21 @@ impl State {
         }
         eprintln!("canoe: lid {}", lid.name());
         self.output_profiles.lid = lid;
+        self.announce_lids();
         self.queue_output_profile();
+    }
+
+    /// Tell xx-primary-output-v1 clients which outputs are a laptop's panel
+    /// and whether the lid is closed over them.
+    pub fn announce_lids(&mut self) {
+        let closed = self.output_profiles.lid == Lid::Closed;
+        let lids = self
+            .outputs
+            .iter()
+            .filter(|o| is_internal(&o.output))
+            .map(|o| (o.output.name(), closed))
+            .collect();
+        self.primary_output_state.set_lids(lids);
     }
 
     /// Monitors came or went: restore the layout for those connected once

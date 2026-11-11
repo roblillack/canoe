@@ -675,6 +675,7 @@ impl State {
         });
         self.output_management_state.update::<State>();
         self.output_changed(&output);
+        self.announce_lids();
         self.queue_output_profile();
     }
 
@@ -696,6 +697,7 @@ impl State {
         }
         self.update_x11_settings();
         self.schedule_wm();
+        self.announce_lids();
         self.queue_output_profile();
     }
 
