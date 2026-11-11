@@ -22,10 +22,12 @@
 //!
 //! A laptop's lid is part of the combination: the same monitors with the
 //! lid open and with it closed have a profile each. Without a profile for
-//! the combination, closing the lid turns the laptop's own panel off
-//! (unless nothing else is on) and opening it turns the panel back on, left
-//! of the other outputs. Whatever is set up with the lid closed (say, the
-//! panel turned on again) is remembered for the lid closed.
+//! the lid as it is, the one for the lid the other way is used, and the
+//! laptop's own panel follows the lid: closing it turns the panel off and
+//! opening it turns the panel back on, left of the other outputs. With
+//! nothing else connected, the panel stays as it is when the lid closes,
+//! and stays off if it was. Whatever is set up with the lid closed (say,
+//! the panel turned on again) is remembered for the lid closed.
 //!
 //! Profiles are kept in `$XDG_STATE_HOME/canoe/outputs.toml`
 //! (`~/.local/state/canoe/outputs.toml`), or in the file
@@ -151,6 +153,13 @@ pub enum Lid {
 }
 
 impl Lid {
+    pub fn other(self) -> Self {
+        match self {
+            Lid::Open => Lid::Closed,
+            Lid::Closed => Lid::Open,
+        }
+    }
+
     fn name(self) -> &'static str {
         match self {
             Lid::Open => "open",
@@ -345,6 +354,23 @@ fn head_configuration(output: &Output, setup: &OutputSetup) -> HeadConfiguration
     head
 }
 
+/// Fit `config`, from a profile for the lid open, to the lid closed: the
+/// laptop's panels go off, or, if nothing else would be on, stay as they
+/// are (`heads` says how).
+fn close_lid(config: &mut [HeadConfiguration], heads: &[(Output, String, bool)]) {
+    let others_on = config
+        .iter()
+        .any(|head| head.enabled && !is_internal(&head.output));
+    for head in config.iter_mut().filter(|head| is_internal(&head.output)) {
+        let enabled_now = heads
+            .iter()
+            .any(|(output, _, enabled)| *output == head.output && *enabled);
+        if others_on || !enabled_now {
+            head.enabled = false;
+        }
+    }
+}
+
 /// Where profiles are kept, if anywhere.
 pub fn store_path(headless: bool) -> Option<PathBuf> {
     if let Some(path) = std::env::var_os("CANOE_OUTPUT_PROFILES").filter(|p| !p.is_empty()) {
@@ -418,6 +444,22 @@ impl OutputProfiles {
 
     fn find(&self, key: &ProfileKey) -> Option<&Profile> {
         self.store.profiles.iter().find(|p| p.key() == *key)
+    }
+
+    /// The profile for `key`, or else the one for the same outputs with
+    /// the lid the other way, and whether it is that one.
+    fn find_for_lid(&self, key: &ProfileKey) -> (Option<Profile>, bool) {
+        if let Some(profile) = self.find(key) {
+            return (Some(profile.clone()), false);
+        }
+        let Some(lid) = key.lid else {
+            return (None, false);
+        };
+        let other = ProfileKey {
+            outputs: key.outputs.clone(),
+            lid: Some(lid.other()),
+        };
+        (self.find(&other).cloned(), true)
     }
 
     /// Keep `profile`, in place of the one for the same outputs, and save.
@@ -542,23 +584,36 @@ impl State {
         }
         self.output_profiles.current = key.clone();
         self.output_profiles.primary = None;
-        let profile = if self.remembering_outputs() {
-            self.output_profiles.find(&key).cloned()
+        let (profile, fallback) = if self.remembering_outputs() {
+            self.output_profiles.find_for_lid(&key)
         } else {
-            None
+            (None, false)
         };
+        let exact = profile.is_some() && !fallback;
         if let Some(profile) = profile {
-            let config: Vec<HeadConfiguration> = heads
+            let mut config: Vec<HeadConfiguration> = heads
                 .iter()
                 .filter_map(|(output, name, _)| {
                     let setup = profile.outputs.iter().find(|s| &s.name == name)?;
                     Some(head_configuration(output, setup))
                 })
                 .collect();
-            if self.check_output_layout(&config) && self.apply_output_layout(config) {
-                eprintln!("canoe: restored the layout of {key}");
+            if fallback && self.output_profiles.lid == Lid::Closed {
+                close_lid(&mut config, &heads);
+            }
+            let layout = if fallback {
+                format!("lid-{} layout", self.output_profiles.lid.other().name())
             } else {
-                eprintln!("canoe: cannot restore the layout of {key}");
+                "layout".to_string()
+            };
+            // With nothing on but the panel, kept off, there is nothing
+            // to do.
+            if config.iter().any(|head| head.enabled) {
+                if self.check_output_layout(&config) && self.apply_output_layout(config) {
+                    eprintln!("canoe: restored the {layout} of {key}");
+                } else {
+                    eprintln!("canoe: cannot restore the {layout} of {key}");
+                }
             }
             self.output_management_state.update::<State>();
             let primary = profile.primary.and_then(|primary| {
@@ -570,7 +625,14 @@ impl State {
                 self.output_profiles.primary = Some(name);
                 self.focus_primary_output(&output);
             }
-        } else if let Some(config) = self.lid_layout(&heads) {
+        }
+        // Without a profile for the lid as it is, have the panel follow it.
+        let lid_config = if exact {
+            None
+        } else {
+            self.lid_layout(&self.profile_heads())
+        };
+        if let Some(config) = lid_config {
             if self.check_output_layout(&config) && self.apply_output_layout(config) {
                 eprintln!(
                     "canoe: turned the laptop's panel {} for {key}",
@@ -937,6 +999,95 @@ mod tests {
         assert!(profiles
             .find(&key(&["A", "B"], Some(Lid::Closed)))
             .is_none());
+    }
+
+    #[test]
+    fn without_a_profile_for_the_lid_the_other_one_does() {
+        let profile = |lid| Profile {
+            lid,
+            primary: None,
+            outputs: vec![OutputSetup {
+                name: "A".into(),
+                enabled: true,
+                mode: None,
+                position: None,
+                scale: Some(1.5),
+                transform: None,
+            }],
+        };
+        let key = |lid| ProfileKey {
+            outputs: vec!["A".into()],
+            lid,
+        };
+        let mut profiles = OutputProfiles::default();
+        profiles.store.profiles.push(profile(None));
+        assert_eq!(
+            profiles.find_for_lid(&key(Some(Lid::Open))),
+            (Some(profile(None)), false)
+        );
+        assert_eq!(
+            profiles.find_for_lid(&key(Some(Lid::Closed))),
+            (Some(profile(None)), true)
+        );
+        profiles.store.profiles.push(profile(Some(Lid::Closed)));
+        assert_eq!(
+            profiles.find_for_lid(&key(Some(Lid::Closed))),
+            (Some(profile(Some(Lid::Closed))), false)
+        );
+        // Without a panel there is no other lid.
+        let mut no_lid = OutputProfiles::default();
+        no_lid.store.profiles.push(profile(Some(Lid::Closed)));
+        assert_eq!(no_lid.find_for_lid(&key(None)), (None, false));
+    }
+
+    #[test]
+    fn closing_the_lid_turns_the_panel_off_unless_it_is_all_there_is() {
+        let output = |name: &str, internal: bool| {
+            let output = Output::new(
+                name.into(),
+                smithay::output::PhysicalProperties {
+                    size: (0, 0).into(),
+                    subpixel: smithay::output::Subpixel::Unknown,
+                    make: "Unknown".into(),
+                    model: name.into(),
+                },
+            );
+            if internal {
+                set_internal(&output);
+            }
+            output
+        };
+        let head = |output: &Output, enabled| HeadConfiguration {
+            output: output.clone(),
+            enabled,
+            mode: None,
+            position: None,
+            transform: None,
+            scale: None,
+            adaptive_sync: None,
+        };
+        let panel = output("eDP-1", true);
+        let monitor = output("DP-1", false);
+        let enabled = |config: &[HeadConfiguration]| -> Vec<bool> {
+            config.iter().map(|h| h.enabled).collect()
+        };
+
+        let heads = vec![
+            (panel.clone(), "eDP-1".to_string(), true),
+            (monitor.clone(), "DP-1".to_string(), true),
+        ];
+        let mut config = vec![head(&panel, true), head(&monitor, true)];
+        close_lid(&mut config, &heads);
+        assert_eq!(enabled(&config), [false, true]);
+
+        // The panel alone stays as it is, on or off.
+        let mut config = vec![head(&panel, true)];
+        close_lid(&mut config, &heads[..1]);
+        assert_eq!(enabled(&config), [true]);
+        let off = vec![(panel.clone(), "eDP-1".to_string(), false)];
+        let mut config = vec![head(&panel, true)];
+        close_lid(&mut config, &off);
+        assert_eq!(enabled(&config), [false]);
     }
 
     #[test]

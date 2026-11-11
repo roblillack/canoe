@@ -127,11 +127,7 @@ pub fn toggle_lid(state: &mut State) {
     {
         return;
     }
-    let lid = match state.lid() {
-        Lid::Open => Lid::Closed,
-        Lid::Closed => Lid::Open,
-    };
-    state.set_lid(lid);
+    state.set_lid(state.lid().other());
 }
 
 fn add_backend_output(

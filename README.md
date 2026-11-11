@@ -150,10 +150,13 @@ told apart by their ports.
 
 On a laptop the lid counts too: the laptop's panel with an external monitor
 and the lid open is another combination than with the lid closed, and each
-has its own layout. Without a layout of its own, closing the lid turns the
-panel off (unless it is the only output) and opening it turns the panel back
-on, left of the other outputs. To keep the panel on with the lid closed, turn
-it on again while the lid is closed; that is remembered like any other change.
+has its own layout. Until the lid closed has a layout of its own, the one for
+the lid open is used with the panel off, and the other way round with the
+panel on, left of the other outputs. Closing the lid with nothing else
+connected leaves the panel as it is, and a panel that is off stays off when
+the other monitors go, e.g. while they wake up. To keep the panel on with the
+lid closed, turn it on again while the lid is closed; that is remembered like
+any other change.
 
 Each combination can have a primary output: the one new windows open on when
 monitors come or go, and the one launchers and other panels without an output
