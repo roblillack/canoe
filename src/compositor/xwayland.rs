@@ -61,6 +61,39 @@ fn same_window(a: &X11Surface, b: &X11Surface) -> bool {
     a.xwm_id() == b.xwm_id() && a.window_id() == b.window_id()
 }
 
+/// Let root's X11 clients in as well, so `sudo xterm` runs. Xwayland only
+/// admits clients of the user it runs as; root could get in as that user
+/// anyway, so this gives nobody anything new. On a thread of its own, so a
+/// busy Xwayland doesn't hold up the compositor.
+fn let_root_connect(display_number: u32) {
+    use smithay::reexports::x11rb::protocol::xproto::{ConnectionExt, Family, HostMode};
+    use smithay::reexports::x11rb::rust_connection::RustConnection;
+
+    let spawned = std::thread::Builder::new()
+        .name("xwayland-access".into())
+        .spawn(move || {
+            let result = RustConnection::connect(Some(&format!(":{display_number}")))
+                .map_err(|err| err.to_string())
+                .and_then(|(conn, _)| {
+                    // "localuser\0root" is what `xhost +si:localuser:root` sends.
+                    conn.change_hosts(
+                        HostMode::INSERT,
+                        Family::SERVER_INTERPRETED,
+                        b"localuser\0root",
+                    )
+                    .map_err(|err| err.to_string())?
+                    .check()
+                    .map_err(|err| err.to_string())
+                });
+            if let Err(err) = result {
+                eprintln!("canoe: failed to let root's X11 programs connect: {err}");
+            }
+        });
+    if let Err(err) = spawned {
+        eprintln!("canoe: failed to let root's X11 programs connect: {err}");
+    }
+}
+
 impl State {
     /// Start Xwayland. Programs canoe launches reach it through `DISPLAY`,
     /// which is set right away: X11 clients connecting before the server is
@@ -87,7 +120,11 @@ impl State {
         let inserted =
             self.loop_handle
                 .insert_source(xwayland, move |event, _, state| match event {
-                    XWaylandEvent::Ready { x11_socket, .. } => {
+                    XWaylandEvent::Ready {
+                        x11_socket,
+                        display_number,
+                    } => {
+                        let_root_connect(display_number);
                         match X11Wm::start_wm(handle.clone(), x11_socket, client.clone()) {
                             Ok(xwm) => state.xwayland_ready(xwm),
                             Err(err) => eprintln!("canoe: failed to manage X11 windows: {err}"),
