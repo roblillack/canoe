@@ -62,6 +62,8 @@ Xwayland. (#66)
   after monitors come or go and where layer surfaces without an output go.
   It is chosen with an experimental protocol of canoe's own,
   `xx-primary-output-v1`. (#82)
+- Monitors report their make, model and serial number from their EDID, so
+  output tools can tell them apart. (#82)
 
 ### Changed
 

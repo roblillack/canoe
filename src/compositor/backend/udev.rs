@@ -43,7 +43,7 @@ use smithay::reexports::input::Libinput;
 use smithay::reexports::rustix::fs::OFlags;
 use smithay::utils::DeviceFd;
 
-use super::Backend;
+use super::{edid, Backend};
 use crate::compositor::render::{CanoeElement, CLEAR_COLOR};
 use crate::compositor::State;
 
@@ -548,15 +548,24 @@ fn connector_connected(state: &mut State, info: connector::Info, crtc: crtc::Han
         .unwrap_or(0);
     let drm_mode = info.modes()[mode_index];
     let (width_mm, height_mm) = info.size().unwrap_or((0, 0));
+    let identity = match state.backend {
+        Backend::Udev(ref data) => edid::read(data.manager.device(), info.handle()),
+        _ => None,
+    };
+    let (make, model, serial) = match identity {
+        Some(id) => (id.make, id.model, id.serial),
+        None => ("Unknown".into(), name.clone(), None),
+    };
     let output = Output::new(
         name.clone(),
         PhysicalProperties {
             size: (width_mm as i32, height_mm as i32).into(),
             subpixel: Subpixel::Unknown,
-            make: "Unknown".into(),
-            model: name,
+            make,
+            model,
         },
     );
+    crate::compositor::output_profiles::set_serial_number(&output, serial);
     for mode in info.modes() {
         output.add_mode(Mode::from(*mode));
     }
@@ -606,8 +615,9 @@ fn connector_connected(state: &mut State, info: connector::Info, crtc: crtc::Han
         },
     );
     eprintln!(
-        "canoe: {} connected: {}x{}@{}Hz on CRTC {crtc:?}",
+        "canoe: {} ({}) connected: {}x{}@{}Hz on CRTC {crtc:?}",
         output.name(),
+        crate::compositor::output_profiles::identity(&output),
         drm_mode.size().0,
         drm_mode.size().1,
         drm_mode.vrefresh()

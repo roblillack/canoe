@@ -58,6 +58,14 @@ const FILE_HEADER: &str = "\
 /// `PhysicalProperties` has no field for it).
 struct SerialNumber(Option<String>);
 
+/// Record the serial number of the monitor behind `output`.
+pub fn set_serial_number(output: &Output, serial: Option<String>) {
+    let serial = serial.filter(|s| !s.is_empty());
+    output
+        .user_data()
+        .insert_if_missing_threadsafe(|| SerialNumber(serial));
+}
+
 /// The serial number of the monitor behind `output`, if known.
 pub fn serial_number(output: &Output) -> Option<String> {
     output
