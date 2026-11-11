@@ -53,6 +53,15 @@ Xwayland. (#66)
 - `xdg-toplevel-tag-v1`: windows may tag themselves. The tags aren't used
   yet, but KDE programs expect the protocol and Spectacle crashes without
   it. (#81)
+- Canoe remembers the output layout for each combination of connected
+  monitors and restores it when the combination comes back, so kanshi is no
+  longer needed: whatever an output tool like `wdisplays` or `wlr-randr`
+  applies is saved, in `~/.local/state/canoe/outputs.toml`.
+  `remember_outputs = false` turns this off. (#82)
+- A primary output per combination of monitors, where new windows open
+  after monitors come or go and where layer surfaces without an output go.
+  It is chosen with an experimental protocol of canoe's own,
+  `xx-primary-output-v1`. (#82)
 
 ### Changed
 

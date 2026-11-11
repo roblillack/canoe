@@ -276,6 +276,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         BackendKind::Winit => return Err("canoe was built without the winit feature".into()),
         BackendKind::Udev => compositor::backend::udev::init(&mut state)?,
     }
+    // Restored once the outputs the backend found are all there.
+    state.output_profiles = compositor::output_profiles::OutputProfiles::load(
+        compositor::output_profiles::store_path(args.backend == BackendKind::Headless),
+    );
     std::env::set_var("WAYLAND_DISPLAY", &socket_name);
     // Started from a tty, logind's session type is "tty", which makes
     // Chromium and Electron fall back to X11.

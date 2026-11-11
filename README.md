@@ -134,6 +134,36 @@ their place on it when the output layout changes:
 
 Sending a window to another output with `Super+Alt+Arrow` works the same way.
 
+### Remembered layouts and the primary output
+
+Canoe remembers how the outputs are set up for each combination of connected
+monitors, and sets them up that way again when that combination comes back,
+e.g. when you dock your laptop. Set them up once with any tool that speaks
+wlr-output-management, such as `wdisplays` or `wlr-randr`: which outputs are
+on, their modes, positions, scales and transforms are saved as they are
+applied. kanshi isn't needed, though it still works: whatever it applies is
+remembered just the same.
+
+Monitors are recognized by make, model and serial number, so a layout follows
+a monitor to another port. Two identical monitors without serial numbers are
+told apart by their ports.
+
+Each combination can have a primary output: the one new windows open on when
+monitors come or go, and the one launchers and other panels without an output
+of their own appear on. Choosing it moves the focus there. Output tools choose
+it through Canoe's experimental `xx-primary-output-v1` protocol; for now
+`tools/wlinput` has a small client for it:
+
+```sh
+wlprimary              # print the primary output
+wlprimary set DP-1     # make DP-1 primary for the monitors connected now
+wlprimary unset
+```
+
+The layouts are kept in `~/.local/state/canoe/outputs.toml` (under
+`$XDG_STATE_HOME` if set). `remember_outputs = false` in the configuration
+file turns all of this off; new outputs are then lined up left to right.
+
 ## Screen Sharing
 
 Apps share the screen through the screencast portal. For Canoe that portal is
@@ -275,15 +305,14 @@ lock_cmd = ["swaylock", "-f", "-c", "000000"]
 
 ### Startup commands
 
-`startup_cmds` lists programs Canoe launches when it starts, e.g. to configure
-displays, set a wallpaper, or start a notification daemon. Each entry is a
+`startup_cmds` lists programs Canoe launches when it starts, e.g. to set a
+wallpaper or start a notification daemon. Each entry is a
 program name or an argv array, like `launcher_cmd`. A plain string is not run
 through a shell, so pass arguments as an array (`"swaybg -i wall.png"` would
 look for a program with that literal name).
 
 ```toml
 startup_cmds = [
-    "kanshi",
     "mako",
     ["swaybg", "-i", "/home/me/wallpaper.png", "-m", "fill"],
 ]

@@ -261,6 +261,9 @@ pub struct Config {
     /// Offer KWin's screenshot D-Bus API (org.kde.KWin.ScreenShot2), the
     /// only way Spectacle takes screenshots on Wayland.
     pub emulate_kwin: bool,
+    /// Remember how the outputs are set up for each combination of
+    /// monitors and set them up that way again when it comes back.
+    pub remember_outputs: bool,
     pub main_modifier: MainModifier,
 
     pub repeat_rate: i32,
@@ -301,6 +304,7 @@ impl Default for Config {
             xwayland_hidpi: true,
             emulate_sway: false,
             emulate_kwin: false,
+            remember_outputs: true,
             main_modifier: MainModifier::default(),
 
             repeat_rate: 50,
@@ -360,6 +364,7 @@ struct FileConfig {
     xwayland_hidpi: Option<bool>,
     emulate_sway: Option<bool>,
     emulate_kwin: Option<bool>,
+    remember_outputs: Option<bool>,
     launcher_cmd: Option<StringOrVec>,
     terminal_cmd: Option<StringOrVec>,
     lock_cmd: Option<StringOrVec>,
@@ -848,6 +853,9 @@ impl Config {
         if let Some(emulate) = file.emulate_kwin {
             self.emulate_kwin = emulate;
         }
+        if let Some(remember) = file.remember_outputs {
+            self.remember_outputs = remember;
+        }
         if let Some(launcher_cmd) = string_or_vec(file.launcher_cmd) {
             let launcher_cmd = clean_cmd_args(launcher_cmd);
             if !launcher_cmd.is_empty() {
@@ -1116,6 +1124,7 @@ mod tests {
         );
         assert_eq!(config.emulate_sway, defaults.emulate_sway);
         assert_eq!(config.emulate_kwin, defaults.emulate_kwin);
+        assert_eq!(config.remember_outputs, defaults.remember_outputs);
 
         // The sample spells out the values that UiConfig leaves as `None` and
         // derives at runtime.

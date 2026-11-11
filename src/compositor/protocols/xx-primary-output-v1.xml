@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="xx_primary_output_v1">
+  <copyright>
+    Copyright © 2026 Robert Lillack
+
+    Permission to use, copy, modify, and/or distribute this software for any
+    purpose with or without fee is hereby granted, provided that the above
+    copyright notice and this permission notice appear in all copies.
+
+    THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES
+    WITH REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF
+    MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR
+    ANY SPECIAL, DIRECT, INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES
+    WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN AN
+    ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF
+    OR IN CONNECTION WITH THE USE OR PERFORMANCE OF THIS SOFTWARE.
+  </copyright>
+
+  <description summary="choose the primary output">
+    With several monitors connected, one of them is usually the main one:
+    where new windows open after monitors were plugged in or out, and where
+    panels and other layer surfaces go that don't ask for an output. This
+    protocol lets an output configuration tool show and choose that primary
+    output.
+
+    The compositor remembers the choice for the combination of monitors
+    connected when it is made, and makes the output primary again whenever
+    that combination comes back. Outputs are named as by wl_output.name and
+    zwlr_output_head_v1.name.
+
+    Choosing a primary output only says where things go from then on;
+    windows that are open stay where they are.
+
+    This is an experimental protocol: backward-incompatible changes may be
+    made, and the interface names carry the "xx" prefix until it is
+    stabilized.
+  </description>
+
+  <interface name="xx_primary_output_manager_v1" version="1">
+    <description summary="primary output of the connected monitors">
+      Right after the global is bound, the compositor sends a primary event
+      with the current primary output, and again whenever it changes,
+      including when monitors come or go.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Destroy the manager. The primary output stays as it is.
+      </description>
+    </request>
+
+    <request name="set_primary">
+      <description summary="choose the primary output">
+        Make the named output primary for the monitors connected now, and
+        remember that. The output must be enabled. The compositor answers
+        with a primary event, also when it rejects the request (an unknown
+        or disabled output) or nothing changed, so a client can tell what
+        happened from the next primary event after a roundtrip.
+      </description>
+      <arg name="name" type="string" summary="the output's name"/>
+    </request>
+
+    <request name="unset_primary">
+      <description summary="have no primary output">
+        Forget the primary output of the monitors connected now. The
+        compositor answers with a primary event.
+      </description>
+    </request>
+
+    <event name="primary">
+      <description summary="the primary output">
+        The primary output of the monitors connected now, or null if there
+        is none.
+      </description>
+      <arg name="name" type="string" allow-null="true"
+        summary="the output's name, or null"/>
+    </event>
+  </interface>
+</protocol>

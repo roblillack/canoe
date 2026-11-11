@@ -7,6 +7,7 @@ pub mod image_capture;
 pub mod output_management;
 pub mod output_power;
 pub mod plasma_shell;
+pub mod primary_output;
 pub mod screencopy;
 pub mod toplevel_icon;
 pub mod virtual_keyboard;
