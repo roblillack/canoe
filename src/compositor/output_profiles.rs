@@ -774,7 +774,9 @@ impl State {
             .as_ref()
             .and_then(|output| self.managed_output(output))
             .map(|o| o.id);
-        self.context.borrow_mut().primary_output = id;
+        if self.context.borrow_mut().set_primary_output(id) {
+            self.schedule_wm();
+        }
         self.primary_output_state
             .set_primary(output.map(|o| o.name()));
     }

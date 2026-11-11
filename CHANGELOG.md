@@ -67,7 +67,8 @@ Xwayland. (#66)
   `remember_outputs = false` turns this off. (#82)
 - A primary output per combination of monitors, where new windows open
   after monitors come or go and where layer surfaces without an output go.
-  The pointer starts in its middle, and iconlets always start there.
+  The pointer starts in its middle, and iconlets always start there and
+  move along when the primary output changes.
   It is chosen with an experimental protocol of canoe's own,
   `xx-primary-output-v1`. (#82)
 - Monitors report their make, model and serial number from their EDID, so

@@ -186,7 +186,8 @@ any other change.
 
 Each combination can have a primary output: the one new windows open on when
 monitors come or go, and the one launchers and other panels without an output
-of their own appear on. Iconlets always start there, wherever the focus is.
+of their own appear on. Iconlets always start there, wherever the focus is,
+and move along when another output becomes primary.
 Choosing it moves the focus there. Canoe starts with the pointer in the middle
 of the primary output (or, without one, of the output at the top left). Output
 tools choose it through Canoe's experimental `xx-primary-output-v1` protocol;
