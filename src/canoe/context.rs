@@ -138,8 +138,11 @@ pub struct Context {
     /// The primary output was chosen or came back: new windows go there
     /// (see [`Self::focus_output`]). Waits while the session is locked.
     pub pending_primary_output: Option<OutputId>,
-    /// The primary output, if there is one: iconlets start there.
+    /// The primary output, if there is one: iconlets start there. Change it
+    /// with [`Self::set_primary_output`].
     pub primary_output: Option<OutputId>,
+    /// The primary output changed: move the iconlets there.
+    pending_iconlet_move: bool,
 }
 
 impl Context {
@@ -200,6 +203,7 @@ impl Context {
             pending_usable_area_changes: Vec::new(),
             pending_primary_output: None,
             primary_output: None,
+            pending_iconlet_move: false,
             pending_output_orphans: Vec::new(),
             pending_fullscreen_exits: Vec::new(),
         }
@@ -1262,6 +1266,70 @@ impl Context {
         self.current_output_for_new_window()
     }
 
+    /// Make `output_id` the primary output, or none. Iconlets move to a new
+    /// primary output in the next manage sequence. Returns whether anything
+    /// changed, which then needs one.
+    pub fn set_primary_output(&mut self, output_id: Option<OutputId>) -> bool {
+        if self.primary_output == output_id {
+            return false;
+        }
+        self.primary_output = output_id;
+        self.pending_iconlet_move |= output_id.is_some();
+        true
+    }
+
+    /// Move every iconlet that is elsewhere to the primary output, keeping
+    /// its place relative to the output.
+    fn move_iconlets_to_primary_output(&mut self) {
+        let Some(target_id) = self
+            .primary_output
+            .filter(|id| self.outputs.contains_key(id))
+        else {
+            return;
+        };
+        let iconlets: Vec<WindowId> = self
+            .windows
+            .iter()
+            .filter(|(_, w)| w.borrow().iconlet)
+            .map(|(&id, _)| id)
+            .collect();
+        let mut moved = false;
+        for window_id in iconlets {
+            let (rect, unplaced, source) = {
+                let w = self.windows[&window_id].borrow();
+                let source = w
+                    .output
+                    .as_ref()
+                    .and_then(|o| o.upgrade())
+                    .map(|o| o.borrow().id);
+                let rect = super::window::SavedGeometry {
+                    x: w.x,
+                    y: w.y,
+                    width: w.width,
+                    height: w.height,
+                };
+                (rect, w.position_undefined, source)
+            };
+            if source == Some(target_id) {
+                continue;
+            }
+            moved = true;
+            let old_area = source
+                .and_then(|id| self.outputs.get(&id))
+                .map(|output| output.borrow().usable_area());
+            match old_area {
+                Some(old_area) if !unplaced => {
+                    self.relocate_window(window_id, rect, old_area, target_id, false);
+                }
+                // Not placed yet: placement uses the new output.
+                _ => self.set_window_output(window_id, target_id),
+            }
+        }
+        if moved {
+            self.mark_all_desktops_dirty();
+        }
+    }
+
     /// The output an iconlet starts on: the primary one, wherever the focus
     /// is. `None` if `window_id` is no iconlet or there is no primary output.
     fn iconlet_output(&self, window_id: WindowId) -> Option<OutputId> {
@@ -2250,6 +2318,9 @@ impl Context {
                 self.migrate_orphaned_window(window_id, dead_area);
             }
             self.mark_all_desktops_dirty(); // icons follow their window
+        }
+        if std::mem::take(&mut self.pending_iconlet_move) {
+            self.move_iconlets_to_primary_output();
         }
         for window_id in std::mem::take(&mut self.pending_fullscreen_exits) {
             self.restore_from_stale_fullscreen(window_id);
@@ -4830,6 +4901,37 @@ mod tests {
 
         ctx.handle_window_event(11, super::super::window::WindowEvent::Init);
 
+        assert_eq!(assigned_output(&ctx, 11), Some(1));
+    }
+
+    #[test]
+    fn iconlets_follow_the_primary_output() {
+        let mut ctx = context_with_outputs(&[(1, 0, 0, 1920, 1080), (2, 1920, 0, 1920, 1080)]);
+        add_window(&mut ctx, 10, 1, (100, 100, 800, 600));
+        add_window(&mut ctx, 11, 1, (100, 100, 800, 600));
+        make_iconlet(&ctx, 11);
+        ctx.hide_window(11);
+        ctx.focus(10);
+
+        assert!(ctx.set_primary_output(Some(2)));
+        assert!(!ctx.set_primary_output(Some(2)));
+        ctx.handle_manage_start();
+
+        assert_eq!(assigned_output(&ctx, 11), Some(2));
+        assert!(hidden(&ctx, 11));
+        let x = ctx.windows[&11].borrow().x;
+        assert!((1920..3840).contains(&x), "x = {x}");
+        // Other windows and the focus stay.
+        assert_eq!(assigned_output(&ctx, 10), Some(1));
+        assert_eq!(ctx.focused_window, Some(10));
+
+        // Without a primary output, iconlets stay where they are.
+        assert!(ctx.set_primary_output(None));
+        ctx.handle_manage_start();
+        assert_eq!(assigned_output(&ctx, 11), Some(2));
+
+        assert!(ctx.set_primary_output(Some(1)));
+        ctx.handle_manage_start();
         assert_eq!(assigned_output(&ctx, 11), Some(1));
     }
 
