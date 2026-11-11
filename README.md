@@ -186,11 +186,11 @@ any other change.
 
 Each combination can have a primary output: the one new windows open on when
 monitors come or go, and the one launchers and other panels without an output
-of their own appear on. Choosing it moves the focus there. Canoe starts with
-the pointer in the middle of the primary output (or, without one, of the
-output at the top left). Output tools choose
-it through Canoe's experimental `xx-primary-output-v1` protocol; for now
-`tools/wlinput` has a small client for it:
+of their own appear on. Iconlets always start there, wherever the focus is.
+Choosing it moves the focus there. Canoe starts with the pointer in the middle
+of the primary output (or, without one, of the output at the top left). Output
+tools choose it through Canoe's experimental `xx-primary-output-v1` protocol;
+for now `tools/wlinput` has a small client for it:
 
 ```sh
 wlprimary              # print the primary output

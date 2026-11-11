@@ -760,16 +760,23 @@ impl State {
         self.schedule_wm();
     }
 
-    /// Tell xx-primary-output-v1 clients which output is primary.
+    /// Tell xx-primary-output-v1 clients and the window manager which output
+    /// is primary.
     fn announce_primary_output(&mut self) {
         let primary = self.output_profiles.primary.clone();
-        let name = primary.and_then(|primary| {
+        let output = primary.and_then(|primary| {
             self.profile_heads()
                 .into_iter()
                 .find(|(_, name, _)| *name == primary)
-                .map(|(output, _, _)| output.name())
+                .map(|(output, _, _)| output)
         });
-        self.primary_output_state.set_primary(name);
+        let id = output
+            .as_ref()
+            .and_then(|output| self.managed_output(output))
+            .map(|o| o.id);
+        self.context.borrow_mut().primary_output = id;
+        self.primary_output_state
+            .set_primary(output.map(|o| o.name()));
     }
 
     /// Check the outputs' new setup before applying any of it.
