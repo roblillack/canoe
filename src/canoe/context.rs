@@ -539,20 +539,39 @@ impl Context {
 
     /// Focus a window
     pub fn focus(&mut self, window_id: WindowId) {
-        // Unfullscreen any fullscreen window when switching to a different window.
-        // We cannot rely on self.focused_window here because focus_preview (used
-        // during alt-tab) may have already changed it.
+        // Unfullscreen the fullscreen windows that would cover the window
+        // being focused: those fullscreen on its output. A fullscreen window on
+        // another output stays, so a program can fill every output at once (as
+        // Spectacle does to select a region). We cannot rely on
+        // self.focused_window here because focus_preview (used during alt-tab)
+        // may have already changed it.
+        let focus_output = self
+            .windows
+            .get(&window_id)
+            .and_then(|w| match &w.borrow().fullscreen {
+                super::window::FullscreenState::Output(output) => {
+                    output.upgrade().map(|output| output.borrow().id)
+                }
+                _ => None,
+            })
+            .or_else(|| self.output_for_window_id(window_id));
         let fullscreen_ids: Vec<WindowId> = self
             .windows
             .iter()
             .filter_map(|(&id, w)| {
-                if id != window_id
-                    && !matches!(w.borrow().fullscreen, super::window::FullscreenState::None)
-                {
-                    Some(id)
-                } else {
-                    None
-                }
+                let covers = match &w.borrow().fullscreen {
+                    super::window::FullscreenState::None => false,
+                    super::window::FullscreenState::Window => true,
+                    super::window::FullscreenState::Output(output) => {
+                        match (output.upgrade(), focus_output) {
+                            (Some(output), Some(focus_output)) => {
+                                output.borrow().id == focus_output
+                            }
+                            _ => true,
+                        }
+                    }
+                };
+                (id != window_id && covers).then_some(id)
             })
             .collect();
         if !fullscreen_ids.is_empty() {
@@ -2174,8 +2193,17 @@ impl Context {
                 continue;
             };
 
+            let new_window = events
+                .iter()
+                .any(|event| matches!(event, super::window::WindowEvent::Init));
             for event in events {
                 self.handle_window_event(window_id, event);
+            }
+            // A new window is focused once the requests it made before it
+            // was mapped (fullscreen on some output, say) are applied, so
+            // that focusing it accounts for where it really goes.
+            if new_window {
+                self.focus_new_window(window_id);
             }
         }
 
@@ -2230,6 +2258,18 @@ impl Context {
     }
 
     /// Handle a window event
+    /// Focus a window that was just mapped, unless it asked to start
+    /// minimized.
+    fn focus_new_window(&mut self, window_id: WindowId) {
+        let hidden = match self.windows.get(&window_id) {
+            Some(window) => window.borrow().hidden,
+            None => return,
+        };
+        if !hidden {
+            self.focus(window_id);
+        }
+    }
+
     fn handle_window_event(&mut self, window_id: WindowId, event: super::window::WindowEvent) {
         use super::window::WindowEvent;
 
@@ -2273,9 +2313,6 @@ impl Context {
                             .set_dimension_bounds(max_width.max(1), max_height.max(1));
                     }
                 }
-
-                // Focus the new window
-                self.focus(window_id);
             }
             WindowEvent::Close => {
                 if let Some(window) = self.windows.get(&window_id) {
