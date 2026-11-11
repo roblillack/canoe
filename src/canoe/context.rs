@@ -2501,9 +2501,13 @@ impl Context {
                 // Disable compositor borders; custom decoration handles borders.
                 let edges = Edges::all();
                 w.set_borders(edges, 0, 0, 0, 0, 0);
-            } else {
+            } else if !self.outputs.is_empty() {
                 w.hide();
             }
+            // With no output at all (the last monitor went, maybe just
+            // while it wakes up) a window is visible on none, but hiding
+            // it would minimize it for good: leave it as it is, so it comes
+            // back on the first output that appears.
         }
 
         // Raise the focused window's root ancestor to the top. For a focused
@@ -4346,6 +4350,39 @@ mod tests {
         let pre_fullscreen = w.pre_fullscreen.unwrap();
         assert_eq!((pre_fullscreen.width, pre_fullscreen.height), (800, 600));
         assert_eq!((w.x, w.y), (90, 50));
+    }
+
+    #[test]
+    fn losing_the_last_output_minimizes_no_window() {
+        let mut ctx = context_with_outputs(&[(1, 0, 0, 1920, 1080)]);
+        ctx.startup_unminimize_done = true;
+        add_window(&mut ctx, 10, 1, (100, 100, 800, 600));
+        add_window(&mut ctx, 11, 1, (300, 200, 400, 300));
+        ctx.windows[&11].borrow_mut().hidden = true;
+
+        ctx.destroy_output(1);
+        ctx.handle_manage_start();
+        ctx.handle_render_start();
+        assert!(!ctx.windows[&10].borrow().hidden);
+        assert!(ctx.windows[&11].borrow().hidden);
+
+        // The monitor is back: the window is on it, still not minimized.
+        let mut output = Output::new(2);
+        output.update_position(0, 0);
+        output.update_dimensions(1920, 1080);
+        ctx.outputs.insert(2, Rc::new(RefCell::new(output)));
+        ctx.handle_manage_start();
+        ctx.handle_render_start();
+        let w = ctx.windows[&10].borrow();
+        assert!(!w.hidden);
+        assert_eq!((w.x, w.y), (100, 100));
+        let on = w
+            .output
+            .as_ref()
+            .and_then(|o| o.upgrade())
+            .map(|o| o.borrow().id);
+        assert_eq!(on, Some(2));
+        assert!(ctx.windows[&11].borrow().hidden);
     }
 
     #[test]
