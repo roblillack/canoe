@@ -111,6 +111,7 @@ impl State {
             let global = self.outputs[index].global.take();
             self.retire_output(output, global);
             self.context.borrow_mut().destroy_output(id);
+            self.update_x11_settings();
             self.schedule_wm();
         }
         super::backend::Backend::update_output_power(self, output);

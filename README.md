@@ -309,6 +309,28 @@ GTK apps usually ignore these variables and take their cursor theme from
 GNOME's settings instead (`gsettings set org.gnome.desktop.interface
 cursor-theme Adwaita`, and `cursor-size` for the size).
 
+### X11 programs
+
+On scaled outputs, X11 programs draw at the outputs' scale, rounded up to a
+whole number (the largest scale if outputs differ, shrunk on the others), so
+they are as crisp as Wayland programs. Canoe tells them how much bigger to
+draw through the X resources `Xft.dpi`, `Xcursor.theme` and `Xcursor.size`
+(Xft fonts, Qt, xterm) and XSETTINGS (`Gdk/WindowScalingFactor` for GTK,
+`Xft/DPI` for others). Programs that ignore both come out small. Turn it off
+to have X11 programs drawn at scale 1 and stretched, blurry but at their
+usual size:
+
+```toml
+xwayland_hidpi = false
+```
+
+The scale follows outputs coming, going and changing scale, and `SIGHUP`
+reloads. GTK programs follow along while they run; most others read the X
+resources only when they start, so programs already running keep drawing at
+their old size, while canoe keeps their windows' size on screen. If
+`XCURSOR_SIZE` is set for launched programs (see above), it takes precedence
+over `Xcursor.size`, so their X11 cursors come out small on scaled outputs.
+
 ### Hotkeys
 
 Bind arbitrary key chords to commands under the `[hotkeys]` table. Each key is a
@@ -484,8 +506,7 @@ shared both ways).
 
 Missing:
 
-- **Xwayland**: X11 windows are drawn at scale 1 (blurry on scaled
-  outputs), and X11 programs can't activate their own windows.
+- **Xwayland**: X11 programs can't activate their own windows.
 - **DRM/KMS**: the `udev` backend (real monitors) uses only one GPU and has
   no direct scanout tuning, adaptive sync or DRM leasing.
 - No tablet, touch or gesture input, no text-input/input-method.

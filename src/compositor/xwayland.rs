@@ -5,9 +5,16 @@
 //! (`super::Shell::X11`), once Xwayland associated the surface it draws
 //! them with. Menus, tooltips and other override-redirect windows place
 //! themselves and are drawn above all windows (`State::x11_unmanaged`).
+//!
+//! On scaled outputs X11 programs draw at the outputs' scale, rounded up
+//! (unless `xwayland_hidpi` is off): Xwayland's client scale makes the
+//! outputs as many X pixels wide, and X resources and XSETTINGS tell
+//! programs to draw that much bigger. Smithay converts between X pixels and
+//! logical coordinates for everything else.
 
 use std::os::fd::OwnedFd;
 use std::process::Stdio;
+use std::sync::mpsc;
 
 use smithay::desktop::Window;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -22,8 +29,11 @@ use smithay::wayland::selection::primary_selection::{
 };
 use smithay::wayland::selection::SelectionTarget;
 use smithay::wayland::xwayland_shell::{XWaylandShellHandler, XWaylandShellState};
+use smithay::xwayland::xwm::settings::Value;
 use smithay::xwayland::xwm::{Reorder, ResizeEdge, WmWindowProperty, WmWindowType, XwmId};
-use smithay::xwayland::{X11Surface, X11Wm, XWayland, XWaylandEvent, XwmHandler};
+use smithay::xwayland::{
+    X11Surface, X11Wm, XWayland, XWaylandClientData, XWaylandEvent, XwmHandler,
+};
 
 use super::focus::KeyboardFocus;
 use super::{ManagedWindow, Shell, State};
@@ -95,6 +105,154 @@ fn let_root_connect(display_number: u32) {
     }
 }
 
+/// DPI at scale 1, as X11 programs assume it.
+const X11_DPI: i32 = 96;
+
+/// What X11 programs are told: the scale they draw at and the cursor they
+/// show.
+#[derive(Clone, Debug, PartialEq)]
+pub struct X11Settings {
+    pub scale: i32,
+    pub cursor_theme: String,
+    /// At scale 1.
+    pub cursor_size: u32,
+}
+
+impl X11Settings {
+    fn cursor_pixels(&self) -> i32 {
+        self.cursor_size as i32 * self.scale
+    }
+
+    /// X resources, as `xrdb` sets them. Programs read them when they
+    /// start: Xft fonts and Qt scale by `Xft.dpi`.
+    fn resources(&self) -> Vec<(&'static str, String)> {
+        vec![
+            ("Xft.dpi", (X11_DPI * self.scale).to_string()),
+            ("Xcursor.theme", self.cursor_theme.clone()),
+            ("Xcursor.size", self.cursor_pixels().to_string()),
+        ]
+    }
+
+    /// XSETTINGS, which GTK programs follow while they run. GTK scales its
+    /// windows by `Gdk/WindowScalingFactor` and sizes text by
+    /// `Gdk/UnscaledDPI`; `Xft/DPI` is the full DPI for everybody else.
+    /// DPIs are in 1024ths.
+    fn xsettings(&self) -> Vec<(String, Value)> {
+        vec![
+            (
+                "Xft/DPI".into(),
+                Value::Integer(X11_DPI * 1024 * self.scale),
+            ),
+            ("Gdk/WindowScalingFactor".into(), Value::Integer(self.scale)),
+            ("Gdk/UnscaledDPI".into(), Value::Integer(X11_DPI * 1024)),
+            (
+                "Gtk/CursorThemeName".into(),
+                Value::String(self.cursor_theme.clone()),
+            ),
+            (
+                "Gtk/CursorThemeSize".into(),
+                Value::Integer(self.cursor_pixels()),
+            ),
+        ]
+    }
+}
+
+/// `RESOURCE_MANAGER` text with `ours` set, keeping everything else.
+fn merge_resources(existing: &str, ours: &[(&str, String)]) -> String {
+    let mut merged = String::new();
+    for line in existing.lines() {
+        let name = line.split(':').next().unwrap_or_default().trim();
+        if name.is_empty() || ours.iter().any(|(ours, _)| *ours == name) {
+            continue;
+        }
+        merged.push_str(line);
+        merged.push('\n');
+    }
+    for (name, value) in ours {
+        merged.push_str(&format!("{name}:\t{value}\n"));
+    }
+    merged
+}
+
+/// Sets X resources on the root window, like `xrdb -merge`. On a thread
+/// of its own: Xwayland may be waiting for the compositor while it is
+/// asked.
+pub struct ResourceWriter {
+    sender: mpsc::Sender<Vec<(&'static str, String)>>,
+}
+
+impl ResourceWriter {
+    fn start(display_number: u32) -> Option<Self> {
+        use smithay::reexports::x11rb::connection::Connection;
+        use smithay::reexports::x11rb::rust_connection::RustConnection;
+
+        let (sender, receiver) = mpsc::channel::<Vec<(&'static str, String)>>();
+        let spawned = std::thread::Builder::new()
+            .name("xwayland-resources".into())
+            .spawn(move || {
+                let connected = RustConnection::connect(Some(&format!(":{display_number}")));
+                let (conn, screen) = match connected {
+                    Ok(connected) => connected,
+                    Err(err) => {
+                        eprintln!("canoe: failed to set X resources: {err}");
+                        return;
+                    }
+                };
+                let root = conn.setup().roots[screen].root;
+                // Until the compositor lets go, the latest resources each time.
+                while let Ok(mut resources) = receiver.recv() {
+                    while let Ok(newer) = receiver.try_recv() {
+                        resources = newer;
+                    }
+                    if let Err(err) = write_resources(&conn, root, &resources) {
+                        eprintln!("canoe: failed to set X resources: {err}");
+                    }
+                }
+            });
+        match spawned {
+            Ok(_) => Some(Self { sender }),
+            Err(err) => {
+                eprintln!("canoe: failed to set X resources: {err}");
+                None
+            }
+        }
+    }
+
+    fn write(&self, resources: Vec<(&'static str, String)>) {
+        let _ = self.sender.send(resources);
+    }
+}
+
+fn write_resources(
+    conn: &smithay::reexports::x11rb::rust_connection::RustConnection,
+    root: u32,
+    resources: &[(&str, String)],
+) -> Result<(), Box<dyn std::error::Error>> {
+    use smithay::reexports::x11rb::protocol::xproto::{AtomEnum, ConnectionExt, PropMode};
+    use smithay::reexports::x11rb::wrapper::ConnectionExt as _;
+
+    let existing = conn
+        .get_property(
+            false,
+            root,
+            AtomEnum::RESOURCE_MANAGER,
+            AtomEnum::STRING,
+            0,
+            u32::MAX / 4,
+        )?
+        .reply()?;
+    let merged = merge_resources(&String::from_utf8_lossy(&existing.value), resources);
+    conn.change_property8(
+        PropMode::REPLACE,
+        root,
+        AtomEnum::RESOURCE_MANAGER,
+        AtomEnum::STRING,
+        merged.as_bytes(),
+    )?
+    .check()?;
+    Ok(())
+}
+
 impl State {
     /// Start Xwayland. Programs canoe launches reach it through `DISPLAY`,
     /// which is set right away: X11 clients connecting before the server is
@@ -117,6 +275,7 @@ impl State {
             }
         };
         let display = xwayland.display_number();
+        let client_for_scale = client.clone();
         let handle = self.loop_handle.clone();
         let inserted =
             self.loop_handle
@@ -126,6 +285,7 @@ impl State {
                         display_number,
                     } => {
                         let_root_connect(display_number);
+                        state.x11_resources = ResourceWriter::start(display_number);
                         match X11Wm::start_wm(handle.clone(), x11_socket, client.clone()) {
                             Ok(xwm) => state.xwayland_ready(xwm),
                             Err(err) => eprintln!("canoe: failed to manage X11 windows: {err}"),
@@ -137,19 +297,90 @@ impl State {
             eprintln!("canoe: failed to watch Xwayland: {err}");
             return;
         }
+        // Before Xwayland learns about the outputs.
+        self.xwayland_client = Some(client_for_scale);
+        self.update_x11_settings();
         std::env::set_var("DISPLAY", format!(":{display}"));
         eprintln!("canoe: X11 programs use DISPLAY=:{display}");
     }
 
-    fn xwayland_ready(&mut self, mut xwm: X11Wm) {
-        // X11 programs show the cursor theme's arrow where they don't pick
-        // a cursor of their own.
-        if let Some((pixels, size, hotspot)) = self.cursor.default_image() {
-            if let Err(err) = xwm.set_cursor(&pixels, Size::from(size), Point::from(hotspot)) {
-                eprintln!("canoe: failed to set the X11 cursor: {err}");
+    fn xwayland_ready(&mut self, xwm: X11Wm) {
+        self.xwm = Some(xwm);
+        self.x11_settings = None;
+        self.update_x11_settings();
+    }
+
+    /// The scale X11 programs should draw at: that of the output with the
+    /// largest, rounded up, so they are shrunk where they are shown, never
+    /// stretched. `None` without outputs.
+    fn wanted_x11_scale(&self) -> Option<i32> {
+        if !self.context.borrow().config.xwayland_hidpi {
+            return Some(1);
+        }
+        self.outputs
+            .iter()
+            .filter(|o| o.enabled)
+            .map(|o| o.output.current_scale().fractional_scale().ceil() as i32)
+            .max()
+            .map(|scale| scale.max(1))
+    }
+
+    /// Let X11 programs draw at the outputs' scale, and tell them and the
+    /// X server that and which cursor to show. For whenever outputs, their
+    /// scales, the cursor theme or the configuration change.
+    pub fn update_x11_settings(&mut self) {
+        let Some(client) = self.xwayland_client.clone() else {
+            return;
+        };
+        let Some(data) = client.get_data::<XWaylandClientData>() else {
+            return;
+        };
+        let current = data.compositor_state.client_scale();
+        let scale = self.wanted_x11_scale().unwrap_or(current.round() as i32);
+        let rescaled = scale as f64 != current;
+        if rescaled {
+            data.compositor_state.set_client_scale(scale as f64);
+            // Xwayland hears of the outputs' positions and sizes in X
+            // pixels of the new scale.
+            for output in self.outputs.iter().filter(|o| o.enabled) {
+                output.output.change_current_state(None, None, None, None);
+            }
+            eprintln!("canoe: X11 programs draw at scale {scale}");
+        }
+        let Some(xwm) = self.xwm.as_mut() else {
+            return;
+        };
+        let settings = X11Settings {
+            scale,
+            cursor_theme: self.cursor.name().to_string(),
+            cursor_size: self.cursor.size(),
+        };
+        if self.x11_settings.as_ref() != Some(&settings) {
+            // X11 programs show the cursor theme's arrow where they don't
+            // pick a cursor of their own.
+            if let Some((pixels, size, hotspot)) = self.cursor.default_image(scale as u32) {
+                if let Err(err) = xwm.set_cursor(&pixels, Size::from(size), Point::from(hotspot)) {
+                    eprintln!("canoe: failed to set the X11 cursor: {err}");
+                }
+            }
+            if let Err(err) = xwm.set_xsettings(settings.xsettings().into_iter()) {
+                eprintln!("canoe: failed to set XSETTINGS: {err}");
+            }
+            if let Some(writer) = &self.x11_resources {
+                writer.write(settings.resources());
+            }
+            self.x11_settings = Some(settings);
+        }
+        if rescaled {
+            // X11 windows keep their place and size, in X pixels of the new
+            // scale. Only after XSETTINGS: GTK resizes its windows to its
+            // new scale itself, and takes this resize for the user's if it
+            // comes first, growing them twice.
+            let windows = self.windows.iter().filter_map(|w| w.x11());
+            for x11 in windows.chain(&self.x11_pending) {
+                let _ = x11.configure(x11.geometry());
             }
         }
-        self.xwm = Some(xwm);
     }
 
     /// The managed window showing `x11`.
@@ -540,6 +771,9 @@ impl XwmHandler for State {
     fn disconnected(&mut self, _xwm: XwmId) {
         eprintln!("canoe: Xwayland is gone, X11 programs won't run");
         self.xwm = None;
+        self.xwayland_client = None;
+        self.x11_settings = None;
+        self.x11_resources = None;
         self.x11_pending.clear();
         self.x11_unmanaged.clear();
         let surfaces: Vec<WlSurface> = self
@@ -552,5 +786,27 @@ impl XwmHandler for State {
             self.remove_toplevel(&surface);
         }
         self.queue_redraw_all();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resources_replace_ours_and_keep_the_rest() {
+        let existing = "Xft.dpi:\t96\n*background:\tblack\n\nXcursor.size: 24\n";
+        let settings = X11Settings {
+            scale: 2,
+            cursor_theme: "Adwaita".into(),
+            cursor_size: 24,
+        };
+        assert_eq!(
+            merge_resources(existing, &settings.resources()),
+            "*background:\tblack\n\
+             Xft.dpi:\t192\n\
+             Xcursor.theme:\tAdwaita\n\
+             Xcursor.size:\t48\n"
+        );
     }
 }

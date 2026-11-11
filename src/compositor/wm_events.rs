@@ -691,6 +691,7 @@ impl State {
         if self.default_layer_output == Some(managed.key) {
             self.default_layer_output = None;
         }
+        self.update_x11_settings();
         self.schedule_wm();
     }
 
@@ -796,6 +797,7 @@ impl State {
         layer_map_for_output(output).arrange();
         self.layers_changed(output);
         self.update_surface_outputs();
+        self.update_x11_settings();
         self.schedule_wm();
     }
 

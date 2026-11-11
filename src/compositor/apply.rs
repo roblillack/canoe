@@ -247,6 +247,7 @@ impl State {
             }
             Request::SetXcursorTheme(_, name, size) => {
                 self.cursor.set_theme(&name, size);
+                self.update_x11_settings();
                 self.queue_redraw_all();
             }
             Request::SetCursorShape(_, shape) => {

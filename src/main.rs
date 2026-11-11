@@ -225,6 +225,7 @@ fn handle_signals(state: &mut State, fd: &OwnedFd) {
                         }
                         Ok(Signal::SIGHUP) => {
                             state.context.borrow_mut().reload_config();
+                            state.update_x11_settings();
                             state.schedule_wm();
                         }
                         Ok(Signal::SIGCHLD) => loop {
