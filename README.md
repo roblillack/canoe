@@ -196,6 +196,42 @@ renders every capture afresh and doesn't have this problem; the workaround
 from the River days (briefly flagging the picked window as resizing and tiled
 so it repaints) still runs, and is harmless.
 
+## Screenshots
+
+Tools that capture through the wlroots screencopy or ext-image-copy-capture
+protocols work as they are: grim (with slurp to pick an area),
+xfce4-screenshooter (full screen and region; it has no window mode on
+Wayland) and cosmic-screenshot.
+
+Tools that use the screenshot portal need it set up as in
+[Screen Sharing](#screen-sharing). xdg-desktop-portal-wlr takes full-screen
+shots itself, but answers every *interactive* request by letting you drag a
+region with slurp (it runs `grim -g "$(slurp)"`, so both must be installed),
+whatever the app asked for. ksnip, for example, captures the full screen
+directly, while its monitor, window and region modes all become that region
+selection.
+
+Some tools only work on the compositor they were made for. Canoe can pretend
+to be sway or KWin for them:
+
+```toml
+emulate_sway = true   # shotman, grimshot
+emulate_kwin = true   # Spectacle
+```
+
+- `emulate_sway` answers sway's IPC on the socket `SWAYSOCK` names, which is set
+  for the programs Canoe launches (if you turn it on with a reload, for those
+  launched after). It tells where outputs and windows are and which one is
+  focused, so shotman can capture the focused window and grimshot its
+  `active`, `window` and `output` targets. Commands and events aren't supported:
+  `swaymsg` commands and bars' sway modules still don't work.
+- `emulate_kwin` takes the names `org.kde.KWin` and `org.kde.KWin.ScreenShot2` on
+  the session bus and offers KWin's screenshot interface. Spectacle then works
+  in all its modes: full screen, current monitor, active window, rectangular
+  region, and window under the cursor, which you pick with Canoe's picker
+  (click a window; `Esc` or a right click cancels). KDE programs may then take
+  Canoe for KWin and try other KWin interfaces, which fail.
+
 ## Configuration
 
 Canoe reads `~/.config/canoe/canoe.toml`. After editing it, send `SIGHUP` to

@@ -2639,17 +2639,19 @@ impl Context {
                     .filter(|t| !t.is_empty())
                     .or_else(|| w.app_id.clone())
                     .unwrap_or_else(|| "this window".to_string());
+                let verb = capitalize(picker.request.verb());
                 Some((
                     w.frame_rect(&self.config.ui),
-                    format!("Share \u{201c}{name}\u{201d}"),
+                    format!("{verb} \u{201c}{name}\u{201d}"),
                 ))
             }
             ShareTarget::Output(id) => {
                 let o = self.outputs.get(&id)?.borrow();
                 let name = o.name.clone().unwrap_or_else(|| "this screen".to_string());
+                let verb = capitalize(picker.request.verb());
                 Some((
                     (o.x, o.y, o.width, o.height),
-                    format!("Share screen {name} ({}\u{d7}{})", o.width, o.height),
+                    format!("{verb} screen {name} ({}\u{d7}{})", o.width, o.height),
                 ))
             }
         }
@@ -4160,6 +4162,15 @@ fn refit_rect(
     let frame_x = frame.0.clamp(ax, (ax + aw - frame_w).max(ax));
     let frame_y = frame.1.clamp(ay, (ay + ah - frame_h).max(ay));
     Some((frame_x + left, frame_y + top, width, height))
+}
+
+/// `word` with its first letter in upper case.
+fn capitalize(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 #[cfg(test)]

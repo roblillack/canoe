@@ -44,6 +44,15 @@ Xwayland. (#66)
   (`Gdk/WindowScalingFactor`), as does their default cursor. Programs
   that can't scale come out small; `xwayland_hidpi = false` goes back to
   drawing them at scale 1, stretched and blurry. (#80)
+- Screenshot tools made for sway or KWin work with `emulate_sway` and
+  `emulate_kwin`. The first answers the questions sway's IPC answers about
+  outputs, windows and focus, for shotman and grimshot; the second offers
+  KWin's screenshot D-Bus interface, for Spectacle in all its modes, with
+  Canoe's picker for the window under the cursor. Both are off by default;
+  see Screenshots in the README. (#81)
+- `xdg-toplevel-tag-v1`: windows may tag themselves. The tags aren't used
+  yet, but KDE programs expect the protocol and Spectacle crashes without
+  it. (#81)
 
 ### Changed
 

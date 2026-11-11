@@ -66,6 +66,15 @@ yeslogic-fontconfig-sys = "6"
 # Regex for window rules
 regex = "1"
 
+# KWin's screenshot interface on the session bus (emulate_kwin), served from
+# zbus's own thread; answers come back from the event loop through a oneshot
+# channel.
+zbus = "5"
+futures-channel = "0.3"
+
+# Replies of the sway IPC emulation (emulate_sway)
+serde_json = "1"
+
 # Error handling
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

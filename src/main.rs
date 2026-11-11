@@ -225,6 +225,8 @@ fn handle_signals(state: &mut State, fd: &OwnedFd) {
                         }
                         Ok(Signal::SIGHUP) => {
                             state.context.borrow_mut().reload_config();
+                            state.apply_sway_emulation();
+                            state.apply_kwin_emulation();
                             state.update_x11_settings();
                             state.schedule_wm();
                         }
@@ -346,6 +348,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     {
         update_activation_environment(&state.context.borrow());
     }
+
+    // Pretend to be sway and KWin for screenshot tools, if asked to. Before
+    // the startup programs run, so they see SWAYSOCK.
+    state.apply_sway_emulation();
+    state.apply_kwin_emulation();
 
     state.run_wm();
     event_loop.run(None, &mut state, |state| {

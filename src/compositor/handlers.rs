@@ -993,3 +993,9 @@ delegate_relative_pointer!(State);
 delegate_dmabuf!(State);
 smithay::delegate_shm!(State);
 smithay::delegate_xwayland_shell!(State);
+smithay::delegate_xdg_toplevel_tag!(State);
+
+/// Toplevel tags aren't used for anything yet, but KDE's KWindowSystem sets
+/// them without checking that the global is there, and Spectacle crashes
+/// opening its region selection where it isn't.
+impl smithay::wayland::xdg_toplevel_tag::XdgToplevelTagHandler for State {}

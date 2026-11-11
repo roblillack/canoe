@@ -8,6 +8,8 @@
 //! memory) and [`GlesRenderer`] (renders into an offscreen texture and reads
 //! it back). [`render_to_shm_via_readback`] is the generic read-back path and
 //! can be used for other renderers implementing [`Offscreen`] + [`ExportMem`].
+//! [`ShmCaptureRenderer::render_to_mem`] renders the same way into memory of
+//! the compositor's own, for screenshots it hands out itself.
 //!
 //! The elements are expected in the *capture space*: physical pixels, in the
 //! orientation of the logical (untransformed) source, with `(0, 0)` at the
@@ -80,6 +82,18 @@ pub trait ShmCaptureRenderer: Renderer + Sized {
         elements: &[E],
         clear_color: impl Into<Color32F>,
     ) -> Result<Vec<Rectangle<i32, Physical>>, CaptureRenderError<Self::Error>>;
+
+    /// Render `elements` like [`Self::render_to_shm`], into memory of
+    /// `size`: rows of `size.w` ARGB8888 pixels (premultiplied, in
+    /// little-endian byte order B, G, R, A), top row first, with no padding.
+    fn render_to_mem<E: RenderElement<Self>>(
+        &mut self,
+        size: Size<i32, Physical>,
+        scale: impl Into<Scale<f64>>,
+        transform: Transform,
+        elements: &[E],
+        clear_color: impl Into<Color32F>,
+    ) -> Result<Vec<u8>, CaptureRenderError<Self::Error>>;
 }
 
 /// Checks that the shm buffer is something we can render into and that it fits its pool.
@@ -162,6 +176,25 @@ impl ShmCaptureRenderer for PixmanRenderer {
             clear_color,
         )
     }
+
+    fn render_to_mem<E: RenderElement<Self>>(
+        &mut self,
+        size: Size<i32, Physical>,
+        scale: impl Into<Scale<f64>>,
+        transform: Transform,
+        elements: &[E],
+        clear_color: impl Into<Color32F>,
+    ) -> Result<Vec<u8>, CaptureRenderError<Self::Error>> {
+        render_to_mem_via_readback::<Self, pixman::Image<'static, 'static>, E>(
+            self,
+            Fourcc::Argb8888,
+            size,
+            scale,
+            transform,
+            elements,
+            clear_color,
+        )
+    }
 }
 
 impl ShmCaptureRenderer for GlesRenderer {
@@ -185,6 +218,110 @@ impl ShmCaptureRenderer for GlesRenderer {
             clear_color,
         )
     }
+
+    fn render_to_mem<E: RenderElement<Self>>(
+        &mut self,
+        size: Size<i32, Physical>,
+        scale: impl Into<Scale<f64>>,
+        transform: Transform,
+        elements: &[E],
+        clear_color: impl Into<Color32F>,
+    ) -> Result<Vec<u8>, CaptureRenderError<Self::Error>> {
+        render_to_mem_via_readback::<Self, GlesTexture, E>(
+            self,
+            Fourcc::Abgr8888,
+            size,
+            scale,
+            transform,
+            elements,
+            clear_color,
+        )
+    }
+}
+
+/// Pixels read back from an offscreen render.
+struct Readback<'a> {
+    pixels: &'a [u8],
+    width: usize,
+    height: usize,
+    stride: usize,
+    /// The rows are in RGBA byte order rather than BGRA.
+    swizzled: bool,
+}
+
+/// The parts of a capture that a render changed.
+type Damage = Vec<Rectangle<i32, Physical>>;
+
+/// Renders `elements` into an offscreen buffer of type `T` in
+/// `offscreen_format` and `size`, reads it back and hands the pixels to
+/// `consume`. Returns the rendered damage along with what `consume` returned.
+#[allow(clippy::too_many_arguments)]
+fn render_readback<R, T, E, F, O>(
+    renderer: &mut R,
+    offscreen_format: Fourcc,
+    size: Size<i32, Physical>,
+    scale: Scale<f64>,
+    transform: Transform,
+    elements: &[E],
+    clear_color: Color32F,
+    consume: F,
+) -> Result<(Damage, O), CaptureRenderError<R::Error>>
+where
+    R: Renderer + Offscreen<T> + ExportMem,
+    E: RenderElement<R>,
+    F: FnOnce(Readback<'_>) -> O,
+{
+    let buffer_size = Size::<i32, smithay::utils::Buffer>::from((size.w, size.h));
+    let mut target = renderer
+        .create_buffer(offscreen_format, buffer_size)
+        .map_err(CaptureRenderError::Render)?;
+    let (damage, mapping, swizzled) = {
+        let mut framebuffer = renderer
+            .bind(&mut target)
+            .map_err(CaptureRenderError::Render)?;
+        let damage = render_elements(
+            renderer,
+            &mut framebuffer,
+            size,
+            scale,
+            transform,
+            elements,
+            clear_color,
+        )
+        .map_err(CaptureRenderError::Render)?;
+        let region = Rectangle::new((0, 0).into(), buffer_size);
+        // Prefer reading back in the shm byte order; not every driver supports
+        // BGRA read-back, so fall back to RGBA and swap channels on the CPU.
+        match renderer.copy_framebuffer(&framebuffer, region, Fourcc::Argb8888) {
+            Ok(mapping) => (damage, mapping, false),
+            Err(_) => {
+                let mapping = renderer
+                    .copy_framebuffer(&framebuffer, region, Fourcc::Abgr8888)
+                    .map_err(CaptureRenderError::Render)?;
+                (damage, mapping, true)
+            }
+        }
+    };
+    // Smithay renders offscreen targets with the top row first, so the
+    // read-back rows are in buffer order (the GLES mapping reports `flipped()`
+    // regardless, so it is deliberately not consulted).
+    let pixels = renderer
+        .map_texture(&mapping)
+        .map_err(CaptureRenderError::Render)?;
+    let width = mapping.width() as usize;
+    let height = mapping.height() as usize;
+    let stride = pixels.len() / height.max(1);
+    if stride < width * 4 {
+        return Err(CaptureRenderError::InvalidLayout);
+    }
+    let out = consume(Readback {
+        pixels,
+        width,
+        height,
+        stride,
+        swizzled,
+    });
+    Ok((damage, out))
 }
 
 /// Renders `elements` into an offscreen buffer of type `T` in `offscreen_format`,
@@ -208,81 +345,104 @@ where
     })
     .map_err(map_access_error)??;
     let size: Size<i32, Physical> = (data.width, data.height).into();
-    let region = Rectangle::from_size((data.width, data.height).into());
-
-    let mut target = renderer
-        .create_buffer(offscreen_format, region.size)
-        .map_err(CaptureRenderError::Render)?;
-    let (damage, mapping, swizzle) = {
-        let mut framebuffer = renderer
-            .bind(&mut target)
-            .map_err(CaptureRenderError::Render)?;
-        let damage = render_elements(
-            renderer,
-            &mut framebuffer,
-            size,
-            scale.into(),
-            transform,
-            elements,
-            clear_color.into(),
-        )
-        .map_err(CaptureRenderError::Render)?;
-        // Prefer reading back in the shm byte order; not every driver supports
-        // BGRA read-back, so fall back to RGBA and swap channels on the CPU.
-        match renderer.copy_framebuffer(&framebuffer, region, Fourcc::Argb8888) {
-            Ok(mapping) => (damage, mapping, false),
-            Err(_) => {
-                let mapping = renderer
-                    .copy_framebuffer(&framebuffer, region, Fourcc::Abgr8888)
-                    .map_err(CaptureRenderError::Render)?;
-                (damage, mapping, true)
-            }
-        }
-    };
-    // Smithay renders offscreen targets with the top row first, so the
-    // read-back rows are in buffer order (the GLES mapping reports `flipped()`
-    // regardless, so it is deliberately not consulted).
-    let pixels = renderer
-        .map_texture(&mapping)
-        .map_err(CaptureRenderError::Render)?;
-    let width = mapping.width() as usize;
-    let height = mapping.height() as usize;
-    let src_stride = pixels.len() / height.max(1);
-    if src_stride < width * 4 {
-        return Err(CaptureRenderError::InvalidLayout);
-    }
     let opaque = data.format == wl_shm::Format::Xrgb8888;
 
-    shm::with_buffer_contents_mut(buffer, |ptr, len, data| {
-        check_layout::<R::Error>(&data, len)?;
-        let row_len = width * 4;
-        for y in 0..height.min(data.height as usize) {
-            let src = &pixels[y * src_stride..y * src_stride + row_len];
-            // SAFETY: `check_layout` made sure every row lies within the pool,
-            // which stays mapped while this closure runs. We only write through
-            // raw pointers since the client may access the memory concurrently.
-            unsafe {
-                let dst = ptr.add(data.offset as usize + y * data.stride as usize);
-                if !swizzle && !opaque {
-                    std::ptr::copy_nonoverlapping(src.as_ptr(), dst, row_len);
-                } else {
-                    for (x, px) in src.as_chunks::<4>().0.iter().enumerate() {
-                        let (b, r) = if swizzle {
-                            (px[2], px[0])
+    let (damage, copied) = render_readback::<R, T, E, _, _>(
+        renderer,
+        offscreen_format,
+        size,
+        scale.into(),
+        transform,
+        elements,
+        clear_color.into(),
+        |readback| {
+            shm::with_buffer_contents_mut(buffer, |ptr, len, data| {
+                check_layout::<R::Error>(&data, len)?;
+                let row_len = readback.width * 4;
+                for y in 0..readback.height.min(data.height as usize) {
+                    let start = y * readback.stride;
+                    let src = &readback.pixels[start..start + row_len];
+                    // SAFETY: `check_layout` made sure every row lies within
+                    // the pool, which stays mapped while this closure runs. We
+                    // only write through raw pointers since the client may
+                    // access the memory concurrently.
+                    unsafe {
+                        let dst = ptr.add(data.offset as usize + y * data.stride as usize);
+                        if !readback.swizzled && !opaque {
+                            std::ptr::copy_nonoverlapping(src.as_ptr(), dst, row_len);
                         } else {
-                            (px[0], px[2])
-                        };
-                        let a = if opaque { 0xff } else { px[3] };
-                        let d = dst.add(x * 4);
-                        *d = b;
-                        *d.add(1) = px[1];
-                        *d.add(2) = r;
-                        *d.add(3) = a;
+                            for (x, px) in src.as_chunks::<4>().0.iter().enumerate() {
+                                let [b, g, r, a] = bgra(*px, readback.swizzled);
+                                let d = dst.add(x * 4);
+                                *d = b;
+                                *d.add(1) = g;
+                                *d.add(2) = r;
+                                *d.add(3) = if opaque { 0xff } else { a };
+                            }
+                        }
                     }
                 }
+                Ok(())
+            })
+            .map_err(map_access_error)
+        },
+    )?;
+    copied??;
+    Ok(damage)
+}
+
+/// Renders `elements` into an offscreen buffer of type `T` in
+/// `offscreen_format` and returns its pixels. See
+/// [`ShmCaptureRenderer::render_to_mem`].
+pub fn render_to_mem_via_readback<R, T, E>(
+    renderer: &mut R,
+    offscreen_format: Fourcc,
+    size: Size<i32, Physical>,
+    scale: impl Into<Scale<f64>>,
+    transform: Transform,
+    elements: &[E],
+    clear_color: impl Into<Color32F>,
+) -> Result<Vec<u8>, CaptureRenderError<R::Error>>
+where
+    R: Renderer + Offscreen<T> + ExportMem,
+    E: RenderElement<R>,
+{
+    if size.w <= 0 || size.h <= 0 {
+        return Err(CaptureRenderError::InvalidLayout);
+    }
+    let (_, pixels) = render_readback::<R, T, E, _, _>(
+        renderer,
+        offscreen_format,
+        size,
+        scale.into(),
+        transform,
+        elements,
+        clear_color.into(),
+        |readback| {
+            let row_len = readback.width * 4;
+            let mut out = Vec::with_capacity(row_len * readback.height);
+            for y in 0..readback.height {
+                let start = y * readback.stride;
+                let src = &readback.pixels[start..start + row_len];
+                if readback.swizzled {
+                    for px in src.as_chunks::<4>().0 {
+                        out.extend_from_slice(&bgra(*px, true));
+                    }
+                } else {
+                    out.extend_from_slice(src);
+                }
             }
-        }
-        Ok(damage)
-    })
-    .map_err(map_access_error)?
+            out
+        },
+    )?;
+    Ok(pixels)
+}
+
+/// A read-back pixel in B, G, R, A byte order.
+fn bgra(px: [u8; 4], swizzled: bool) -> [u8; 4] {
+    if swizzled {
+        [px[2], px[1], px[0], px[3]]
+    } else {
+        px
+    }
 }
