@@ -84,6 +84,10 @@ Xwayland. (#66)
   program can cover every output with a fullscreen window of its own (as
   Spectacle does to select a region). A new window is focused once what it
   asked for before showing up, like fullscreen on a given output, is done. (#81)
+- Windows that ask to be maximized or fullscreen before they first show up, as
+  Qt programs do, start out that way. Canoe answered such a request at once,
+  which kept it from choosing how they start, so they could start
+  windowed. (#81)
 
 ## [0.6.2] - 2026-11-07
 

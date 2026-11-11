@@ -270,25 +270,24 @@ impl XdgShellHandler for State {
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
         self.window_request(surface.wl_surface(), canoe::WindowEvent::Maximize);
-        // The protocol wants a configure in reply even if nothing changes.
-        surface.send_configure();
+        answer_state_request(&surface);
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
         self.window_request(surface.wl_surface(), canoe::WindowEvent::Unmaximize);
-        surface.send_configure();
+        answer_state_request(&surface);
     }
 
     fn fullscreen_request(&mut self, surface: ToplevelSurface, output: Option<WlOutput>) {
         let output = output.and_then(|wl| Output::from_resource(&wl));
         let output = self.wm_output_weak(output.as_ref());
         self.window_request(surface.wl_surface(), canoe::WindowEvent::Fullscreen(output));
-        surface.send_configure();
+        answer_state_request(&surface);
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
         self.window_request(surface.wl_surface(), canoe::WindowEvent::Unfullscreen);
-        surface.send_configure();
+        answer_state_request(&surface);
     }
 
     fn minimize_request(&mut self, surface: ToplevelSurface) {
@@ -310,6 +309,18 @@ impl XdgShellHandler for State {
 
     fn parent_changed(&mut self, surface: ToplevelSurface) {
         self.toplevel_parent_changed(&surface);
+    }
+}
+
+/// Reply to a toplevel's request to change its state: the protocol wants a
+/// configure in reply even if nothing changes. Before the client's initial
+/// commit nothing may be sent; the initial configure, which the window
+/// manager makes once it has handled the request, is the reply then.
+/// (Sending one earlier would also count as the initial configure, so the
+/// window manager wouldn't get to pick how the window starts out.)
+fn answer_state_request(surface: &ToplevelSurface) {
+    if surface.is_initial_configure_sent() {
+        surface.send_configure();
     }
 }
 
