@@ -403,6 +403,11 @@ pub struct State {
 
     pub lock_state: LockState,
     pub locker: Option<smithay::wayland::session_lock::SessionLocker>,
+    /// The lock that is locking or holds the session locked. Another locker
+    /// is refused while its client is around.
+    pub session_lock: Option<
+        smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1,
+    >,
 
     /// Where `canoe --share-picker` requests arrive.
     pub share_server: Option<crate::ipc::ShareServer>,
@@ -597,6 +602,7 @@ impl State {
             layer_focus: None,
             lock_state: LockState::Unlocked,
             locker: None,
+            session_lock: None,
             share_server: None,
             share_timer: None,
             startup_pending: true,

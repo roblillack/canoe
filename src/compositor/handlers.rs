@@ -771,6 +771,22 @@ impl SessionLockHandler for State {
     }
 
     fn lock(&mut self, confirmation: SessionLocker) {
+        // One locker at a time. Another one, e.g. started by an idle daemon
+        // while the screen is locked already, would take over the lock
+        // surfaces and the keyboard, and once it unlocked, the first would
+        // be left behind thinking the session is locked, never seeing input
+        // again: e.g. turning the outputs off for good. Dropping the
+        // confirmation tells the newcomer with `finished`. A locker that died
+        // leaves the session locked; a new one may take over then.
+        if self
+            .session_lock
+            .as_ref()
+            .is_some_and(|lock| lock.is_alive())
+        {
+            eprintln!("canoe: refusing to lock the session, it is locked already");
+            return;
+        }
+        self.session_lock = Some(confirmation.ext_session_lock().clone());
         self.lock_state = LockState::Locking;
         self.locker = Some(confirmation);
         self.session_locked_changed(true);
@@ -795,6 +811,7 @@ impl SessionLockHandler for State {
     fn unlock(&mut self) {
         self.lock_state = LockState::Unlocked;
         self.locker = None;
+        self.session_lock = None;
         for output in &mut self.outputs {
             output.lock_surface = None;
         }

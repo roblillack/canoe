@@ -21,7 +21,6 @@ use super::protocols::virtual_pointer::{
 use super::protocols::xdg_foreign::{delegate_xdg_foreign, XdgForeignHandler, XdgForeignState};
 use super::State;
 use crate::wm::OutputHandle;
-use smithay::desktop::space::SpaceElement;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 
 impl VirtualPointerHandler for State {
@@ -109,20 +108,8 @@ impl State {
             self.gamma_control_state.output_removed(output);
             super::backend::Backend::set_gamma(self, output, None);
             let id = self.outputs[index].id;
-            let layers: Vec<_> = smithay::desktop::layer_map_for_output(output)
-                .layers()
-                .cloned()
-                .collect();
-            for layer in layers {
-                layer.layer_surface().send_close();
-                smithay::desktop::layer_map_for_output(output).unmap_layer(&layer);
-            }
-            for window in &self.windows {
-                window.window.output_leave(output);
-            }
-            if let Some(global) = self.outputs[index].global.take() {
-                self.display_handle.remove_global::<State>(global);
-            }
+            let global = self.outputs[index].global.take();
+            self.retire_output(output, global);
             self.context.borrow_mut().destroy_output(id);
             self.schedule_wm();
         }

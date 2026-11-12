@@ -69,6 +69,12 @@ Xwayland. (#66)
 - The desktop icon of a minimized window shows its new title as soon as the
   window changes it, instead of once the icon is clicked or Super+Tab
   opened. (#74)
+- A second screen locker, e.g. from an idle daemon, is refused while the
+  session is locked, instead of taking over and stranding the first. (#77)
+- Monitors that come and go while another VT has the display are set up again
+  on switching back, instead of staying dark until replugged. (#77)
+- Clients like kitty no longer crash when a monitor is unplugged or turned
+  off. (#77)
 
 ## [0.6.2] - 2026-11-07
 
