@@ -1,5 +1,6 @@
 //! Canoe - River Window Manager core modules
 
+mod app_info;
 mod context;
 mod desktop;
 mod font;
@@ -15,6 +16,7 @@ pub mod surface;
 pub mod titlebar;
 pub mod window;
 
+pub use app_info::app_name;
 pub use context::Context;
 pub use desktop::{
     desktop_input_area, regular_weight_font_query, ClientIcon, DesktopSurface, IconTheme,

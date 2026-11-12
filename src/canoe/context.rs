@@ -2822,7 +2822,7 @@ impl Context {
                 seen.insert(*window_id);
                 let w = window.borrow();
                 if !w.skip_switcher {
-                    items.push(menu_item_from_window(*window_id, focused, &w));
+                    items.push(menu_item_from_window(*window_id, focused, &w, true));
                 }
             }
         }
@@ -2833,7 +2833,7 @@ impl Context {
             }
             let w = window.borrow();
             if !w.skip_switcher {
-                items.push(menu_item_from_window(window_id, focused, &w));
+                items.push(menu_item_from_window(window_id, focused, &w, true));
             }
         }
 
@@ -2852,7 +2852,7 @@ impl Context {
             if let Some(window) = self.windows.get(window_id) {
                 let w = window.borrow();
                 if w.app_id.as_deref() == Some(app_id) && !w.skip_switcher {
-                    items.push(menu_item_from_window(*window_id, focused, &w));
+                    items.push(menu_item_from_window(*window_id, focused, &w, false));
                     seen.insert(*window_id);
                 }
             }
@@ -2864,7 +2864,7 @@ impl Context {
             }
             let w = window.borrow();
             if w.app_id.as_deref() == Some(app_id) && !w.skip_switcher {
-                items.push(menu_item_from_window(window_id, focused, &w));
+                items.push(menu_item_from_window(window_id, focused, &w, false));
             }
         }
 
@@ -3928,18 +3928,33 @@ fn point_in_titlebar(x: i32, y: i32, width: i32, titlebar_height: i32, px: i32, 
     px >= x && px <= x + width && py >= y - titlebar_height && py <= y
 }
 
+/// `with_app_name`: lead the title with the name of the window's
+/// application, for lists that mix windows of different applications.
 fn menu_item_from_window(
     window_id: WindowId,
     focused: Option<WindowId>,
     window: &Window,
+    with_app_name: bool,
 ) -> MenuItem {
+    let app_name = window.app_id.as_deref().and_then(super::app_info::app_name);
     let title = window
         .title
-        .as_ref()
-        .filter(|t| !t.is_empty())
-        .cloned()
-        .or_else(|| window.app_id.clone())
-        .unwrap_or_else(|| format!("Window {}", window_id));
+        .as_deref()
+        .map(str::trim)
+        .filter(|t| !t.is_empty());
+    let title = match (title, app_name) {
+        (Some(title), Some(app_name)) if with_app_name => super::app_info::title_with_app_name(
+            title,
+            &app_name,
+            window.app_id.as_deref().unwrap_or_default(),
+        ),
+        (Some(title), _) => title.to_string(),
+        (None, Some(app_name)) => app_name,
+        (None, None) => window
+            .app_id
+            .clone()
+            .unwrap_or_else(|| format!("Window {}", window_id)),
+    };
 
     MenuItem {
         window_id,

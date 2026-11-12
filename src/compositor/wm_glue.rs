@@ -629,7 +629,7 @@ pub(super) fn handle_window_menu_cycle_app(state: &mut State) {
         true,
         canoe::WindowMenuMode::AltTab,
         items,
-        Some(app_id),
+        Some(canoe::app_name(&app_id).unwrap_or(app_id)),
         Some(binding::Direction::Forward),
     );
     ensure_window_menu_shield(state, output_id);
