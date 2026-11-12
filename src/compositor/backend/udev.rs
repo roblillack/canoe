@@ -10,9 +10,16 @@
 //! that are atomic, which waits for a page flip in flight and the next
 //! vblank: up to two frames per change. Night-light tools change ramps
 //! rarely enough for that.
+//!
+//! An output whose frames stop reaching the screen (a page flip that never
+//! completes, e.g. as a dock drops the link) is started over after a
+//! second: its CRTC is turned off, frames in flight are forgotten and the
+//! next frame sets the mode again. Turning an output on, even if it is on
+//! already, or enabling it does the same, so a monitor that went dark
+//! behind canoe's back can be brought back by hand.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
 use smithay::backend::allocator::gbm::{GbmAllocator, GbmBufferFlags, GbmDevice};
@@ -40,6 +47,10 @@ use super::Backend;
 use crate::compositor::render::{CanoeElement, CLEAR_COLOR};
 use crate::compositor::State;
 
+/// How long a queued frame may take to reach the screen before its output
+/// is started over.
+const FLIP_TIMEOUT: Duration = Duration::from_secs(1);
+
 type CanoeDrmOutput =
     DrmOutput<GbmAllocator<DrmDeviceFd>, GbmFramebufferExporter<DrmDeviceFd>, (), DrmDeviceFd>;
 
@@ -57,27 +68,62 @@ struct Surface {
     /// Gamma ramps a client set (red, green, blue). Without, the CRTC has
     /// linear ramps.
     gamma: Option<Vec<u16>>,
+    /// Since when the oldest queued frame waits to reach the screen.
+    flip_since: Option<Instant>,
+    /// The last frame couldn't be queued (logged once until one can).
+    failing: bool,
 }
 
 impl Surface {
-    /// Light the CRTC up or blank it.
-    fn set_lit(&mut self, lit: bool) {
-        if self.lit == lit {
-            return;
-        }
-        self.lit = lit;
+    /// Light the CRTC up, starting it over, or blank it. `active`: canoe
+    /// has the display.
+    fn set_lit(&mut self, lit: bool, active: bool) {
         if lit {
-            // Nothing on screen to build on: draw the next frame in full.
-            // Queueing it turns the CRTC back on.
-            self.drm_output.reset_buffers();
-        } else {
-            self.blank();
+            self.lit = true;
+            self.restart(active);
+        } else if self.lit {
+            self.lit = false;
+            self.blank(active);
         }
     }
 
-    fn blank(&mut self) {
-        if let Err(err) = self.drm_output.with_compositor(|c| c.clear()) {
-            eprintln!("canoe: turning off {} failed: {err}", self.output.name());
+    /// Turn the CRTC off and drop the frames in flight. Returns whether
+    /// that worked. Without the display, activating the session does it.
+    fn blank(&mut self, active: bool) -> bool {
+        self.flip_since = None;
+        if !active {
+            return false;
+        }
+        match self.drm_output.with_compositor(|c| c.clear()) {
+            Ok(()) => true,
+            Err(err) => {
+                eprintln!("canoe: turning off {} failed: {err}", self.output.name());
+                false
+            }
+        }
+    }
+
+    /// Start the CRTC over: turn it off, let go of frames in flight and
+    /// re-read what the kernel shows, so the next frame is drawn in full
+    /// and sets the mode again. Recovers a CRTC that went dark behind
+    /// canoe's back or a page flip that never completed. Without the
+    /// display, activating the session does this.
+    fn restart(&mut self, active: bool) {
+        self.drm_output.reset_buffers();
+        if !active {
+            self.flip_since = None;
+            return;
+        }
+        let cleared = self.blank(true);
+        let reset = self.drm_output.with_compositor(|c| {
+            if !cleared {
+                // Frames in flight would hold back the next one.
+                while let Ok(Some(())) = c.frame_submitted() {}
+            }
+            c.reset_state()
+        });
+        if let Err(err) = reset {
+            eprintln!("canoe: resetting {} failed: {err}", self.output.name());
         }
     }
 }
@@ -93,6 +139,8 @@ pub struct UdevData {
     >,
     surfaces: HashMap<crtc::Handle, Surface>,
     active: bool,
+    /// The timer that checks frames reach the screen is running.
+    watchdog_armed: bool,
 }
 
 impl UdevData {
@@ -212,6 +260,7 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
         manager,
         surfaces: HashMap::new(),
         active: true,
+        watchdog_armed: false,
     });
 
     // Page flips.
@@ -270,9 +319,15 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
                     if let Err(err) = data.manager.activate(false) {
                         eprintln!("canoe: failed to resume DRM: {err}");
                     }
-                    // Whoever had the display meanwhile may have lit them.
-                    for surface in data.surfaces.values_mut().filter(|s| !s.lit) {
-                        surface.blank();
+                    // Whoever had the display meanwhile may have changed what
+                    // the CRTCs show, and frames in flight when canoe lost it
+                    // never complete: start over.
+                    for surface in data.surfaces.values_mut() {
+                        if surface.lit {
+                            surface.restart(true);
+                        } else {
+                            surface.blank(true);
+                        }
                     }
                     // Or changed their gamma.
                     for (crtc, surface) in &data.surfaces {
@@ -347,9 +402,18 @@ fn scan_connectors(state: &mut State) {
         let Ok(info) = device.get_connector(*handle, true) else {
             continue;
         };
-        if info.state() == connector::State::Connected && !info.modes().is_empty() {
-            connected.push(info);
+        if info.state() != connector::State::Connected {
+            continue;
         }
+        if info.modes().is_empty() {
+            // E.g. while a monitor is still being probed.
+            eprintln!(
+                "canoe: {} is connected but has no modes yet",
+                connector_name(&info)
+            );
+            continue;
+        }
+        connected.push(info);
     }
 
     // Gone.
@@ -363,7 +427,8 @@ fn scan_connectors(state: &mut State) {
     let mut removed = Vec::new();
     for crtc in gone {
         if let Some(surface) = data.surfaces.remove(&crtc) {
-            removed.push(surface.output);
+            eprintln!("canoe: {} disconnected", surface.output.name());
+            removed.push(surface.output.clone());
         }
     }
 
@@ -381,9 +446,15 @@ fn scan_connectors(state: &mut State) {
             .filter_map(|e| device.get_encoder(*e).ok())
             .flat_map(|encoder| resources.filter_crtcs(encoder.possible_crtcs()))
             .find(|crtc| !used.contains(crtc));
-        if let Some(crtc) = crtc {
-            used.insert(crtc);
-            new.push((info, crtc));
+        match crtc {
+            Some(crtc) => {
+                used.insert(crtc);
+                new.push((info, crtc));
+            }
+            None => eprintln!(
+                "canoe: {} connected, but no CRTC is free for it",
+                connector_name(&info)
+            ),
         }
     }
 
@@ -395,8 +466,13 @@ fn scan_connectors(state: &mut State) {
     }
 }
 
+/// The name of a connector, which is also its output's name.
+fn connector_name(info: &connector::Info) -> String {
+    format!("{}-{}", info.interface().as_str(), info.interface_id())
+}
+
 fn connector_connected(state: &mut State, info: connector::Info, crtc: crtc::Handle) {
-    let name = format!("{}-{}", info.interface().as_str(), info.interface_id());
+    let name = connector_name(&info);
     let mode_index = info
         .modes()
         .iter()
@@ -457,7 +533,16 @@ fn connector_connected(state: &mut State, info: connector::Info, crtc: crtc::Han
             modes: info.modes().to_vec(),
             lit: true,
             gamma: None,
+            flip_since: None,
+            failing: false,
         },
+    );
+    eprintln!(
+        "canoe: {} connected: {}x{}@{}Hz on CRTC {crtc:?}",
+        output.name(),
+        drm_mode.size().0,
+        drm_mode.size().1,
+        drm_mode.vrefresh()
     );
     // Don't keep ramps an earlier session left on the CRTC.
     let device = data.manager.device();
@@ -520,7 +605,23 @@ fn render(state: &mut State, crtc: crtc::Handle) {
                     if !result.is_empty {
                         let size = output.current_mode().map(|m| m.size).unwrap_or_default();
                         damage = Some(vec![smithay::utils::Rectangle::from_size(size)]);
-                        queued = surface.drm_output.queue_frame(()).is_ok();
+                        match surface.drm_output.queue_frame(()) {
+                            Ok(()) => {
+                                queued = true;
+                                surface.flip_since.get_or_insert_with(Instant::now);
+                                if std::mem::take(&mut surface.failing) {
+                                    eprintln!("canoe: frames reach {} again", output.name());
+                                }
+                            }
+                            Err(err) => {
+                                if !std::mem::replace(&mut surface.failing, true) {
+                                    eprintln!(
+                                        "canoe: showing a frame on {} failed: {err}",
+                                        output.name()
+                                    );
+                                }
+                            }
+                        }
                     }
                 }
                 Err(err) => eprintln!("canoe: rendering failed: {err}"),
@@ -537,6 +638,9 @@ fn render(state: &mut State, crtc: crtc::Handle) {
     }
     if let Some(damage) = damage {
         state.capture_damage(&output, &damage);
+    }
+    if queued {
+        arm_watchdog(state);
     }
     if !queued {
         // Nothing changed: let clients draw their next frame after about
@@ -560,9 +664,20 @@ fn frame_finished(state: &mut State, crtc: crtc::Handle) {
         return;
     };
     let Some(surface) = data.surfaces.get_mut(&crtc) else {
+        // Queued for an output that is gone since.
+        eprintln!("canoe: a frame completed on CRTC {crtc:?}, which shows no output");
         return;
     };
-    let _ = surface.drm_output.frame_submitted();
+    surface.flip_since = None;
+    // Submits a frame queued meanwhile.
+    if let Err(err) = surface.drm_output.frame_submitted() {
+        if !std::mem::replace(&mut surface.failing, true) {
+            eprintln!(
+                "canoe: showing a frame on {} failed: {err}",
+                surface.output.name()
+            );
+        }
+    }
     let output = surface.output.clone();
     if let Some(managed) = state.outputs.iter_mut().find(|o| o.output == output) {
         managed.frame_pending = false;
@@ -609,13 +724,94 @@ pub fn set_mode(state: &mut State, output: &Output, mode: Mode) -> bool {
     ok
 }
 
-/// An output that is disabled or powered off keeps its CRTC, blanked.
+/// An output that is disabled or powered off keeps its CRTC, blanked. One
+/// that is turned on (again) is started over.
 pub fn update_output_power(state: &mut State, output: &Output) {
     let lit = state.managed_output(output).is_some_and(|o| o.displayed());
     if let Backend::Udev(ref mut data) = state.backend {
+        let active = data.active;
         if let Some(surface) = data.surfaces.values_mut().find(|s| &s.output == output) {
-            surface.set_lit(lit);
+            surface.set_lit(lit, active);
         }
     }
     state.queue_redraw_all();
+}
+
+/// Start a shown output over (see `Surface::restart`).
+pub fn restart_output(state: &mut State, output: &Output) {
+    if !state.managed_output(output).is_some_and(|o| o.displayed()) {
+        return;
+    }
+    let Backend::Udev(ref mut data) = state.backend else {
+        return;
+    };
+    let active = data.active;
+    let Some(surface) = data.surfaces.values_mut().find(|s| &s.output == output) else {
+        return;
+    };
+    surface.lit = true;
+    surface.restart(active);
+    if let Some(managed) = state.outputs.iter_mut().find(|o| &o.output == output) {
+        managed.frame_pending = false;
+    }
+    state.queue_redraw_all();
+}
+
+/// Check that queued frames reach the screen, while there are any.
+fn arm_watchdog(state: &mut State) {
+    let Backend::Udev(ref mut data) = state.backend else {
+        return;
+    };
+    if data.watchdog_armed {
+        return;
+    }
+    data.watchdog_armed = true;
+    let timer = Timer::from_duration(FLIP_TIMEOUT);
+    if let Err(err) = state
+        .loop_handle
+        .insert_source(timer, |_, _, state| check_flips(state))
+    {
+        eprintln!("canoe: cannot watch frames reach the screen: {err}");
+        if let Backend::Udev(ref mut data) = state.backend {
+            data.watchdog_armed = false;
+        }
+    }
+}
+
+/// Start over the outputs whose frames haven't reached the screen for
+/// `FLIP_TIMEOUT`. Keeps checking while frames are in flight.
+fn check_flips(state: &mut State) -> TimeoutAction {
+    let Backend::Udev(ref mut data) = state.backend else {
+        return TimeoutAction::Drop;
+    };
+    let now = Instant::now();
+    let mut stuck = Vec::new();
+    // Without the display no frames complete; activating starts over.
+    if data.active {
+        for surface in data.surfaces.values_mut() {
+            if let Some(since) = surface.flip_since {
+                if now - since >= FLIP_TIMEOUT {
+                    surface.flip_since = None;
+                    stuck.push((surface.output.clone(), now - since));
+                }
+            }
+        }
+    }
+    let in_flight = data.surfaces.values().any(|s| s.flip_since.is_some());
+    if !in_flight {
+        data.watchdog_armed = false;
+    }
+    for (output, waited) in stuck {
+        eprintln!(
+            "canoe: no frame reached {} for {} ms, starting it over",
+            output.name(),
+            waited.as_millis()
+        );
+        restart_output(state, &output);
+    }
+    if in_flight {
+        TimeoutAction::ToDuration(FLIP_TIMEOUT)
+    } else {
+        TimeoutAction::Drop
+    }
 }
