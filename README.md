@@ -54,11 +54,16 @@ off. An X11 window's app id, as window rules match it, is its `WM_CLASS`
 class (e.g. `XTerm`).
 
 To start Canoe from a display manager (GDM, SDDM, LightDM, greetd with
-tuigreet, …), install the session file:
+tuigreet, …), install the session file and the portal configuration:
 
 ```bash
 sudo install -Dm644 contrib/canoe.desktop /usr/share/wayland-sessions/canoe.desktop
+sudo install -Dm644 contrib/canoe-portals.conf /usr/share/xdg-desktop-portal/canoe-portals.conf
 ```
+
+The session sets `XDG_CURRENT_DESKTOP` to `canoe`, and `canoe-portals.conf`
+picks the portal backends for that desktop (see [Screen
+Sharing](#screen-sharing)).
 
 The display manager looks up `canoe` in its own `PATH`, which does not include
 your home directory, so changes in `~/.profile` or `~/.config/environment.d/`
@@ -143,7 +148,9 @@ same window or screen gets the same answer without asking, once.
 
 1. Install `xdg-desktop-portal-wlr` (e.g. `apt install xdg-desktop-portal-wlr`).
 
-2. Route screen sharing to it in `~/.config/xdg-desktop-portal/canoe-portals.conf`:
+2. Route screen sharing to it with [`contrib/canoe-portals.conf`](contrib/canoe-portals.conf),
+   installed as `/usr/share/xdg-desktop-portal/canoe-portals.conf` or
+   `~/.config/xdg-desktop-portal/canoe-portals.conf`. It contains:
 
    ```ini
    [preferred]
