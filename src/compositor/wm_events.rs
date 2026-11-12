@@ -354,6 +354,34 @@ impl State {
         self.schedule_wm();
     }
 
+    /// The client set a new icon on its toplevel `surface` (`None`: back to
+    /// the default one).
+    pub fn toplevel_icon_changed(
+        &mut self,
+        surface: &WlSurface,
+        icon: Option<std::sync::Arc<canoe::ClientIcon>>,
+    ) {
+        let Some(id) = self.window_for_surface(surface).map(|w| w.id) else {
+            return;
+        };
+        let context = self.context.borrow();
+        let Some(window) = context.windows.get(&id) else {
+            return;
+        };
+        let hidden = {
+            let mut w = window.borrow_mut();
+            w.client_icon = icon;
+            w.client_icon_pixmap = None;
+            w.hidden
+        };
+        // Only minimized windows show their icon.
+        if hidden {
+            context.mark_all_desktops_dirty();
+            drop(context);
+            self.schedule_wm();
+        }
+    }
+
     pub fn remove_toplevel(&mut self, surface: &WlSurface) {
         let Some(index) = self.windows.iter().position(|w| w.wl_surface() == surface) else {
             return;

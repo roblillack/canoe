@@ -18,6 +18,15 @@ use super::{
     MenuItem, Output, OutputId, Seat, SeatId, Window, WindowId, WindowMenu, WindowMenuMode,
 };
 
+/// Where a desktop icon found by app id comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+enum IconSource {
+    /// `~/.config/canoe/icons/`
+    User,
+    /// The desktop entry named after the app id
+    DesktopEntry,
+}
+
 /// The central window manager context
 pub struct Context {
     /// The compositor
@@ -74,9 +83,10 @@ pub struct Context {
     /// Output with active icon keyboard focus
     pub icon_focus_output: Option<OutputId>,
 
-    /// Cache for desktop icon images, keyed by (app_id, size_px).
-    /// `None` value means "looked up but not found" — avoids repeated disk lookups.
-    icon_cache: HashMap<(String, i32), Option<Rc<tiny_skia::Pixmap>>>,
+    /// Cache for desktop icon images found by app id, keyed by (where they
+    /// were looked up, app_id, size_px). `None` value means "looked up but
+    /// not found" — avoids repeated disk lookups.
+    icon_cache: HashMap<(IconSource, String, i32), Option<Rc<tiny_skia::Pixmap>>>,
 
     /// Window menu surface and state
     pub window_menu: Option<WindowMenu>,
@@ -2752,12 +2762,57 @@ impl Context {
     }
 
     /// Look up a cached desktop icon image, loading from disk on first access.
-    fn get_icon(&mut self, app_id: &str, size_px: i32) -> Option<Rc<tiny_skia::Pixmap>> {
-        let key = (app_id.to_string(), size_px);
+    fn get_icon(
+        &mut self,
+        source: IconSource,
+        app_id: &str,
+        size_px: i32,
+    ) -> Option<Rc<tiny_skia::Pixmap>> {
+        let key = (source, app_id.to_string(), size_px);
         self.icon_cache
             .entry(key)
-            .or_insert_with(|| super::desktop::load_icon_for_app(app_id, size_px).map(Rc::new))
+            .or_insert_with(|| {
+                match source {
+                    IconSource::User => super::desktop::load_user_icon(app_id, size_px),
+                    IconSource::DesktopEntry => {
+                        super::desktop::load_desktop_entry_icon(app_id, size_px)
+                    }
+                }
+                .map(Rc::new)
+            })
             .clone()
+    }
+
+    /// The icon shown for a minimized window: the user's own icon for its
+    /// app id, else the icon its client set, else its desktop entry's.
+    fn window_icon(&mut self, window_id: WindowId, size_px: i32) -> Option<Rc<tiny_skia::Pixmap>> {
+        let window = self.windows.get(&window_id)?.clone();
+        let app_id = window.borrow().app_id.clone();
+        if let Some(icon) = app_id
+            .as_deref()
+            .and_then(|id| self.get_icon(IconSource::User, id, size_px))
+        {
+            return Some(icon);
+        }
+        {
+            let mut w = window.borrow_mut();
+            if let Some(client_icon) = w.client_icon.clone() {
+                let drawn = match &w.client_icon_pixmap {
+                    Some((size, drawn)) if *size == size_px => drawn.clone(),
+                    _ => {
+                        let drawn = client_icon.render(size_px).map(Rc::new);
+                        w.client_icon_pixmap = Some((size_px, drawn.clone()));
+                        drawn
+                    }
+                };
+                if drawn.is_some() {
+                    return drawn;
+                }
+            }
+        }
+        app_id
+            .as_deref()
+            .and_then(|id| self.get_icon(IconSource::DesktopEntry, id, size_px))
     }
 
     /// Collect minimized windows for an output, sorted by minimize order.
@@ -2811,9 +2866,7 @@ impl Context {
         entries
             .into_iter()
             .map(|(_, window_id, title, app_id)| {
-                let icon = app_id
-                    .as_deref()
-                    .and_then(|id| self.get_icon(id, icon_size_px));
+                let icon = self.window_icon(window_id, icon_size_px);
                 super::desktop::DesktopIcon {
                     window_id,
                     title,

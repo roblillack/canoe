@@ -18,6 +18,11 @@ pick the Canoe session in your display manager; River is no longer needed.
 Your configuration, rules and themes carry over, and X11 programs run through
 Xwayland. (#66)
 
+### Added
+
+- `xdg-toplevel-icon-v1`: a minimized window's desktop icon is the icon its
+  program sets, unless one is put in `~/.config/canoe/icons/`. (#67)
+
 ### Changed
 
 - Windows that only draw their own decorations, as libadwaita apps do, keep

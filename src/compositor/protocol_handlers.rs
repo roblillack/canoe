@@ -13,6 +13,7 @@ use super::protocols::output_management::{
 use super::protocols::output_power::{
     delegate_output_power, Mode as PowerMode, OutputPowerHandler, OutputPowerManagerState,
 };
+use super::protocols::toplevel_icon::delegate_toplevel_icon;
 use super::protocols::virtual_pointer::{
     delegate_virtual_pointer, VirtualPointer, VirtualPointerEvent, VirtualPointerHandler,
 };
@@ -267,3 +268,4 @@ delegate_output_management!(State);
 delegate_output_power!(State);
 delegate_gamma_control!(State);
 delegate_xdg_foreign!(State);
+delegate_toplevel_icon!(State);

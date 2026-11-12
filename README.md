@@ -386,6 +386,15 @@ Canoe draws the desktop on two layer-shell surfaces per output:
 - Minimized-window icons are drawn on a transparent surface on the `bottom`
   layer, above any wallpaper.
 
+A minimized window's icon is the first of these that exists:
+
+1. `~/.config/canoe/icons/<app-id>.svg` or `.png`, your own choice;
+2. the icon the program set for the window (xdg-toplevel-icon), drawn from
+   the images it sent or, if it sent none, looked up by name in the hicolor
+   theme. Programs may change it at any time, and the desktop follows;
+3. the `Icon=` of the program's desktop entry, `<app-id>.desktop`;
+4. the first letter of the window's title.
+
 **If you use a separate program to show a background image** (`swaybg`,
 `shaderbg`, `wpaperd`, …), set:
 
@@ -450,7 +459,8 @@ decoration protocol (through which GTK asks to be decorated), wlr-layer-shell,
 ext-session-lock, wlr-screencopy and ext-image-copy-capture (outputs and
 single windows), ext-foreign-toplevel-list, wlr-foreign-toplevel-management
 (taskbars that control windows), wlr-output-management, xdg-foreign (portal
-dialogs attached to their app's window), fractional scaling and viewporter,
+dialogs attached to their app's window), xdg-toplevel-icon (window icons,
+shown for minimized windows), fractional scaling and viewporter,
 cursor-shape, data device, primary selection and wlr-data-control,
 xdg-activation, presentation-time,
 idle-notify and idle-inhibit, wlr-output-power-management,
