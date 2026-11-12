@@ -737,6 +737,8 @@ impl State {
             smithay::desktop::layer_map_for_output(&output).cleanup();
         }
         self.foreign_toplevel_state.cleanup_closed_handles();
+        // Windows and outputs move under a pointer that stays put.
+        self.update_capture_cursors();
         let _ = self.display_handle.flush_clients();
     }
 }

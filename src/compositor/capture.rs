@@ -55,6 +55,11 @@ impl State {
         ImageCopyCaptureState::damage_toplevel(self, &foreign, &[rect]);
     }
 
+    /// Tell cursor capture sessions where the pointer is.
+    pub fn update_capture_cursors(&mut self) {
+        ImageCopyCaptureState::update_cursors(self);
+    }
+
     /// The scale a window is shown at: that of the output it is mostly on.
     fn window_scale(&self, key: crate::wm::WindowKey) -> f64 {
         self.window_by_key(key)
@@ -231,6 +236,46 @@ impl ImageCopyCaptureHandler for State {
                 self.window_capture_size(key)
             }
         }
+    }
+
+    fn cursor_position(&mut self, source: &ImageCaptureSource) -> Option<Point<i32, Buffer>> {
+        // Nothing is captured from behind the lock screen.
+        if self.lock_state != super::LockState::Unlocked {
+            return None;
+        }
+        let (origin, size, scale) = match source {
+            ImageCaptureSource::Output(output) => {
+                let geometry = self.output_geometry(output)?;
+                let scale = output.current_scale().fractional_scale();
+                (geometry.loc, geometry.size, scale)
+            }
+            ImageCaptureSource::Toplevel(handle) => {
+                let key = self.window_key_for_identifier(&handle.identifier())?;
+                let window = self.window_by_key(key)?;
+                if window.hidden {
+                    return None;
+                }
+                // A fullscreen window's content fills its output.
+                let origin = match window.fullscreen {
+                    Some(output) => {
+                        self.output_geometry(&self.output_by_key(output)?.output)?
+                            .loc
+                    }
+                    None => window.pos,
+                };
+                (
+                    origin,
+                    window.window.geometry().size,
+                    self.window_scale(key),
+                )
+            }
+        };
+        let local = self.pointer_location - origin.to_f64();
+        if !Rectangle::from_size(size).to_f64().contains(local) {
+            return None;
+        }
+        let at = local.to_physical(Scale::from(scale));
+        Some((at.x.floor() as i32, at.y.floor() as i32).into())
     }
 
     fn image_copy_frame(&mut self, frame: ImageCopyFrame) {

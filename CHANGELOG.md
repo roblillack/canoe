@@ -29,6 +29,9 @@ Xwayland. (#66)
 - Super+D minimizes all windows on all screens, like on Windows. Pressing it
   again while no window is shown brings them back, in their old stacking
   order and with the focus they had. (#72)
+- Cursor sessions of `ext-image-copy-capture-v1` report where the pointer is
+  on the output or window they capture, so programs like eyes following the
+  pointer work. Their cursor image stays empty. (#75)
 
 ### Changed
 

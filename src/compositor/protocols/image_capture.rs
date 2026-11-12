@@ -30,9 +30,13 @@
 //!   sends `stopped` to its sessions.
 //! - implement [`ImageCopyCaptureHandler::capture_source_size`] for toplevels.
 //!
-//! Cursor sessions are supported only minimally: they advertise a 64x64
-//! buffer, never report the cursor as entered, deliver one fully transparent
-//! frame and then never deliver another one.
+//! Cursor sessions report where the pointer is: the compositor calls
+//! [`ImageCopyCaptureState::update_cursors`] whenever the pointer or a source
+//! moved, which asks [`ImageCopyCaptureHandler::cursor_position`] for each
+//! session's source and sends `enter`, `position`, `hotspot` and `leave` as
+//! needed. Their images are minimal: they advertise a 64x64 buffer, deliver
+//! one fully transparent frame and then never deliver another one, so the
+//! hotspot is always (0, 0).
 
 // A complete protocol API: not every accessor is used by canoe.
 #![allow(dead_code)]
@@ -73,7 +77,7 @@ use smithay::{
             Client, DataInit, Dispatch, DisplayHandle, GlobalDispatch, New, Resource, WEnum,
         },
     },
-    utils::{Buffer, Physical, Rectangle, Size, Transform},
+    utils::{Buffer, Physical, Point, Rectangle, Size, Transform},
     wayland::{
         foreign_toplevel_list::{ForeignToplevelHandle, ForeignToplevelWeakHandle},
         shm,
@@ -139,6 +143,11 @@ pub trait ImageCopyCaptureHandler:
     /// at the next opportunity (scheduling a repaint if needed), then call
     /// [`ImageCopyFrame::success`], or [`ImageCopyFrame::fail`]/drop it.
     fn image_copy_frame(&mut self, frame: ImageCopyFrame);
+
+    /// Where the pointer's hotspot is relative to the top-left corner of a
+    /// capture of `source`, in its (transformed) buffer pixels, or `None`
+    /// while it isn't over `source`.
+    fn cursor_position(&mut self, source: &ImageCaptureSource) -> Option<Point<i32, Buffer>>;
 }
 
 /// State of the image capture source and image copy capture globals.
@@ -148,6 +157,7 @@ pub struct ImageCopyCaptureState {
     toplevel_source_global: GlobalId,
     capture_global: GlobalId,
     sessions: Vec<SessionEntry>,
+    cursor_sessions: Vec<ExtImageCopyCaptureCursorSessionV1>,
     /// Captured frames waiting for damage.
     pending: Vec<ImageCopyFrame>,
 }
@@ -181,6 +191,7 @@ impl ImageCopyCaptureState {
                 .create_global::<D, ExtForeignToplevelImageCaptureSourceManagerV1, _>(1, data()),
             capture_global: dh.create_global::<D, ExtImageCopyCaptureManagerV1, _>(1, data()),
             sessions: Vec::new(),
+            cursor_sessions: Vec::new(),
             pending: Vec::new(),
         }
     }
@@ -223,6 +234,46 @@ impl ImageCopyCaptureState {
     ) {
         let source = ImageCaptureSource::Toplevel(toplevel.clone());
         damage_source(state, &source, damage);
+    }
+
+    /// Tells cursor sessions where the pointer is now: `enter` and `leave`
+    /// when it moved onto or off their source, `position` when it moved on
+    /// it.
+    ///
+    /// The pointer counts as over a source while its hotspot is, rather than
+    /// whenever the cursor image overlaps it.
+    pub fn update_cursors<D: ImageCopyCaptureHandler>(state: &mut D) {
+        let this = state.image_copy_capture_state();
+        this.cursor_sessions.retain(|session| session.is_alive());
+        if this.cursor_sessions.is_empty() {
+            return;
+        }
+        for session in this.cursor_sessions.clone() {
+            let Some(data) = session.data::<ImageCopyCursorSessionData>() else {
+                continue;
+            };
+            let position = data
+                .source
+                .upgrade()
+                .and_then(|source| state.cursor_position(&source));
+            let mut last = data.position.lock().unwrap();
+            if *last == position {
+                continue;
+            }
+            match position {
+                Some(position) => {
+                    if last.is_none() {
+                        session.enter();
+                    }
+                    session.position(position.x, position.y);
+                    if last.is_none() {
+                        session.hotspot(0, 0);
+                    }
+                }
+                None => session.leave(),
+            }
+            *last = position;
+        }
     }
 
     /// Stops all sessions capturing `output`.
@@ -436,6 +487,8 @@ struct SessionInner {
 pub struct ImageCopyCursorSessionData {
     source: WeakSource,
     has_session: AtomicBool,
+    /// The position last sent; `None` while the pointer isn't over the source.
+    position: Mutex<Option<Point<i32, Buffer>>>,
 }
 
 /// User data of `ext_image_copy_capture_frame_v1` objects.
@@ -837,13 +890,19 @@ impl<D: ImageCopyCaptureHandler> Dispatch<ExtImageCopyCaptureManagerV1, (), D>
                     .data::<ImageCaptureSourceData>()
                     .map(|data| data.source.clone())
                     .unwrap_or(WeakSource::Invalid);
-                data_init.init(
+                let session = data_init.init(
                     session,
                     ImageCopyCursorSessionData {
                         source,
                         has_session: AtomicBool::new(false),
+                        position: Mutex::new(None),
                     },
                 );
+                state
+                    .image_copy_capture_state()
+                    .cursor_sessions
+                    .push(session);
+                ImageCopyCaptureState::update_cursors(state);
             }
             ext_image_copy_capture_manager_v1::Request::Destroy => {}
             _ => unreachable!(),

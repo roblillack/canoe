@@ -458,7 +458,8 @@ screen-sharing picks, configuration and rules give the same results.
 Supported: xdg-shell (with xdg-decoration and popups), KDE's server
 decoration protocol (through which GTK asks to be decorated), wlr-layer-shell,
 ext-session-lock, wlr-screencopy and ext-image-copy-capture (outputs and
-single windows), ext-foreign-toplevel-list, wlr-foreign-toplevel-management
+single windows, and cursor sessions telling where the pointer is),
+ext-foreign-toplevel-list, wlr-foreign-toplevel-management
 (taskbars that control windows), wlr-output-management, xdg-foreign (portal
 dialogs attached to their app's window), xdg-toplevel-icon (window icons,
 shown for minimized windows), KDE's org_kde_plasma_shell (only
