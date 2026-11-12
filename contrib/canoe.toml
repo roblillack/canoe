@@ -89,6 +89,10 @@
 #icons_text = "#000000"         # default: menu_text
 #icons_highlight_bg = "#000080" # default: menu_highlight_bg
 #icons_highlight_text = "#FFFFFF" # default: menu_highlight_text
+# Windows glide into place when maximized, snapped or restored, and shrink
+# into their desktop icons when minimized.
+#animations_enabled = true
+#animations_duration = 150      # milliseconds; 0 turns animations off
 
 # Window rules. There are none by default. A window matches a rule if its app
 # ID matches any of match_app_id, match_app_id_prefix or app_id_regex, and it

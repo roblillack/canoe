@@ -237,6 +237,8 @@ impl State {
             decoration_mode_dirty: false,
             pending_positions: Vec::new(),
             initial_commit: false,
+            warp: None,
+            icon: None,
         });
         self.schedule_wm();
         key
@@ -399,6 +401,54 @@ impl State {
         };
         if let Some(window) = self.context.borrow().windows.get(&id) {
             window.borrow_mut().skip_switcher = skip;
+        }
+    }
+
+    /// Where each minimized window's desktop icon is: its output and its
+    /// image's rectangle there, in logical pixels.
+    pub fn desktop_icon_rects(&self) -> Vec<(canoe::WindowId, Output, Rectangle<i32, Logical>)> {
+        let context = self.context.borrow();
+        let mut rects = Vec::new();
+        for (&output_id, output) in &context.outputs {
+            let Some(managed) = self.output_by_id(output_id) else {
+                continue;
+            };
+            let output = output.borrow();
+            let Some(desktop) = output.desktop_surface.as_ref() else {
+                continue;
+            };
+            // The desktop covers its output, so its pixels count from the
+            // output's corner.
+            let device = desktop.scale.device();
+            for (window_id, (x, y, w, h)) in desktop.icon_rects() {
+                let logical = |v: i32| (v as f64 / device).round() as i32;
+                let rect = Rectangle::new(
+                    (logical(x), logical(y)).into(),
+                    (logical(w), logical(h)).into(),
+                );
+                rects.push((window_id, managed.output.clone(), rect));
+            }
+        }
+        rects
+    }
+
+    /// Remember where windows' desktop icons are now.
+    pub fn update_icon_geometry(&mut self) {
+        let rects = self.desktop_icon_rects();
+        // Where minimized windows fly to and come back from. A window keeps
+        // its icon's last place, since it is shown again before canoe lays
+        // out the desktop without the icon.
+        let icons: Vec<(canoe::WindowId, Rectangle<i32, Logical>)> = rects
+            .iter()
+            .filter_map(|(id, output, rect)| {
+                let origin = self.output_geometry(output)?.loc;
+                Some((*id, Rectangle::new(origin + rect.loc, rect.size)))
+            })
+            .collect();
+        for window in &mut self.windows {
+            if let Some((_, rect)) = icons.iter().find(|(id, _)| *id == window.id) {
+                window.icon = Some(*rect);
+            }
         }
     }
 

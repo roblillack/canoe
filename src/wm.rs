@@ -20,6 +20,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 /// Compositor-side key of a toplevel window.
 pub type WindowKey = u64;
@@ -128,6 +129,12 @@ pub enum Request {
     SetCapabilities(WindowKey, Capabilities),
     SetClipBox(WindowKey, ClipBox),
     SetContentClipBox(WindowKey, ClipBox),
+    /// Animate the window from where it is shown now to the position and
+    /// size requested after this, over the given time.
+    AnimateGeometry(WindowKey, Duration),
+    /// Animate the window into its desktop icon, or out of it if it is
+    /// hidden, as the window is hidden or shown next.
+    AnimateIconify(WindowKey, Duration),
 
     SetPosition(WindowKey, i32, i32),
     PlaceTop(WindowKey),
@@ -323,6 +330,18 @@ impl WindowHandle {
                 height,
             },
         ));
+    }
+
+    /// Let the window glide and stretch to the position and size requested
+    /// next, instead of jumping there. Must come before those requests.
+    pub fn animate_geometry(&self, duration: Duration) {
+        self.push(Request::AnimateGeometry(self.key, duration));
+    }
+
+    /// Let the window shrink into its desktop icon as it is hidden next, or
+    /// grow out of it as it is shown next. Must come before that request.
+    pub fn animate_iconify(&self, duration: Duration) {
+        self.push(Request::AnimateIconify(self.key, duration));
     }
 
     /// The window's place in the rendering order and on screen.

@@ -555,6 +555,23 @@ impl Window {
         }
     }
 
+    /// Animate the change of position and size that follows (see
+    /// [`crate::wm::WindowHandle::animate_geometry`]).
+    pub fn animate_geometry(&self, duration: std::time::Duration) {
+        if let Some(ref rwm_window) = self.rwm_window {
+            rwm_window.animate_geometry(duration);
+        }
+    }
+
+    /// Animate minimizing the window into its desktop icon, or bringing it
+    /// back from there, as it is hidden or shown next (see
+    /// [`crate::wm::WindowHandle::animate_iconify`]).
+    pub fn animate_iconify(&self, duration: std::time::Duration) {
+        if let Some(ref rwm_window) = self.rwm_window {
+            rwm_window.animate_iconify(duration);
+        }
+    }
+
     pub fn clear_maximized_without_restore(&mut self) {
         if self.maximized {
             self.maximized = false;

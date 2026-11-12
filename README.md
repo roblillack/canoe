@@ -377,7 +377,16 @@ icons_font_size = 12.0          # optional; defaults to font_size * 0.80
 icons_text = "#FFFFFF"          # optional; defaults to menu_text
 icons_highlight_bg = "#FFD000"  # optional; defaults to menu_highlight_bg
 icons_highlight_text = "#000000" # optional; defaults to menu_highlight_text
+animations_enabled = true       # set to false to make windows jump into place
+animations_duration = 150       # milliseconds; 0 also turns animations off
 ```
+
+When a window is maximized, snapped to a half of the screen or restored, it
+glides and stretches into its new place instead of jumping there. The
+client's content stretches along, while the frame's borders, the titlebar's
+height and the shadow's corners keep their size. A minimized window shrinks
+into its desktop icon and fades out, and grows back out of it when it is
+brought back.
 
 #### Desktop and wallpapers
 

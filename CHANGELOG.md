@@ -32,6 +32,13 @@ Xwayland. (#66)
 - Cursor sessions of `ext-image-copy-capture-v1` report where the pointer is
   on the output or window they capture, so programs like eyes following the
   pointer work. Their cursor image stays empty. (#75)
+- Windows glide and stretch into place when they are maximized, snapped to
+  a half of the screen or restored, instead of jumping there. The frame,
+  titlebar and shadow keep their proportions while the content stretches.
+  Minimized windows shrink into their desktop icons and fade out, and grow
+  back out of them when brought back. `animations_enabled` and
+  `animations_duration` (in milliseconds, 150 by default) under `[ui]` turn
+  the animations off or change their speed. (#76)
 
 ### Changed
 
