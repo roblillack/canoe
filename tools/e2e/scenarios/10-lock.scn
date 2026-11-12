@@ -1,0 +1,13 @@
+# Keyboard focus comes back after unlocking (#58).
+devices
+spawn $WLTEST --app-id lockt --title "lock test" > $OUT/lockt.log
+wait-toplevel lockt 4000
+key super+l
+sleep 1200
+shot 01-locked
+run pkill -USR1 swaylock
+sleep 600
+key a
+sleep 300
+shot 02-unlocked
+run grep -c "key a pressed" $OUT/lockt.log > $OUT/keys-after-unlock.txt

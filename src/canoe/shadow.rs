@@ -2,15 +2,10 @@
 
 use super::render::Renderer;
 use super::scale::{FractionalSurface, Origin, Scale};
-use super::shmfile::ShmPool;
+use super::surface::{Decoration, PixelPool, Region, Surface};
 use super::titlebar::Rect;
-use crate::protocol::RiverDecorationV1;
 use std::cell::RefCell;
 use std::rc::Rc;
-use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_surface,
-};
-use wayland_client::QueueHandle;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct ShadowKey {
@@ -26,13 +21,13 @@ struct ShadowKey {
 /// Shadow surface for a window.
 pub struct WindowShadow {
     /// The wl_surface for the shadow.
-    pub surface: wl_surface::WlSurface,
+    pub surface: Surface,
     /// The river decoration object.
-    pub decoration: RiverDecorationV1,
+    pub decoration: Decoration,
     /// Viewport and fractional-scale handles for the surface.
     pub fractional: FractionalSurface,
-    /// Double-buffered shm pool backing the wl_buffer.
-    shm_pool: ShmPool,
+    /// The pixels the surface is drawn into.
+    shm_pool: PixelPool,
     /// Current surface width (logical px).
     pub width: i32,
     /// Current surface height (logical px).
@@ -45,30 +40,23 @@ pub struct WindowShadow {
     origin: Origin,
     /// The scale the buffer is drawn at.
     pub scale: Scale,
-    /// wl_output names the shadow surface is currently on.
-    pub output_names: Vec<u32>,
     last_key: Option<ShadowKey>,
 }
 
 impl WindowShadow {
     /// Create a new shadow surface.
-    pub fn new(
-        surface: wl_surface::WlSurface,
-        decoration: RiverDecorationV1,
-        fractional: FractionalSurface,
-    ) -> Self {
+    pub fn new(surface: Surface, decoration: Decoration, fractional: FractionalSurface) -> Self {
         Self {
             surface,
             decoration,
             fractional,
-            shm_pool: ShmPool::new("canoe-shadow"),
+            shm_pool: PixelPool::new("canoe-shadow"),
             width: 0,
             height: 0,
             buffer_width: 0,
             buffer_height: 0,
             origin: Origin::default(),
             scale: Scale::default(),
-            output_names: Vec::new(),
             last_key: None,
         }
     }
@@ -86,20 +74,14 @@ impl WindowShadow {
     /// [`render`](Self::render) can place the shadow by the device pixels
     /// the frame covers.
     #[allow(clippy::too_many_arguments)]
-    pub fn ensure_buffer<D>(
+    pub fn ensure_buffer(
         &mut self,
         frame_width: i32,
         frame_height: i32,
         shadow_size: i32,
-        _shm: &wl_shm::WlShm,
-        _qh: &QueueHandle<D>,
         scale: Scale,
         origin: Origin,
-    ) where
-        D: 'static
-            + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
-            + wayland_client::Dispatch<wl_buffer::WlBuffer, super::shmfile::ReleaseFlag>,
-    {
+    ) {
         if frame_width <= 0 || frame_height <= 0 {
             return;
         }
@@ -123,16 +105,9 @@ impl WindowShadow {
     }
 
     /// Clear input region so the shadow does not intercept clicks.
-    pub fn update_input_region<D>(
-        &self,
-        compositor: &wl_compositor::WlCompositor,
-        qh: &QueueHandle<D>,
-    ) where
-        D: 'static + wayland_client::Dispatch<wl_region::WlRegion, ()>,
-    {
-        let region = compositor.create_region(qh, ());
+    pub fn update_input_region(&self) {
+        let region = Region::new();
         self.surface.set_input_region(Some(&region));
-        region.destroy();
     }
 
     /// Render the shadow directly into the next shm slot. The shm pool grows
@@ -145,19 +120,7 @@ impl WindowShadow {
     /// logical pixels; the scale is the one `ensure_buffer` was given.
     ///
     /// [`DeviceFrame`]: super::titlebar::DeviceFrame
-    pub fn render<D>(
-        &mut self,
-        cast: Rect,
-        shadow_size: i32,
-        shadow_color: u32,
-        shm: &wl_shm::WlShm,
-        qh: &QueueHandle<D>,
-    ) -> bool
-    where
-        D: 'static
-            + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
-            + wayland_client::Dispatch<wl_buffer::WlBuffer, super::shmfile::ReleaseFlag>,
-    {
+    pub fn render(&mut self, cast: Rect, shadow_size: i32, shadow_color: u32) -> bool {
         if self.width <= 0
             || self.height <= 0
             || self.buffer_width <= 0
@@ -194,10 +157,7 @@ impl WindowShadow {
         #[cfg(feature = "debug-logging")]
         let prep_t0 = std::time::Instant::now();
         let allocated_before = self.shm_pool.allocate_fresh_count();
-        let slot_idx = match self
-            .shm_pool
-            .prepare(buffer_width, buffer_height, stride, shm, qh)
-        {
+        let slot_idx = match self.shm_pool.prepare(buffer_width, buffer_height, stride) {
             Some(s) => s,
             None => return false,
         };
@@ -205,10 +165,11 @@ impl WindowShadow {
         #[cfg(feature = "debug-logging")]
         let prep_us = prep_t0.elapsed().as_micros();
 
-        let pixels = match self.shm_pool.slot_bytes_mut(slot_idx) {
+        let mut pixels = match self.shm_pool.slot_bytes_mut(slot_idx) {
             Some(p) => p,
             None => return false,
         };
+        let pixels = pixels.as_mut_slice();
 
         #[cfg(feature = "debug-logging")]
         let fill_t0 = std::time::Instant::now();

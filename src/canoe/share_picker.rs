@@ -6,18 +6,10 @@
 //! output is dimmed by an overlay, the window or screen under the pointer is
 //! highlighted, and a click shares it. Esc or a right click declines.
 
-use memmap2::MmapMut;
-use std::fs::File;
-use std::os::fd::AsFd;
-use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_surface,
-};
-use wayland_client::QueueHandle;
-use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
-
 use super::render::{ColorGlyphs, Renderer};
 use super::scale::{FractionalSurface, Origin, Scale};
-use super::{font, shmfile, OutputId, SeatId, WindowId};
+use super::surface::{Buffer, LayerSurface, Region, Surface};
+use super::{font, OutputId, SeatId, WindowId};
 
 /// Identifies one pending `canoe --share-picker` request.
 pub type ShareRequestId = u64;
@@ -141,17 +133,14 @@ const BANNER_MARGIN: i32 = 32;
 /// The full-output overlay surface the picker draws on one output. It also
 /// takes all pointer input there while the picker is open.
 pub struct PickerSurface {
-    pub surface: wl_surface::WlSurface,
-    pub layer_surface: ZwlrLayerSurfaceV1,
+    pub surface: Surface,
+    pub layer_surface: LayerSurface,
     pub fractional: FractionalSurface,
     pub output_id: OutputId,
     pub configured: bool,
     pub width: i32,
     pub height: i32,
-    buffer: Option<wl_buffer::WlBuffer>,
-    pool: Option<wl_shm_pool::WlShmPool>,
-    memfile: Option<File>,
-    mmap: Option<MmapMut>,
+    buffer: Option<Buffer>,
     buf_width: i32,
     buf_height: i32,
     scale: Scale,
@@ -159,8 +148,8 @@ pub struct PickerSurface {
 
 impl PickerSurface {
     pub fn new(
-        surface: wl_surface::WlSurface,
-        layer_surface: ZwlrLayerSurfaceV1,
+        surface: Surface,
+        layer_surface: LayerSurface,
         fractional: FractionalSurface,
         output_id: OutputId,
     ) -> Self {
@@ -173,9 +162,6 @@ impl PickerSurface {
             width: 0,
             height: 0,
             buffer: None,
-            pool: None,
-            memfile: None,
-            mmap: None,
             buf_width: 0,
             buf_height: 0,
             scale: Scale::default(),
@@ -189,22 +175,10 @@ impl PickerSurface {
     }
 
     fn reset_buffer(&mut self) {
-        if let Some(buffer) = self.buffer.take() {
-            buffer.destroy();
-        }
-        if let Some(pool) = self.pool.take() {
-            pool.destroy();
-        }
-        self.memfile = None;
-        self.mmap = None;
+        self.buffer = None;
     }
 
-    fn ensure_buffer<D>(&mut self, shm: &wl_shm::WlShm, qh: &QueueHandle<D>, scale: Scale) -> bool
-    where
-        D: 'static
-            + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
-            + wayland_client::Dispatch<wl_buffer::WlBuffer, ()>,
-    {
+    fn ensure_buffer(&mut self, scale: Scale) -> bool {
         let (buf_w, buf_h) = self.fractional.apply(
             &self.surface,
             self.width,
@@ -218,19 +192,9 @@ impl PickerSurface {
         }
         self.reset_buffer();
 
-        let stride = buf_w * 4;
-        let size = stride * buf_h;
-        let Ok(memfile) = shmfile::create("canoe-share-picker", size as i64) else {
+        let Some(buffer) = Buffer::new(buf_w, buf_h) else {
             return false;
         };
-        let Ok(mmap) = (unsafe { MmapMut::map_mut(&memfile) }) else {
-            return false;
-        };
-        let pool = shm.create_pool(memfile.as_fd(), size, qh, ());
-        let buffer = pool.create_buffer(0, buf_w, buf_h, stride, wl_shm::Format::Argb8888, qh, ());
-        self.memfile = Some(memfile);
-        self.mmap = Some(mmap);
-        self.pool = Some(pool);
         self.buffer = Some(buffer);
         self.buf_width = buf_w;
         self.buf_height = buf_h;
@@ -238,35 +202,25 @@ impl PickerSurface {
     }
 
     /// Draw `scene` at `scale` and present it.
-    pub fn render<D>(
-        &mut self,
-        scene: &PickerScene,
-        scale: Scale,
-        shm: &wl_shm::WlShm,
-        compositor: &wl_compositor::WlCompositor,
-        qh: &QueueHandle<D>,
-    ) where
-        D: 'static
-            + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
-            + wayland_client::Dispatch<wl_buffer::WlBuffer, ()>
-            + wayland_client::Dispatch<wl_region::WlRegion, ()>,
-    {
-        if !self.configured || !self.ensure_buffer(shm, qh, scale) {
+    pub fn render(&mut self, scene: &PickerScene, scale: Scale) {
+        if !self.configured || !self.ensure_buffer(scale) {
             return;
         }
         let (buf_w, buf_h) = (self.buf_width, self.buf_height);
-        let Some(mmap) = self.mmap.as_mut() else {
+        let Some(buffer) = self.buffer.clone() else {
             return;
         };
-        let Some(mut renderer) = Renderer::new(mmap.as_mut(), buf_w, buf_h) else {
-            return;
-        };
-        draw_scene(&mut renderer, scene, &scale);
+        {
+            let mut pixels = buffer.pixels_mut();
+            let Some(mut renderer) = Renderer::new(pixels.as_mut_slice(), buf_w, buf_h) else {
+                return;
+            };
+            draw_scene(&mut renderer, scene, &scale);
+        }
 
-        let region = compositor.create_region(qh, ());
+        let mut region = Region::new();
         region.add(0, 0, self.width, self.height);
         self.surface.set_input_region(Some(&region));
-        region.destroy();
 
         if let Some(ref buffer) = self.buffer {
             self.surface.attach(Some(buffer), 0, 0);
@@ -367,13 +321,6 @@ impl SharePicker {
 
     pub fn surface_mut(&mut self, output_id: OutputId) -> Option<&mut PickerSurface> {
         self.surfaces.iter_mut().find(|s| s.output_id == output_id)
-    }
-
-    pub fn owns_surface(&self, surface: &wl_surface::WlSurface) -> Option<OutputId> {
-        self.surfaces
-            .iter()
-            .find(|s| &s.surface == surface)
-            .map(|s| s.output_id)
     }
 }
 

@@ -1,0 +1,21 @@
+# The screen-sharing picker (#49): highlight under the pointer, click picks.
+devices
+key super+shift+Return
+wait-toplevel foot 4000
+spawn $CANOE_BIN --share-picker < /dev/null > $OUT/picked-window.txt
+sleep 600
+move 300 300
+shot 01-picker-window
+btn click left
+sleep 300
+spawn $CANOE_BIN --share-picker < /dev/null > $OUT/picked-output.txt
+sleep 600
+move 1000 600
+shot 02-picker-output
+key Return
+sleep 300
+spawn $CANOE_BIN --share-picker < /dev/null > $OUT/picked-none.txt
+sleep 600
+key Escape
+sleep 300
+shot 03-after-cancel

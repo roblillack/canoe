@@ -1,0 +1,17 @@
+# Maximize, restore, snap halves, fullscreen.
+key super+shift+Return
+wait-toplevel foot 4000
+key super+Up
+shot 01-maximized
+key super+Down
+shot 02-restored
+key super+Left
+shot 03-snap-left
+key super+Right
+shot 04-snap-left-restored
+key super+Right
+shot 05-snap-right
+key super+Return
+shot 06-fullscreen
+key super+Return
+shot 07-unfullscreen

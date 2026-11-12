@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
 Name=Canoe
-Comment=Modern stacking window manager with Win 3.x looks for the River Wayland compositor
-Exec=river -c canoe
-DesktopNames=river
+Comment=Stacking Wayland compositor with Win 3.x looks
+Exec=canoe
+DesktopNames=canoe

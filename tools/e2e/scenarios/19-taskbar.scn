@@ -1,0 +1,44 @@
+#! outputs 1280x720,1280x720
+# A taskbar controlling windows through wlr-foreign-toplevel-management:
+# states, outputs and parents as taskbars see them, and their requests.
+spawn $WLTEST --app-id alpha --title Alpha --color b03030
+wait-toplevel alpha 4000
+spawn $WLTEST --app-id beta --title Beta --color 30b030
+wait-toplevel beta 4000
+spawn $WLTEST --parent-app-id gamma --parent-title Gamma --app-id gamma-dlg --title Dialog --size 200x120
+wait-toplevel gamma-dlg 4000
+sleep 400
+toplevels 01-start
+shot 01-start
+# Minimize an unfocused window; focus stays on the dialog.
+run $WLTOPLEVEL minimize Alpha
+toplevels 02-minimized
+shot 02-minimized
+# Activating it restores, raises and focuses it.
+run $WLTOPLEVEL activate Alpha
+toplevels 03-activated
+shot 03-activated
+run $WLTOPLEVEL maximize Beta
+toplevels 04-maximized
+shot 04-maximized
+run $WLTOPLEVEL unmaximize Beta
+toplevels 05-unmaximized
+shot 05-unmaximized
+# Fullscreen on the other output, and back.
+run $WLTOPLEVEL fullscreen Beta HEADLESS-2
+toplevels 06-fullscreen
+shot 06-fullscreen
+run $WLTOPLEVEL unfullscreen Beta
+toplevels 07-unfullscreen
+shot 07-unfullscreen
+# Minimizing the focused window, then unminimizing it.
+run $WLTOPLEVEL minimize Beta
+toplevels 08-minimized-focused
+shot 08-minimized-focused
+run $WLTOPLEVEL unminimize Beta
+toplevels 09-unminimized
+shot 09-unminimized
+run $WLTOPLEVEL close Dialog
+sleep 300
+toplevels 10-closed
+shot 10-closed

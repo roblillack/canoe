@@ -1,0 +1,23 @@
+#! outputs 1280x720,1280x720
+# Maximizing on an output that moved (e.g. by kanshi) keeps the window on
+# that output and out of its bar's exclusive zone (#64). Both outputs get a
+# bar, because the window opens on whichever output the compositor announced
+# first; one of the two moves below puts that output away from x=0.
+devices
+spawn $WLTEST --layer top --anchor top,left,right --size 0x30 --exclusive 30 --color 404040 --output HEADLESS-1
+spawn $WLTEST --layer top --anchor top,left,right --size 0x30 --exclusive 30 --color 404040 --output HEADLESS-2
+sleep 500
+key super+shift+Return
+wait-toplevel foot 4000
+key super+Up
+shot 01-maximized
+key super+Down
+run wlr-randr --output HEADLESS-2 --pos 1536,0
+sleep 400
+key super+Up
+shot 02-maximized-after-move
+key super+Down
+run wlr-randr --output HEADLESS-1 --pos 1536,0 --output HEADLESS-2 --pos 0,0
+sleep 400
+key super+Up
+shot 03-maximized-after-swap

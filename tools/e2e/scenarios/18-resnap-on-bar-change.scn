@@ -1,0 +1,27 @@
+#! outputs 1280x720
+# Maximized and snapped windows follow bars that start, stop or change
+# size; free-floating windows stay put (#65).
+devices
+key super+shift+Return
+wait-toplevel foot 4000
+key super+Up
+sleep 300
+spawn $WLTEST --layer top --anchor top,left,right --size 0x30 --exclusive 30 --color 404040
+sleep 600
+shot 01-maximized-after-bar-started
+run pkill -f "wltest --layer top"
+sleep 600
+shot 02-maximized-after-bar-stopped
+key super+Down
+key super+Left
+sleep 300
+spawn $WLTEST --layer bottom --anchor bottom,left,right --size 0x40 --exclusive 40 --color 806040
+sleep 600
+shot 03-snapped-after-bottom-bar
+key super+Down
+sleep 300
+run pkill -f "wltest --layer bottom"
+sleep 300
+spawn $WLTEST --layer top --anchor top,left,right --size 0x60 --exclusive 60 --color 404040
+sleep 600
+shot 04-floating-stays

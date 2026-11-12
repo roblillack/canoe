@@ -1,0 +1,20 @@
+# Layer shell: windows keep out of exclusive zones (#56), a bottom-layer
+# bar gets its clicks (#60).
+devices
+spawn $WLTEST --layer top --anchor top,left,right --size 0x30 --exclusive 30 --color 404040
+sleep 500
+key super+shift+Return
+wait-toplevel foot 4000
+shot 01-window-below-bar
+key super+Up
+shot 02-maximized-below-bar
+key super+Down
+spawn $WLTEST --layer bottom --anchor bottom,left,right --size 0x40 --exclusive 40 --color 806040 > $OUT/bottom-bar.log
+sleep 500
+move 900 700 ; btn click left
+sleep 300
+shot 03-bottom-bar
+run grep -c "pointer button left pressed" $OUT/bottom-bar.log > $OUT/bottom-bar-clicks.txt
+# Right-click the desktop next to the bars: the window menu.
+move 1000 300 ; btn click right
+shot 04-menu-with-bars

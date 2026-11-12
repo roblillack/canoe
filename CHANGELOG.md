@@ -10,6 +10,33 @@ While pre-1.0, the minor version is bumped for breaking changes.
 
 ## [Unreleased] - ReleaseDate
 
+### [A Canoe without a River](https://github.com/roblillack/canoe/discussions/83)
+
+Canoe is now a Wayland compositor of its own, built on Smithay, instead of a
+window manager inside River. Start it with `canoe` from a text console or
+pick the Canoe session in your display manager; River is no longer needed.
+Your configuration, rules and themes carry over, and X11 programs run through
+Xwayland. (#66)
+
+### Changed
+
+- Windows that only draw their own decorations, as libadwaita apps do, keep
+  them instead of getting Canoe's titlebar on top. A `force_ssd` rule still
+  gives them one. Every other window is decorated by Canoe, even one that
+  would rather draw its own decorations, and GTK 3 and plain GTK 4 apps now
+  leave theirs off: they ask to be decorated through KDE's server decoration
+  protocol, which Canoe now offers. (#66)
+
+### Fixed
+
+- X11 programs take clicks and notice the pointer on outputs placed above or
+  left of others (at negative positions, e.g. by kanshi). Such a layout is
+  moved so it starts at 0,0, as Xwayland's screen does. (#66)
+- X11 programs run as root (e.g. `sudo xterm`) can connect to Xwayland. (#66)
+- The first click after moving or resizing a window by its own (client-side)
+  decorations, as in GNOME Calculator, reaches what it is on instead of that
+  window. (#66)
+
 ## [0.6.2] - 2026-11-07
 
 ### Fixed

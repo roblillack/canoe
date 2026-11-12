@@ -1,0 +1,24 @@
+#!/bin/bash
+# Run a scenario on River and on the standalone compositor and put the
+# screenshots side by side: tools/e2e/compare.sh <scenario> [out-root]
+# CANOE_MAIN_BIN names the canoe (built from main) River runs.
+HERE=$(cd "$(dirname "$0")" && pwd)
+S=$1; NAME=$(basename "${S%.*}"); OUT=${2:-/tmp/cne2e-out}/$NAME
+"$HERE/run.sh" river "$S" "$OUT/river"
+"$HERE/run.sh" smithay "$S" "$OUT/smithay"
+for f in "$OUT"/river/*.png; do
+    b=$(basename "$f")
+    [ -f "$OUT/smithay/$b" ] || continue
+    convert "$f" "$OUT/smithay/$b" -resize 50% +append -bordercolor red -border 2 "$OUT/cmp-$b"
+    diff=$(compare -metric AE -fuzz 2% "$f" "$OUT/smithay/$b" null: 2>&1)
+    echo "$NAME/$b: differing pixels: $diff"
+done
+for f in "$OUT"/river/*.txt; do
+    [ -f "$f" ] || continue
+    b=$(basename "$f")
+    if diff -u "$f" "$OUT/smithay/$b" >"$OUT/diff-$b.txt"; then
+        echo "$NAME/$b: same"
+    else
+        echo "$NAME/$b: differs, see $OUT/diff-$b.txt"
+    fi
+done

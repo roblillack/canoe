@@ -1,0 +1,26 @@
+#! outputs 1280x720,1280x720
+# Windows across output changes (#56, #62), layer surfaces open on the
+# current output (#53).
+devices
+key super+shift+Return
+wait-toplevel foot 4000
+key super+alt+Right
+shot 01-sent-to-second-output
+spawn $WLTEST --layer overlay --anchor top --size 300x50 --color c04040
+sleep 600
+shot 02-layer-on-current-output
+run pkill -f "wltest --layer overlay"
+key super+Right
+shot 03-snapped-right
+run wlr-randr --output HEADLESS-2 --pos 1280,200
+sleep 300
+shot 04-output-moved
+run wlr-randr --output HEADLESS-2 --off
+sleep 300
+shot 05-output-removed
+key super+shift+Return
+sleep 800
+shot 06-new-window-after-removal
+run wlr-randr --output HEADLESS-1 --scale 1.5
+sleep 500
+shot 07-scaled

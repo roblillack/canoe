@@ -89,6 +89,16 @@ impl ShareServer {
         })
     }
 
+    /// A duplicate of the listening socket, to wait for connections on.
+    pub fn listener_fd(&self) -> io::Result<std::os::fd::OwnedFd> {
+        self.listener.as_fd().try_clone_to_owned()
+    }
+
+    /// Whether requests are being received or answered.
+    pub fn has_connections(&self) -> bool {
+        !self.connections.is_empty()
+    }
+
     /// File descriptors to poll, and whether to poll each for input: the
     /// listener and connections still sending their request are; connections
     /// waiting for an answer are polled only for hangups. Connections come

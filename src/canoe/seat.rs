@@ -4,19 +4,11 @@
 
 use crate::binding::{Action, PointerBinding, XkbBinding};
 use crate::config::{Mode, XCursorTheme};
-use crate::protocol::{
-    RiverLayerShellSeatV1, RiverPointerBindingV1, RiverSeatV1, RiverXkbBindingV1,
-};
+use crate::wm::{CursorShape, SeatHandle};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Weak;
 use std::time::Instant;
-use wayland_client::protocol::wl_pointer::WlPointer;
-use wayland_client::protocol::wl_seat::WlSeat;
-use wayland_client::Proxy;
-use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{
-    Shape as CursorShape, WpCursorShapeDeviceV1,
-};
 
 use super::{OutputId, WindowId};
 
@@ -27,21 +19,10 @@ pub type SeatId = usize;
 pub struct Seat {
     /// Unique seat ID
     pub id: SeatId,
-    /// River seat protocol object
-    pub rwm_seat: Option<RiverSeatV1>,
-    /// Layer shell seat object
-    pub layer_shell_seat: Option<RiverLayerShellSeatV1>,
-    /// Wayland seat object
-    pub wl_seat: Option<WlSeat>,
-    /// Global name of the wl_seat
-    pub wl_seat_name: u32,
-    /// Wayland pointer object
-    pub wl_pointer: Option<WlPointer>,
-    /// Cursor shape device for this seat
-    pub cursor_shape_device: Option<WpCursorShapeDeviceV1>,
-    /// Last pointer enter serial for cursor shape updates
-    pub pointer_enter_serial: u32,
-    /// Last cursor shape set for this seat
+    /// The compositor's seat
+    pub rwm_seat: Option<SeatHandle>,
+    /// Last cursor shape set for this seat while the pointer is on one of
+    /// canoe's surfaces; reset when it moves on to a client
     pub cursor_shape: Option<CursorShape>,
 
     /// Current input mode
@@ -74,9 +55,9 @@ pub struct Seat {
     pub unhandled_actions: VecDeque<Action>,
 
     /// Active XKB bindings
-    pub xkb_bindings: Vec<(XkbBinding, Option<RiverXkbBindingV1>)>,
+    pub xkb_bindings: Vec<XkbBinding>,
     /// Active pointer bindings
-    pub pointer_bindings: Vec<(PointerBinding, Option<RiverPointerBindingV1>)>,
+    pub pointer_bindings: Vec<PointerBinding>,
 
     /// Whether this seat has been removed
     pub removed: bool,
@@ -88,12 +69,6 @@ impl Seat {
         Self {
             id,
             rwm_seat: None,
-            layer_shell_seat: None,
-            wl_seat: None,
-            wl_seat_name: 0,
-            wl_pointer: None,
-            cursor_shape_device: None,
-            pointer_enter_serial: 0,
             cursor_shape: None,
             mode: Mode::Default,
             focus_exclusive: false,
@@ -132,41 +107,15 @@ impl Seat {
         let old_mode = self.mode;
         self.mode = mode;
 
-        // Disable bindings for old mode
-        for (binding, rwm_binding) in &mut self.xkb_bindings {
-            if binding.mode == old_mode && binding.enabled {
-                if let Some(ref rwm) = rwm_binding {
-                    rwm.disable();
-                }
-                binding.enabled = false;
-            }
+        // The compositor matches key and button presses against the
+        // enabled bindings of the seat's current mode.
+        for binding in &mut self.xkb_bindings {
+            binding.enabled = binding.mode == mode;
         }
-        for (binding, rwm_binding) in &mut self.pointer_bindings {
-            if binding.mode == old_mode && binding.enabled {
-                if let Some(ref rwm) = rwm_binding {
-                    rwm.disable();
-                }
-                binding.enabled = false;
-            }
+        for binding in &mut self.pointer_bindings {
+            binding.enabled = binding.mode == mode;
         }
-
-        // Enable bindings for new mode
-        for (binding, rwm_binding) in &mut self.xkb_bindings {
-            if binding.mode == mode && !binding.enabled {
-                if let Some(ref rwm) = rwm_binding {
-                    rwm.enable();
-                }
-                binding.enabled = true;
-            }
-        }
-        for (binding, rwm_binding) in &mut self.pointer_bindings {
-            if binding.mode == mode && !binding.enabled {
-                if let Some(ref rwm) = rwm_binding {
-                    rwm.enable();
-                }
-                binding.enabled = true;
-            }
-        }
+        let _ = old_mode;
     }
 
     /// Update pointer position
@@ -203,57 +152,55 @@ impl Seat {
         }
     }
 
-    /// Set the XCursor theme for compositor-drawn cursors
-    /// (river-window-management v2+), using the defaults for unset parts.
+    /// Set the XCursor theme for compositor-drawn cursors, using the
+    /// defaults for unset parts.
     pub fn set_xcursor_theme(&self, theme: &XCursorTheme) {
         if let Some(ref rwm_seat) = self.rwm_seat {
-            if rwm_seat.version() >= 2 {
-                rwm_seat.set_xcursor_theme(
-                    theme.name_or_default().to_string(),
-                    theme.size_or_default(),
-                );
-            }
+            rwm_seat
+                .set_xcursor_theme(theme.name_or_default().to_string(), theme.size_or_default());
         }
     }
 
-    /// Set cursor shape if supported by the compositor
+    /// Set the cursor shown over canoe's own surfaces and during pointer
+    /// operations; `None` asks for the default arrow.
     pub fn set_cursor_shape(&mut self, shape: Option<CursorShape>) {
-        let device = match self.cursor_shape_device.as_ref() {
-            Some(device) => device,
-            None => return,
-        };
-        if self.pointer_enter_serial == 0 {
-            return;
-        }
-
         let desired = shape.unwrap_or(CursorShape::Default);
         if self.cursor_shape == Some(desired) {
             return;
         }
-
-        device.set_shape(self.pointer_enter_serial, desired);
+        if let Some(ref rwm_seat) = self.rwm_seat {
+            rwm_seat.set_cursor_shape(Some(desired));
+        }
         self.cursor_shape = Some(desired);
+    }
+
+    /// Hide the cursor while the pointer is on canoe's surfaces.
+    pub fn hide_cursor(&mut self) {
+        if let Some(ref rwm_seat) = self.rwm_seat {
+            rwm_seat.set_cursor_shape(None);
+        }
+        self.cursor_shape = None;
     }
 
     /// Add an XKB binding
     pub fn add_xkb_binding(&mut self, binding: XkbBinding) {
-        self.xkb_bindings.push((binding, None));
+        self.xkb_bindings.push(binding);
     }
 
     /// Add a pointer binding
     pub fn add_pointer_binding(&mut self, binding: PointerBinding) {
-        self.pointer_bindings.push((binding, None));
+        self.pointer_bindings.push(binding);
     }
 
     /// Initialize all bindings (call after seat is fully set up)
     pub fn initialize_bindings(&mut self) {
         // Enable bindings for current mode
-        for (binding, _) in &mut self.xkb_bindings {
+        for binding in &mut self.xkb_bindings {
             if binding.mode == self.mode {
                 binding.enabled = true;
             }
         }
-        for (binding, _) in &mut self.pointer_bindings {
+        for binding in &mut self.pointer_bindings {
             if binding.mode == self.mode {
                 binding.enabled = true;
             }

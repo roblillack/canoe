@@ -2,21 +2,14 @@
 
 use crate::binding::Direction;
 use crate::config::UiConfig;
-use memmap2::MmapMut;
-use std::fs::File;
 use std::hash::{Hash, Hasher};
-use std::os::fd::AsFd;
-use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_region, wl_shm, wl_shm_pool, wl_surface,
-};
-use wayland_client::QueueHandle;
-use wayland_protocols_wlr::layer_shell::v1::client::zwlr_layer_surface_v1::ZwlrLayerSurfaceV1;
 
 use super::render::{ColorGlyphs, Renderer};
 use super::scale::{FractionalSurface, Origin, Scale};
 use super::shadow::{draw_shadow_soft, SoftShadowRect};
+use super::surface::{Buffer, LayerSurface, Region, Surface};
 use super::titlebar::Rect;
-use super::{font, shmfile, OutputId, WindowId};
+use super::{font, OutputId, WindowId};
 
 /// Menu entry data.
 #[derive(Debug, Clone)]
@@ -32,13 +25,10 @@ pub struct MenuItem {
 /// The menu is laid out in logical pixels and drawn at the surface's
 /// [`Scale`].
 pub struct WindowMenu {
-    pub surface: wl_surface::WlSurface,
-    pub layer_surface: ZwlrLayerSurfaceV1,
+    pub surface: Surface,
+    pub layer_surface: LayerSurface,
     pub fractional: FractionalSurface,
-    pub buffer: Option<wl_buffer::WlBuffer>,
-    pub pool: Option<wl_shm_pool::WlShmPool>,
-    pub memfile: Option<File>,
-    pub mmap: Option<MmapMut>,
+    pub buffer: Option<Buffer>,
     /// Surface width (logical px)
     pub width: i32,
     /// Surface height (logical px)
@@ -190,8 +180,8 @@ impl MenuGeometry {
 impl WindowMenu {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        surface: wl_surface::WlSurface,
-        layer_surface: ZwlrLayerSurfaceV1,
+        surface: Surface,
+        layer_surface: LayerSurface,
         fractional: FractionalSurface,
         output_id: OutputId,
         items: Vec<MenuItem>,
@@ -211,9 +201,6 @@ impl WindowMenu {
             layer_surface,
             fractional,
             buffer: None,
-            pool: None,
-            memfile: None,
-            mmap: None,
             width,
             height,
             buffer_width: width,
@@ -304,12 +291,7 @@ impl WindowMenu {
         false
     }
 
-    pub fn ensure_buffer<D>(&mut self, shm: &wl_shm::WlShm, qh: &QueueHandle<D>, scale: Scale)
-    where
-        D: 'static
-            + wayland_client::Dispatch<wl_shm_pool::WlShmPool, ()>
-            + wayland_client::Dispatch<wl_buffer::WlBuffer, ()>,
-    {
+    pub fn ensure_buffer(&mut self, scale: Scale) {
         if self.width <= 0 || self.height <= 0 {
             return;
         }
@@ -334,36 +316,9 @@ impl WindowMenu {
         }
         self.reset_buffer();
 
-        let stride = buffer_width * 4;
-        let size = stride * buffer_height;
-        let memfile = match shmfile::create("canoe-menu", size as i64) {
-            Ok(f) => f,
-            Err(_) => {
-                return;
-            }
+        let Some(buffer) = Buffer::new(buffer_width, buffer_height) else {
+            return;
         };
-
-        let mmap = match unsafe { memmap2::MmapMut::map_mut(&memfile) } {
-            Ok(m) => m,
-            Err(_) => {
-                return;
-            }
-        };
-
-        let pool = shm.create_pool(memfile.as_fd(), size, qh, ());
-        let buffer = pool.create_buffer(
-            0,
-            buffer_width,
-            buffer_height,
-            stride,
-            wl_shm::Format::Argb8888,
-            qh,
-            (),
-        );
-
-        self.memfile = Some(memfile);
-        self.mmap = Some(mmap);
-        self.pool = Some(pool);
         self.buffer = Some(buffer);
         self.buffer_width = buffer_width;
         self.buffer_height = buffer_height;
@@ -371,14 +326,7 @@ impl WindowMenu {
     }
 
     pub fn reset_buffer(&mut self) {
-        if let Some(buffer) = self.buffer.take() {
-            buffer.destroy();
-        }
-        if let Some(pool) = self.pool.take() {
-            pool.destroy();
-        }
-        self.memfile = None;
-        self.mmap = None;
+        self.buffer = None;
     }
 
     pub fn render(&mut self) {
@@ -404,11 +352,12 @@ impl WindowMenu {
             theme: &theme,
         };
 
-        let Some(ref mut mmap) = self.mmap else {
+        let Some(buffer) = self.buffer.clone() else {
             return;
         };
 
-        let pixels = mmap.as_mut();
+        let mut pixels = buffer.pixels_mut();
+        let pixels = pixels.as_mut_slice();
         let cache_pixels = match self.cache.as_ref() {
             Some(cache) => cache.pixels.as_slice(),
             None => return,
@@ -429,13 +378,7 @@ impl WindowMenu {
         }
     }
 
-    pub fn update_input_region<D>(
-        &self,
-        compositor: &wl_compositor::WlCompositor,
-        qh: &QueueHandle<D>,
-    ) where
-        D: 'static + wayland_client::Dispatch<wl_region::WlRegion, ()>,
-    {
+    pub fn update_input_region(&self) {
         if self.width <= 0 || self.height <= 0 {
             return;
         }
@@ -447,7 +390,7 @@ impl WindowMenu {
         let to_logical = |px: i32| (px as f64 / device).round() as i32;
         let x = to_logical(menu.x);
         let y = to_logical(menu.y);
-        let region = compositor.create_region(qh, ());
+        let mut region = Region::new();
         region.add(
             x,
             y,
@@ -455,7 +398,6 @@ impl WindowMenu {
             to_logical(menu.y + menu.height) - y,
         );
         self.surface.set_input_region(Some(&region));
-        region.destroy();
     }
 
     pub fn commit(&self) {
@@ -490,12 +432,7 @@ impl WindowMenu {
 
 impl Drop for WindowMenu {
     fn drop(&mut self) {
-        if let Some(buffer) = self.buffer.take() {
-            buffer.destroy();
-        }
-        if let Some(pool) = self.pool.take() {
-            pool.destroy();
-        }
+        self.buffer = None;
         self.fractional.destroy();
         self.layer_surface.destroy();
         self.surface.destroy();

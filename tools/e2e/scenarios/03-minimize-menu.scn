@@ -1,0 +1,16 @@
+# Minimize to icons, restore from icon and from the desktop menu.
+key super+shift+Return
+wait-toplevel foot 4000
+key super+h
+shot 01-minimized
+key super+shift+Return
+sleep 800
+shot 02-second
+# Right-click the desktop: window menu.
+move 1000 400 ; btn click right
+shot 03-desktop-menu
+# Pick the minimized window from it.
+key Escape
+move 1000 400 ; btn click right
+sleep 200
+shot 04-menu-again

@@ -2,11 +2,11 @@
 
 use crate::binding::{Action, Direction, PointerBinding, XkbBinding};
 use crate::config::{load_config, Config, WindowDecoration};
-use crate::protocol::river_window_management_v1::client::river_window_v1::{Capabilities, Edges};
-use crate::protocol::*;
 use crate::rule;
+use crate::wm::{
+    Capabilities, CursorShape, Edges, OutputHandle, SeatHandle, WindowHandle, WindowManager,
+};
 use resvg::tiny_skia;
-use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::Shape as CursorShape;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -20,12 +20,8 @@ use super::{
 
 /// The central window manager context
 pub struct Context {
-    // Wayland globals
-    pub rwm: Option<RiverWindowManagerV1>,
-    pub rwm_xkb_bindings: Option<RiverXkbBindingsV1>,
-    pub rwm_layer_shell: Option<RiverLayerShellV1>,
-    pub rwm_input_manager: Option<RiverInputManagerV1>,
-    pub rwm_libinput_config: Option<RiverLibinputConfigV1>,
+    /// The compositor
+    pub rwm: Option<WindowManager>,
 
     // Managed objects
     pub windows: HashMap<WindowId, Rc<RefCell<Window>>>,
@@ -120,10 +116,6 @@ impl Context {
     pub fn new(skip_config: bool) -> Self {
         Self {
             rwm: None,
-            rwm_xkb_bindings: None,
-            rwm_layer_shell: None,
-            rwm_input_manager: None,
-            rwm_libinput_config: None,
 
             windows: HashMap::new(),
             outputs: HashMap::new(),
@@ -223,11 +215,12 @@ impl Context {
     }
 
     /// Create a new window and add to context
-    pub fn create_window(&mut self, rwm_window: RiverWindowV1) -> Rc<RefCell<Window>> {
+    pub fn create_window(&mut self, rwm_window: WindowHandle) -> Rc<RefCell<Window>> {
         let id = self.next_window_id;
         self.next_window_id += 1;
 
         let mut window = Window::new(id);
+        window.rwm_node = Some(rwm_window.node());
         window.rwm_window = Some(rwm_window);
 
         // Assign to the preferred output for new windows.
@@ -268,7 +261,7 @@ impl Context {
     }
 
     /// Create a new output and add to context
-    pub fn create_output(&mut self, rwm_output: RiverOutputV1) -> Rc<RefCell<Output>> {
+    pub fn create_output(&mut self, rwm_output: OutputHandle) -> Rc<RefCell<Output>> {
         let id = self.next_output_id;
         self.next_output_id += 1;
 
@@ -342,7 +335,7 @@ impl Context {
     }
 
     /// Create a new seat and add to context
-    pub fn create_seat(&mut self, rwm_seat: RiverSeatV1) -> Rc<RefCell<Seat>> {
+    pub fn create_seat(&mut self, rwm_seat: SeatHandle) -> Rc<RefCell<Seat>> {
         let id = self.next_seat_id;
         self.next_seat_id += 1;
 
@@ -438,7 +431,7 @@ impl Context {
         seat.xkb_bindings.clear();
         self.populate_xkb_bindings(seat);
         let mode = seat.mode;
-        for (binding, _) in &mut seat.xkb_bindings {
+        for binding in &mut seat.xkb_bindings {
             binding.enabled = binding.mode == mode;
         }
     }
@@ -449,6 +442,7 @@ impl Context {
     }
 
     /// Remove a seat from context
+    #[allow(dead_code)] // the compositor has a single, permanent seat
     pub fn destroy_seat(&mut self, seat_id: SeatId) {
         // Update current seat if necessary
         if self.current_seat == Some(seat_id) {
@@ -471,23 +465,23 @@ impl Context {
         // Decoration hints (river_window_v1.decoration_hint):
         //   0 only_supports_csd, 1 prefers_csd, 2 prefers_ssd, 3 no_preference
         //
-        // We default to SSD and only fall back to CSD when the client
-        // *explicitly* asked for client-side decorations (prefers_csd). A value
-        // of "only_supports_csd" is what River reports for a client that never
-        // created an xdg-decoration object at all -- i.e. it does not negotiate
-        // decorations. IMHO the naming of this value is wrong, as quite a few
-        // applications I tested assume SSD and get the 0 decoration_hint:
-        // MATE Terminal, Gimp, Inkscape, ...
-        let prefers_csd = matches!(window.decoration_hint, Some(1));
-
-        let decoration = if applied.force_ssd {
-            WindowDecoration::Ssd
-        } else if prefers_csd {
+        // Canoe decorates every window that can be asked to leave its
+        // decorations to the window manager, even one that would rather
+        // draw its own (prefers_csd). Only a window that can't be asked
+        // keeps drawing its own, unless a rule forces SSD on it: a Wayland
+        // client offering no decoration protocol (as libadwaita apps), or
+        // an X11 window that turned the window manager's decorations off.
+        let decoration = if window.decoration_hint == Some(0) && !applied.force_ssd {
             WindowDecoration::Csd
         } else {
             WindowDecoration::Ssd
         };
-        window.decoration = Some(decoration);
+        // A hint or rule can change once the window is up, e.g. when the
+        // client creates its decoration object after its toplevel.
+        if window.decoration != Some(decoration) {
+            window.decoration = Some(decoration);
+            window.set_decoration(decoration);
+        }
         window.set_swallow_top(applied.swallow_top.unwrap_or(0));
 
         // Inform the client which window-management capabilities apply.
@@ -1145,8 +1139,8 @@ impl Context {
         let Some(output) = self.outputs.get(&output_id) else {
             return;
         };
-        if let Some(ref layer_shell_output) = output.borrow().layer_shell_output {
-            layer_shell_output.set_default();
+        if let Some(ref rwm_output) = output.borrow().rwm_output {
+            rwm_output.set_default_layer_output();
             self.layer_shell_default_output = Some(output_id);
         }
     }
@@ -2083,7 +2077,8 @@ impl Context {
                     let mut w = window.borrow_mut();
                     self.apply_rules_to_window(&mut w);
 
-                    // Apply decoration preference (if any)
+                    // Rules applied before the window was handed over to
+                    // the window manager could not send this yet.
                     if let Some(decoration) = w.decoration {
                         w.set_decoration(decoration);
                     }
@@ -2855,21 +2850,25 @@ impl Context {
             return;
         };
 
-        if let Some(window) = self.windows.get(&window_id) {
-            let was_hidden;
-            {
-                let mut w = window.borrow_mut();
-                was_hidden = w.hidden;
-                if w.hidden {
-                    w.show();
-                }
-                w.place_top();
-            }
-            if was_hidden {
-                self.mark_all_desktops_dirty();
-            }
-            self.focus(window_id);
+        self.activate_window(window_id);
+    }
+
+    /// Restore a window if it is minimized, raise and focus it.
+    pub fn activate_window(&mut self, window_id: WindowId) {
+        let Some(window) = self.windows.get(&window_id) else {
+            return;
+        };
+        let was_hidden = {
+            let mut w = window.borrow_mut();
+            let was_hidden = w.hidden;
+            w.show();
+            w.place_top();
+            was_hidden
+        };
+        if was_hidden {
+            self.mark_all_desktops_dirty();
         }
+        self.focus(window_id);
     }
 
     /// Close the window menu if open.
@@ -3203,8 +3202,7 @@ impl Context {
                 Some(CursorShape::Default)
             }
             super::PointerTarget::SharePicker(_) => Some(CursorShape::Crosshair),
-            // MenuShield hides the cursor via wl_pointer.set_cursor directly,
-            // so don't touch it here.
+            // MenuShield hides the cursor itself, so don't touch it here.
             super::PointerTarget::MenuShield(_) | super::PointerTarget::None => None,
         };
 
@@ -4501,5 +4499,31 @@ mod tests {
         ctx.handle_manage_start();
 
         assert_eq!(ctx.focused_window, None);
+    }
+
+    #[test]
+    fn only_windows_that_cannot_be_asked_keep_their_own_decorations() {
+        let mut ctx = Context::new(false);
+        let decoration = |ctx: &Context, app_id: &str, hint: u32| {
+            let mut window = Window::new(1);
+            window.app_id = Some(app_id.to_string());
+            window.decoration_hint = Some(hint);
+            ctx.apply_rules_to_window(&mut window);
+            window.decoration
+        };
+
+        // 0 only_supports_csd, 1 prefers_csd, 2 prefers_ssd, 3 no_preference
+        assert_eq!(decoration(&ctx, "app", 0), Some(WindowDecoration::Csd));
+        for hint in 1..=3 {
+            assert_eq!(decoration(&ctx, "app", hint), Some(WindowDecoration::Ssd));
+        }
+
+        ctx.config.rules.push(rule::Rule {
+            app_id: Some(vec!["forced".to_string()]),
+            force_ssd: true,
+            ..Default::default()
+        });
+        assert_eq!(decoration(&ctx, "forced", 0), Some(WindowDecoration::Ssd));
+        assert_eq!(decoration(&ctx, "app", 0), Some(WindowDecoration::Csd));
     }
 }

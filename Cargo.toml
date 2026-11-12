@@ -2,7 +2,7 @@
 name = "canoe"
 version = "0.6.2"
 edition = "2021"
-description = "Canoe, a River window manager implementation in Rust"
+description = "Canoe, a stacking Wayland compositor with Win 3.x looks"
 license = "MIT"
 repository = "https://github.com/roblillack/canoe"
 homepage = "https://github.com/roblillack/canoe"
@@ -24,13 +24,24 @@ pre-release-replacements = [
 ]
 
 [dependencies]
-# Wayland client bindings
-wayland-client = "0.31"
-wayland-protocols = { version = "0.32", features = ["client", "staging", "unstable"] }
-wayland-protocols-wlr = { version = "0.2", features = ["client"] }
-wayland-backend = "0.3"
-wayland-scanner = "0.31"
+# The compositor itself
+smithay = { version = "0.7", default-features = false, features = [
+    "backend_drm",
+    "backend_gbm",
+    "backend_egl",
+    "backend_libinput",
+    "backend_udev",
+    "backend_session_libseat",
+    "desktop",
+    "renderer_gl",
+    "renderer_pixman",
+    "wayland_frontend",
+    "xwayland",
+] }
 bitflags = "2"
+
+# Cursor themes for the cursors the compositor draws
+xcursor = "0.3"
 
 # XKB for keyboard handling
 xkbcommon = "0.8"
@@ -38,9 +49,7 @@ xkbcommon = "0.8"
 # Signal handling and system
 nix = { version = "0.29", features = ["signal", "process", "poll", "fs"] }
 
-# For shared memory buffers passed to the compositor via wl_shm.
-# Linux has memfd_create; other Unixes fall back to an unlinked tempfile
-# (see target-specific sections below and src/canoe/shmfile.rs).
+# Font files are mapped rather than read
 memmap2 = "0.9"
 
 # Font rendering for titlebars
@@ -60,18 +69,13 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 
-[target.'cfg(target_os = "linux")'.dependencies]
-memfd = "0.6"
-
-[target.'cfg(not(any(target_os = "linux", target_os = "openbsd")))'.dependencies]
-tempfile = "3"
-
 [features]
+default = ["winit"]
+# Running nested in a window of another session (canoe --backend winit),
+# for development.
+winit = ["smithay/backend_winit"]
 # Compile in verbose debug logging / render timing (to stderr). Off by default.
 debug-logging = []
-
-[build-dependencies]
-wayland-scanner = "0.31"
 
 [[bin]]
 name = "canoe"

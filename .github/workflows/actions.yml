@@ -20,7 +20,13 @@ jobs:
             libwayland-dev \
             libxkbcommon-dev \
             libfreetype-dev \
-            libfontconfig1-dev
+            libfontconfig1-dev \
+            libudev-dev \
+            libinput-dev \
+            libseat-dev \
+            libgbm-dev \
+            libdrm-dev \
+            libpixman-1-dev
 
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
@@ -63,6 +69,12 @@ jobs:
             libxkbcommon-dev \
             libfreetype-dev \
             libfontconfig1-dev \
+            libudev-dev \
+            libinput-dev \
+            libseat-dev \
+            libgbm-dev \
+            libdrm-dev \
+            libpixman-1-dev \
             fonts-dejavu-core \
             fonts-noto-color-emoji
 
@@ -118,7 +130,13 @@ jobs:
             libwayland-dev \
             libxkbcommon-dev \
             libfreetype-dev \
-            libfontconfig1-dev
+            libfontconfig1-dev \
+            libudev-dev \
+            libinput-dev \
+            libseat-dev \
+            libgbm-dev \
+            libdrm-dev \
+            libpixman-1-dev
 
       - name: Set up Rust
         uses: actions-rs/toolchain@v1

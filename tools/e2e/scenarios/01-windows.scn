@@ -1,0 +1,15 @@
+# New windows: SSD frame, placement, focus, stacking, titlebar move.
+key super+shift+Return
+wait-toplevel foot 4000
+shot 01-one-window
+drag 300 27 700 300
+shot 02-dragged
+key super+shift+Return
+sleep 800
+shot 03-second-window
+# Click the first window's visible part: focus + raise.
+move 1000 600 ; btn click left
+shot 04-click-raises
+# Super+Left drag moves the window under the pointer from anywhere.
+keydown super ; drag 1000 600 900 500 ; keyup super
+shot 05-super-drag

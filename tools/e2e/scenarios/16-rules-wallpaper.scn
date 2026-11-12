@@ -1,0 +1,13 @@
+# Window rules (force SSD, swallow the top of a client-decorated window),
+# a wallpaper under a transparent desktop that gets clicks (#54).
+spawn swaybg -c "#6040a0"
+sleep 600
+spawn $WLTEST --app-id swallowed --title swallowed --decoration csd --size 400x250 --color 5080c0
+wait-toplevel swallowed 4000
+shot 01-rules
+spawn $WLTEST --layer background --anchor top,bottom,left,right --size 0x0 --color 8040a0 > $OUT/wallpaper.log
+sleep 600
+move 1000 600 ; btn click left
+sleep 300
+run grep -c "pointer button left pressed" $OUT/wallpaper.log > $OUT/wallpaper-clicks.txt
+shot 02-wallpaper

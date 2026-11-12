@@ -1,0 +1,13 @@
+# Dialog and fixed-size styling (#17), resizable child dialogs (#27).
+devices
+spawn $WLTEST --app-id dlg --title Parent --size 600x400 --dialog --dialog-title Dialog --dialog-size 240x160
+wait-toplevel dlg 4000
+sleep 500
+shot 01-dialog
+# Drag the dialog's right border.
+drag 438 240 538 260
+shot 02-dialog-resized
+spawn $WLTEST --app-id fixed --title "Fixed size" --fixed 300x200 --color 50a050
+wait-toplevel fixed 4000
+drag 150 27 850 100
+shot 03-fixed-size

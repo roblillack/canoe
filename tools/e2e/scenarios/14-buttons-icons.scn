@@ -1,0 +1,24 @@
+# Titlebar buttons, icons on the desktop, cycling windows of one app.
+spawn $WLTEST --app-id one --title one --size 400x250
+wait-toplevel one 4000
+spawn $WLTEST --app-id two --title two --size 400x250 --color a05050
+wait-toplevel two 4000
+drag 200 27 700 200
+# Maximize button (rightmost), then again to restore.
+move 401 27 ; btn click left
+shot 01-maximized-by-button
+move 1266 27 ; btn click left
+shot 02-restored-by-button
+# Minimize button (leftmost) of "two" (now at 500,173).
+move 512 200 ; btn click left
+shot 03-minimized-by-button
+# Double-click its icon to restore it.
+move 52 666 ; btn click left ; btn click left
+shot 04-icon-restored
+# Minimize both, then pick one with the keyboard on the desktop.
+key super+h
+key super+h
+move 52 666 ; btn click left
+key Right ; key Return
+shot 05-icon-keyboard
+# Close with a double click on the close button (left end of the titlebar).

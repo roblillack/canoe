@@ -1,0 +1,18 @@
+[package]
+name = "wlinput"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.96"
+description = "Scripted input injection and toplevel inspection for Wayland compositor tests"
+publish = false
+
+# Standalone tool, deliberately not part of the canoe workspace.
+[workspace]
+
+[dependencies]
+rustix = { version = "1", features = ["event", "fs", "pipe"] }
+wayland-client = "0.31"
+wayland-protocols = { version = "0.32", features = ["client", "staging"] }
+wayland-protocols-misc = { version = "0.3", features = ["client"] }
+wayland-protocols-wlr = { version = "0.3", features = ["client"] }
+xkbcommon = { version = "0.8", default-features = false }
