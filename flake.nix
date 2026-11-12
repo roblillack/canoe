@@ -1,5 +1,5 @@
 {
-  description = "A configuration tool for the River Wayland compositor";
+  description = "Canoe, a stacking window manager for the River Wayland compositor";
 
   inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
 

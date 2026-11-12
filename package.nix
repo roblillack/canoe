@@ -9,9 +9,12 @@
   wayland,
 }:
 
+let
+  cargoToml = lib.importTOML ./Cargo.toml;
+in
 rustPlatform.buildRustPackage {
   pname = "canoe";
-  version = (lib.importTOML ./Cargo.toml).package.version;
+  inherit (cargoToml.package) version;
 
   src = lib.cleanSource ./.;
 
@@ -31,11 +34,12 @@ rustPlatform.buildRustPackage {
 
   LIBCLANG_PATH = "${llvmPackages.libclang.lib}/lib";
 
-  meta = with lib; {
-    description = "A configuration tool for the River Wayland compositor";
-    homepage = "https://github.com/roblillack/canoe";
-    license = licenses.mit;
-    platforms = platforms.linux;
+  meta = {
+    description = "Stacking window manager for the River Wayland compositor";
+    homepage = cargoToml.package.homepage;
+    changelog = "https://github.com/roblillack/canoe/blob/main/CHANGELOG.md";
+    license = lib.licenses.mit;
+    platforms = lib.platforms.linux;
     mainProgram = "canoe";
   };
 }
