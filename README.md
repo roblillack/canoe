@@ -97,6 +97,7 @@ cargo build --release
 | `Super+Up` | Maximize focused window |
 | `Super+h` | Minimize focused window |
 | `Super+m` | Minimize focused window |
+| `Super+d` | Minimize all windows; press again to bring them back |
 | `Super+Left` | Snap focused window to left half; restore if snapped right |
 | `Super+Right` | Snap focused window to right half; restore if snapped left |
 | `Super+Alt+Left` | Send focused window to previous output |
