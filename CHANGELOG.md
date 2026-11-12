@@ -10,6 +10,14 @@ While pre-1.0, the minor version is bumped for breaking changes.
 
 ## [Unreleased] - ReleaseDate
 
+### [A Canoe without a River](https://github.com/roblillack/canoe/discussions/83)
+
+Canoe is now a Wayland compositor of its own, built on Smithay, instead of a
+window manager inside River. Start it with `canoe` from a text console or
+pick the Canoe session in your display manager; River is no longer needed.
+Your configuration, rules and themes carry over, and X11 programs run through
+Xwayland. (#66)
+
 ### Changed
 
 - Windows that only draw their own decorations, as libadwaita apps do, keep
