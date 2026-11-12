@@ -56,6 +56,9 @@ Xwayland. (#66)
   window. (#66)
 - The desktop icon of a minimized window disappears when the window closes,
   instead of staying until it is clicked. (#69)
+- The desktop icon of a minimized window shows its new title as soon as the
+  window changes it, instead of once the icon is clicked or Super+Tab
+  opened. (#74)
 
 ## [0.6.2] - 2026-11-07
 

@@ -347,9 +347,16 @@ impl State {
             let context = self.context.borrow();
             if let Some(w) = context.windows.get(&id) {
                 let mut w = w.borrow_mut();
+                // A minimized window's desktop icon shows its title, and its
+                // app id picks the icon.
+                let icon_changed = w.hidden && (w.app_id != app_id || w.title != title);
                 w.app_id = app_id;
                 w.title = title;
                 context.apply_rules_to_window(&mut w);
+                drop(w);
+                if icon_changed {
+                    context.mark_all_desktops_dirty();
+                }
             }
         }
         self.schedule_wm();
