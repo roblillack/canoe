@@ -115,6 +115,9 @@ pub struct Window {
     pub client_icon: Option<Arc<super::ClientIcon>>,
     /// `client_icon` drawn at a size in pixels; cleared when it changes
     pub client_icon_pixmap: Option<(i32, Option<Rc<resvg::tiny_skia::Pixmap>>)>,
+    /// The client asked for the window to be left out of the window menu,
+    /// Super+Tab and focus cycling (org_kde_plasma_surface.set_skip_switcher)
+    pub skip_switcher: bool,
     /// Compositor-assigned identifier, shared with ext-foreign-toplevel-list-v1
     /// (river_window_v1 version 4 and later)
     pub identifier: Option<String>,
@@ -207,6 +210,7 @@ impl Window {
             title: None,
             client_icon: None,
             client_icon_pixmap: None,
+            skip_switcher: false,
             identifier: None,
             parent: None,
             swallow_top: 0,

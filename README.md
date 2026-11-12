@@ -460,7 +460,9 @@ ext-session-lock, wlr-screencopy and ext-image-copy-capture (outputs and
 single windows), ext-foreign-toplevel-list, wlr-foreign-toplevel-management
 (taskbars that control windows), wlr-output-management, xdg-foreign (portal
 dialogs attached to their app's window), xdg-toplevel-icon (window icons,
-shown for minimized windows), fractional scaling and viewporter,
+shown for minimized windows), KDE's org_kde_plasma_shell (only
+`set_skip_switcher`: such windows stay out of the window menu, Super+Tab and
+focus cycling), fractional scaling and viewporter,
 cursor-shape, data device, primary selection and wlr-data-control,
 xdg-activation, presentation-time,
 idle-notify and idle-inhibit, wlr-output-power-management,

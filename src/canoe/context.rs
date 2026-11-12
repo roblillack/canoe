@@ -614,7 +614,7 @@ impl Context {
             .iter()
             .filter(|(_, w)| {
                 let w = w.borrow();
-                w.is_visible_on(&output)
+                w.is_visible_on(&output) && !w.skip_switcher
             })
             .map(|(&id, _)| id)
             .collect();
@@ -2710,7 +2710,8 @@ impl Context {
         }
     }
 
-    /// Build menu items for windows (including hidden).
+    /// Build menu items for windows (including hidden, but not those that
+    /// skip switchers).
     pub fn collect_menu_items(&self, _output_id: OutputId) -> Vec<MenuItem> {
         let focused = self.focused_window;
 
@@ -2719,8 +2720,11 @@ impl Context {
 
         for window_id in &self.focus_stack {
             if let Some(window) = self.windows.get(window_id) {
-                items.push(menu_item_from_window(*window_id, focused, &window.borrow()));
                 seen.insert(*window_id);
+                let w = window.borrow();
+                if !w.skip_switcher {
+                    items.push(menu_item_from_window(*window_id, focused, &w));
+                }
             }
         }
 
@@ -2728,13 +2732,17 @@ impl Context {
             if seen.contains(&window_id) {
                 continue;
             }
-            items.push(menu_item_from_window(window_id, focused, &window.borrow()));
+            let w = window.borrow();
+            if !w.skip_switcher {
+                items.push(menu_item_from_window(window_id, focused, &w));
+            }
         }
 
         items
     }
 
-    /// Build menu items for windows sharing the given app id (including hidden).
+    /// Build menu items for windows sharing the given app id (including
+    /// hidden, but not those that skip switchers).
     pub fn collect_menu_items_for_app(&self, _output_id: OutputId, app_id: &str) -> Vec<MenuItem> {
         let focused = self.focused_window;
 
@@ -2744,7 +2752,7 @@ impl Context {
         for window_id in &self.focus_stack {
             if let Some(window) = self.windows.get(window_id) {
                 let w = window.borrow();
-                if w.app_id.as_deref() == Some(app_id) {
+                if w.app_id.as_deref() == Some(app_id) && !w.skip_switcher {
                     items.push(menu_item_from_window(*window_id, focused, &w));
                     seen.insert(*window_id);
                 }
@@ -2756,7 +2764,7 @@ impl Context {
                 continue;
             }
             let w = window.borrow();
-            if w.app_id.as_deref() == Some(app_id) {
+            if w.app_id.as_deref() == Some(app_id) && !w.skip_switcher {
                 items.push(menu_item_from_window(window_id, focused, &w));
             }
         }
