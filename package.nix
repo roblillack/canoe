@@ -2,7 +2,6 @@
   lib,
   rustPlatform,
   pkg-config,
-  llvmPackages,
   fontconfig,
   freetype,
   libxkbcommon,
@@ -20,10 +19,7 @@ rustPlatform.buildRustPackage {
 
   cargoLock.lockFile = ./Cargo.lock;
 
-  nativeBuildInputs = [
-    pkg-config
-    llvmPackages.clang
-  ];
+  nativeBuildInputs = [ pkg-config ];
 
   buildInputs = [
     fontconfig
@@ -32,7 +28,6 @@ rustPlatform.buildRustPackage {
     wayland
   ];
 
-  LIBCLANG_PATH = "${llvmPackages.libclang.lib}/lib";
 
   meta = {
     description = "Stacking window manager for the River Wayland compositor";
