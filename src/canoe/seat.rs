@@ -3,7 +3,7 @@
 #![allow(dead_code)]
 
 use crate::binding::{Action, PointerBinding, XkbBinding};
-use crate::config::Mode;
+use crate::config::{Mode, XCursorTheme};
 use crate::protocol::{
     RiverLayerShellSeatV1, RiverPointerBindingV1, RiverSeatV1, RiverXkbBindingV1,
 };
@@ -13,6 +13,7 @@ use std::rc::Weak;
 use std::time::Instant;
 use wayland_client::protocol::wl_pointer::WlPointer;
 use wayland_client::protocol::wl_seat::WlSeat;
+use wayland_client::Proxy;
 use wayland_protocols::wp::cursor_shape::v1::client::wp_cursor_shape_device_v1::{
     Shape as CursorShape, WpCursorShapeDeviceV1,
 };
@@ -202,10 +203,16 @@ impl Seat {
         }
     }
 
-    /// Set XCursor theme
-    pub fn set_xcursor_theme(&self, name: &str, size: u32) {
+    /// Set the XCursor theme for compositor-drawn cursors
+    /// (river-window-management v2+), using the defaults for unset parts.
+    pub fn set_xcursor_theme(&self, theme: &XCursorTheme) {
         if let Some(ref rwm_seat) = self.rwm_seat {
-            rwm_seat.set_xcursor_theme(name.to_string(), size);
+            if rwm_seat.version() >= 2 {
+                rwm_seat.set_xcursor_theme(
+                    theme.name_or_default().to_string(),
+                    theme.size_or_default(),
+                );
+            }
         }
     }
 
@@ -261,6 +268,7 @@ pub enum PointerTarget {
     Desktop(OutputId),
     Menu,
     MenuShield(OutputId),
+    SharePicker(OutputId),
     Titlebar(WindowId),
 }
 

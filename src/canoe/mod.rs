@@ -6,15 +6,17 @@ mod font;
 mod menu;
 mod output;
 mod render;
+pub mod scale;
 mod seat;
 mod shadow;
+pub mod share_picker;
 mod shield;
 pub mod shmfile;
 pub mod titlebar;
 pub mod window;
 
 pub use context::Context;
-pub use desktop::{regular_weight_font_query, DesktopSurface, IconTheme};
+pub use desktop::{desktop_input_area, regular_weight_font_query, DesktopSurface, IconTheme};
 pub use menu::{MenuItem, MenuTheme, WindowMenu};
 pub use output::{Output, OutputId};
 pub use seat::{PointerTarget, Seat, SeatId};
@@ -34,6 +36,8 @@ pub enum WindowMenuMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LayerSurfaceKind {
     Desktop(OutputId),
+    DesktopBackground(OutputId),
     Menu,
     MenuShield(OutputId),
+    SharePicker(OutputId),
 }

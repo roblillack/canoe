@@ -54,6 +54,7 @@ pub enum Mode {
     Floating,
     Passthrough,
     DesktopIcons,
+    SharePicker,
 }
 
 /// Window decoration style
@@ -100,11 +101,24 @@ impl Default for BorderLayers {
     }
 }
 
-/// XCursor theme configuration
-#[derive(Debug, Clone)]
+/// XCursor theme configuration. `name` and `size` are `None` when nothing
+/// sets them.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct XCursorTheme {
-    pub name: String,
-    pub size: u32,
+    pub name: Option<String>,
+    pub size: Option<u32>,
+}
+
+impl XCursorTheme {
+    /// Theme name, falling back to `"default"`.
+    pub fn name_or_default(&self) -> &str {
+        self.name.as_deref().unwrap_or(DEFAULT_XCURSOR_THEME)
+    }
+
+    /// Cursor size, falling back to 24.
+    pub fn size_or_default(&self) -> u32 {
+        self.size.unwrap_or(DEFAULT_XCURSOR_SIZE)
+    }
 }
 
 /// UI theme configuration
@@ -136,7 +150,17 @@ pub struct UiConfig {
     pub shadows_color: u32,
     pub font_name: Option<String>,
     pub font_size: f32,
+    /// Fill color for the desktop background surface (0xRRGGBBAA), drawn on
+    /// the background layer. Wallpaper clients (swaybg, shaderbg) started
+    /// after Canoe stack above it, but one already running when the surface
+    /// is created ends up below it, so their users should configure
+    /// `"transparent"` (alpha 0), which draws no fill.
     pub desktop_background: u32,
+    /// Whether right-clicking empty desktop opens the window menu. When
+    /// `false`, the desktop icon surface only captures input on minimized-
+    /// window icons; all other pointer input falls through to wallpaper
+    /// clients (e.g. shaderbg) below it.
+    pub desktop_menu: bool,
     /// Whether minimized-window icons are shown on the desktop.
     pub icons_enabled: bool,
     /// Font for icon labels. When `None`, falls back to a regular-weight
@@ -159,7 +183,7 @@ pub struct UiConfig {
 impl Default for UiConfig {
     fn default() -> Self {
         Self {
-            border_width: 4,
+            border_width: 5,
             border_active: BorderLayers::default(),
             border_inactive: BorderLayers::default(),
             titlebar_text_active: 0xFFFFFFFF,
@@ -174,12 +198,13 @@ impl Default for UiConfig {
             button_highlight: 0xFFFFFFFF,
             button_shadow: 0x808080FF,
             shadows_enabled: true,
-            shadows_active_size: 20,
-            shadows_inactive_size: 10,
+            shadows_active_size: 25,
+            shadows_inactive_size: 12,
             shadows_color: 0x00000033,
             font_name: None,
-            font_size: 12.0,
+            font_size: 15.0,
             desktop_background: 0x008080FF,
+            desktop_menu: true,
             icons_enabled: true,
             icons_font_name: None,
             icons_font_size: None,
@@ -199,7 +224,14 @@ pub struct Config {
     pub launcher_cmd: Vec<String>,
     pub terminal_cmd: Vec<String>,
     pub lock_cmd: Vec<String>,
-    pub xcursor_theme: Option<XCursorTheme>,
+    /// Export WAYLAND_DISPLAY, XDG_CURRENT_DESKTOP and, if set, the XCursor
+    /// theme to systemd/D-Bus activated services (e.g. the screencast portal)
+    /// on startup.
+    pub update_activation_environment: bool,
+    /// XCursor theme name from the config file.
+    pub xcursor_theme: Option<String>,
+    /// XCursor size from the config file.
+    pub xcursor_size: Option<u32>,
     pub main_modifier: MainModifier,
 
     pub repeat_rate: i32,
@@ -234,7 +266,9 @@ impl Default for Config {
             launcher_cmd: vec!["fuzzel".to_string()],
             terminal_cmd: vec!["foot".to_string()],
             lock_cmd: vec!["swaylock".to_string()],
+            update_activation_environment: true,
             xcursor_theme: None,
+            xcursor_size: None,
             main_modifier: MainModifier::default(),
 
             repeat_rate: 50,
@@ -251,12 +285,51 @@ impl Default for Config {
     }
 }
 
+/// XCursor theme used when nothing else names one.
+const DEFAULT_XCURSOR_THEME: &str = "default";
+/// XCursor size used when nothing else sets one.
+const DEFAULT_XCURSOR_SIZE: u32 = 24;
+
+impl Config {
+    /// Resolved XCursor theme. Name and size are resolved independently:
+    /// config file, then `XCURSOR_THEME`/`XCURSOR_SIZE` as programs launched
+    /// by Canoe see them (the `[env]` table overriding Canoe's own
+    /// environment). Either stays `None` if none of these sets it.
+    pub fn xcursor_theme_resolved(&self) -> XCursorTheme {
+        self.xcursor_theme_resolved_with(|name| std::env::var(name).ok())
+    }
+
+    /// [`Self::xcursor_theme_resolved`] with Canoe's own environment read
+    /// through `lookup`.
+    fn xcursor_theme_resolved_with(&self, lookup: impl Fn(&str) -> Option<String>) -> XCursorTheme {
+        let env = |name: &str| {
+            self.env
+                .get(name)
+                .cloned()
+                .or_else(|| lookup(name))
+                .filter(|value| !value.is_empty())
+        };
+        XCursorTheme {
+            name: self.xcursor_theme.clone().or_else(|| env("XCURSOR_THEME")),
+            size: self
+                .xcursor_size
+                .or_else(|| env("XCURSOR_SIZE").and_then(|s| s.trim().parse().ok()))
+                .filter(|&size| size > 0),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct FileConfig {
+    env: Option<HashMap<String, String>>,
     main_modifier: Option<MainModifier>,
+    xcursor_theme: Option<String>,
+    xcursor_size: Option<u32>,
     launcher_cmd: Option<StringOrVec>,
     terminal_cmd: Option<StringOrVec>,
     lock_cmd: Option<StringOrVec>,
+    startup_cmds: Option<Vec<StringOrVec>>,
+    update_activation_environment: Option<bool>,
     ui: Option<UiConfigFile>,
     rules: Option<Vec<RuleFile>>,
     /// Map of key chord (e.g. `"Super+I"`) to the command it spawns.
@@ -319,6 +392,7 @@ struct UiConfigFile {
     font_size: Option<f32>,
     #[serde(default, deserialize_with = "deserialize_opt_color")]
     desktop_background: Option<u32>,
+    desktop_menu: Option<bool>,
     icons_enabled: Option<bool>,
     icons_font_name: Option<String>,
     #[serde(default, deserialize_with = "deserialize_opt_f32")]
@@ -425,6 +499,9 @@ impl UiConfig {
         if let Some(color) = overrides.desktop_background {
             self.desktop_background = color;
         }
+        if let Some(enabled) = overrides.desktop_menu {
+            self.desktop_menu = enabled;
+        }
         if let Some(enabled) = overrides.icons_enabled {
             self.icons_enabled = enabled;
         }
@@ -480,7 +557,9 @@ where
             Ok(Some(parsed))
         }
         Some(toml::Value::String(value)) => parse_color_str(&value)
-            .ok_or_else(|| de::Error::custom("expected color string #rgb, #rrggbb, or #rrggbbaa"))
+            .ok_or_else(|| {
+                de::Error::custom("expected color string #rgb, #rrggbb, #rrggbbaa, or transparent")
+            })
             .map(Some),
         Some(other) => Err(de::Error::custom(format!(
             "expected string or integer, got {}",
@@ -491,6 +570,9 @@ where
 
 fn parse_color_str(value: &str) -> Option<u32> {
     let value = value.trim();
+    if value.eq_ignore_ascii_case("transparent") {
+        return Some(0x00000000);
+    }
     let hex = value.strip_prefix('#')?;
     if !hex.is_ascii() {
         return None;
@@ -646,6 +728,15 @@ fn config_path() -> Option<PathBuf> {
     Some(home.join(".config").join("canoe").join("canoe.toml"))
 }
 
+/// Turn the configured startup commands into argv vectors, dropping empty ones.
+fn startup_cmds_from_file(cmds: Vec<StringOrVec>) -> Vec<Vec<String>> {
+    cmds.into_iter()
+        .filter_map(|cmd| string_or_vec(Some(cmd)))
+        .map(clean_cmd_args)
+        .filter(|cmd| !cmd.is_empty())
+        .collect()
+}
+
 fn rules_from_file(rules: Vec<RuleFile>) -> Vec<Rule> {
     rules
         .into_iter()
@@ -679,41 +770,66 @@ pub fn load_config(skip_config: bool) -> Config {
     if let Some(path) = config_path() {
         if let Ok(contents) = std::fs::read_to_string(&path) {
             if let Ok(file_config) = toml::from_str::<FileConfig>(&contents) {
-                if let Some(main_modifier) = file_config.main_modifier {
-                    config.main_modifier = main_modifier;
-                }
-                if let Some(launcher_cmd) = string_or_vec(file_config.launcher_cmd) {
-                    let launcher_cmd = clean_cmd_args(launcher_cmd);
-                    if !launcher_cmd.is_empty() {
-                        config.launcher_cmd = launcher_cmd;
-                    }
-                }
-                if let Some(terminal_cmd) = string_or_vec(file_config.terminal_cmd) {
-                    let terminal_cmd = clean_cmd_args(terminal_cmd);
-                    if !terminal_cmd.is_empty() {
-                        config.terminal_cmd = terminal_cmd;
-                    }
-                }
-                if let Some(lock_cmd) = string_or_vec(file_config.lock_cmd) {
-                    let lock_cmd = clean_cmd_args(lock_cmd);
-                    if !lock_cmd.is_empty() {
-                        config.lock_cmd = lock_cmd;
-                    }
-                }
-                if let Some(ui) = file_config.ui {
-                    config.ui.apply(ui);
-                }
-                if let Some(rules) = file_config.rules {
-                    config.rules = rules_from_file(rules);
-                }
-                if let Some(hotkeys) = file_config.hotkeys {
-                    config.hotkeys = hotkeys_from_file(hotkeys);
-                }
+                config.apply(file_config);
             }
         }
     }
 
     config
+}
+
+impl Config {
+    /// Apply the settings present in a parsed config file.
+    fn apply(&mut self, file: FileConfig) {
+        if let Some(env) = file.env {
+            if !env.is_empty() {
+                self.env = env
+            }
+        }
+        if let Some(main_modifier) = file.main_modifier {
+            self.main_modifier = main_modifier;
+        }
+        if let Some(name) = file.xcursor_theme {
+            let name = name.trim();
+            self.xcursor_theme = (!name.is_empty()).then(|| name.to_string());
+        }
+        if let Some(size) = file.xcursor_size {
+            self.xcursor_size = (size > 0).then_some(size);
+        }
+        if let Some(launcher_cmd) = string_or_vec(file.launcher_cmd) {
+            let launcher_cmd = clean_cmd_args(launcher_cmd);
+            if !launcher_cmd.is_empty() {
+                self.launcher_cmd = launcher_cmd;
+            }
+        }
+        if let Some(terminal_cmd) = string_or_vec(file.terminal_cmd) {
+            let terminal_cmd = clean_cmd_args(terminal_cmd);
+            if !terminal_cmd.is_empty() {
+                self.terminal_cmd = terminal_cmd;
+            }
+        }
+        if let Some(lock_cmd) = string_or_vec(file.lock_cmd) {
+            let lock_cmd = clean_cmd_args(lock_cmd);
+            if !lock_cmd.is_empty() {
+                self.lock_cmd = lock_cmd;
+            }
+        }
+        if let Some(startup_cmds) = file.startup_cmds {
+            self.startup_cmds = startup_cmds_from_file(startup_cmds);
+        }
+        if let Some(update) = file.update_activation_environment {
+            self.update_activation_environment = update;
+        }
+        if let Some(ui) = file.ui {
+            self.ui.apply(ui);
+        }
+        if let Some(rules) = file.rules {
+            self.rules = rules_from_file(rules);
+        }
+        if let Some(hotkeys) = file.hotkeys {
+            self.hotkeys = hotkeys_from_file(hotkeys);
+        }
+    }
 }
 
 /// Get default window rules
@@ -769,6 +885,56 @@ mod tests {
     }
 
     #[test]
+    fn test_startup_cmds_and_env_parsing() {
+        let contents = r#"
+            startup_cmds = [
+                "kanshi",
+                ["swaybg", " -i ", "/tmp/wall.png", ""],
+                "",
+                [],
+            ]
+
+            [env]
+            MOZ_ENABLE_WAYLAND = "1"
+            QT_QPA_PLATFORM = "wayland"
+        "#;
+
+        let file_config = toml::from_str::<FileConfig>(contents).expect("parse config");
+
+        let startup_cmds =
+            startup_cmds_from_file(file_config.startup_cmds.expect("startup_cmds present"));
+        assert_eq!(
+            startup_cmds,
+            vec![
+                vec!["kanshi".to_string()],
+                vec![
+                    "swaybg".to_string(),
+                    "-i".to_string(),
+                    "/tmp/wall.png".to_string()
+                ],
+            ]
+        );
+
+        let env = file_config.env.expect("env present");
+        assert_eq!(env.len(), 2);
+        assert_eq!(env.get("MOZ_ENABLE_WAYLAND").map(String::as_str), Some("1"));
+        assert_eq!(
+            env.get("QT_QPA_PLATFORM").map(String::as_str),
+            Some("wayland")
+        );
+    }
+
+    #[test]
+    fn test_env_rejects_non_string_values() {
+        let contents = r#"
+            [env]
+            MOZ_ENABLE_WAYLAND = 1
+        "#;
+
+        assert!(toml::from_str::<FileConfig>(contents).is_err());
+    }
+
+    #[test]
     fn test_icons_config_parsing() {
         let contents = r##"
             [ui]
@@ -790,6 +956,136 @@ mod tests {
         assert_eq!(ui.icons_text, Some(0x101010FF));
         assert_eq!(ui.icons_highlight_bg, Some(0xFFD000FF));
         assert_eq!(ui.icons_highlight_text, Some(0x000000FF));
+    }
+
+    const SAMPLE_CONFIG: &str = include_str!("../contrib/canoe.toml");
+
+    /// Uncomment the settings in the sample config: lines where `#` is
+    /// directly followed by text. Explanatory comments start with `# `.
+    fn uncomment_settings(contents: &str) -> String {
+        contents
+            .lines()
+            .map(|line| match line.strip_prefix('#') {
+                Some(rest) if !rest.is_empty() && !rest.starts_with([' ', '#']) => rest,
+                _ => line,
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn test_xcursor_parsing() {
+        let parse = |contents: &str| {
+            let mut config = Config::default();
+            config.apply(toml::from_str(contents).expect("parse config"));
+            (config.xcursor_theme, config.xcursor_size)
+        };
+
+        assert_eq!(parse(""), (None, None));
+        assert_eq!(
+            parse("xcursor_theme = \" Adwaita \"\nxcursor_size = 32"),
+            (Some("Adwaita".to_string()), Some(32))
+        );
+        assert_eq!(
+            parse("xcursor_theme = \"Adwaita\""),
+            (Some("Adwaita".to_string()), None)
+        );
+        assert_eq!(parse("xcursor_size = 32"), (None, Some(32)));
+        // Blank names and zero sizes count as unset.
+        assert_eq!(
+            parse("xcursor_theme = \"  \"\nxcursor_size = 0"),
+            (None, None)
+        );
+    }
+
+    #[test]
+    fn test_xcursor_resolution_order() {
+        let own = |name: &str| match name {
+            "XCURSOR_THEME" => Some("Own".to_string()),
+            "XCURSOR_SIZE" => Some("16".to_string()),
+            _ => None,
+        };
+        let resolve = |config: &Config| {
+            let theme = config.xcursor_theme_resolved_with(own);
+            (theme.name.expect("name"), theme.size.expect("size"))
+        };
+
+        let mut config = Config::default();
+        assert_eq!(resolve(&config), ("Own".to_string(), 16));
+
+        // [env] overrides Canoe's own environment ...
+        config
+            .env
+            .insert("XCURSOR_THEME".to_string(), "Env".to_string());
+        config
+            .env
+            .insert("XCURSOR_SIZE".to_string(), "32".to_string());
+        assert_eq!(resolve(&config), ("Env".to_string(), 32));
+
+        // ... and the config file settings override both.
+        config.xcursor_theme = Some("File".to_string());
+        config.xcursor_size = Some(48);
+        assert_eq!(resolve(&config), ("File".to_string(), 48));
+
+        // Without any of them, nothing is set and the defaults apply.
+        let theme = Config::default().xcursor_theme_resolved_with(|_| None);
+        assert_eq!(theme, XCursorTheme::default());
+        assert_eq!(
+            (theme.name_or_default(), theme.size_or_default()),
+            ("default", 24)
+        );
+    }
+
+    #[test]
+    fn test_sample_config_changes_nothing() {
+        let file_config: FileConfig = toml::from_str(SAMPLE_CONFIG).expect("sample parses");
+        let mut config = Config::default();
+        config.apply(file_config);
+
+        let defaults = Config::default();
+        assert_eq!(format!("{:?}", config), format!("{:?}", defaults));
+    }
+
+    #[test]
+    fn test_sample_config_shows_defaults() {
+        let contents = uncomment_settings(SAMPLE_CONFIG);
+        let file_config: FileConfig = toml::from_str(&contents).expect("uncommented sample parses");
+        let mut config = Config::default();
+        config.apply(file_config);
+
+        let defaults = Config::default();
+        assert_eq!(config.main_modifier, defaults.main_modifier);
+        assert_eq!(config.launcher_cmd, defaults.launcher_cmd);
+        assert_eq!(config.terminal_cmd, defaults.terminal_cmd);
+        assert_eq!(config.lock_cmd, defaults.lock_cmd);
+        assert_eq!(
+            config.update_activation_environment,
+            defaults.update_activation_environment
+        );
+
+        // The sample spells out the values that UiConfig leaves as `None` and
+        // derives at runtime.
+        let mut expected_ui = defaults.ui.clone();
+        expected_ui.font_name = Some("sans".to_string());
+        expected_ui.icons_font_name = Some("sans".to_string());
+        expected_ui.icons_font_size = Some(expected_ui.font_size * 0.80);
+        expected_ui.icons_text = Some(expected_ui.menu_text);
+        expected_ui.icons_highlight_bg = Some(expected_ui.menu_highlight_bg);
+        expected_ui.icons_highlight_text = Some(expected_ui.menu_highlight_text);
+        assert_eq!(format!("{:?}", config.ui), format!("{:?}", expected_ui));
+
+        // Settings that are empty by default show examples instead.
+        assert!(!config.startup_cmds.is_empty());
+        assert!(!config.env.is_empty());
+        assert!(!config.hotkeys.is_empty());
+        assert!(!config.rules.is_empty());
+    }
+
+    #[test]
+    fn test_sample_theme_parses() {
+        let contents = include_str!("../contrib/themes/yellow.toml");
+        let file_config: FileConfig = toml::from_str(contents).expect("theme parses");
+        assert!(file_config.ui.is_some());
     }
 
     #[test]
@@ -827,8 +1123,8 @@ mod tests {
     fn test_shadow_config_defaults() {
         let ui = UiConfig::default();
         assert!(ui.shadows_enabled);
-        assert_eq!(ui.shadows_active_size, 20);
-        assert_eq!(ui.shadows_inactive_size, 10);
+        assert_eq!(ui.shadows_active_size, 25);
+        assert_eq!(ui.shadows_inactive_size, 12);
         assert_eq!(ui.shadows_color, 0x00000033);
     }
 
@@ -917,6 +1213,7 @@ mod tests {
             menu_bg = "#112233"
             menu_text = "#123"
             titlebar_bg_active = "#11223344"
+            desktop_background = "transparent"
         "##;
 
         let file_config = toml::from_str::<FileConfig>(contents).expect("parse config");
@@ -925,6 +1222,7 @@ mod tests {
         assert_eq!(ui.menu_bg, Some(0x112233FF));
         assert_eq!(ui.menu_text, Some(0x112233FF));
         assert_eq!(ui.titlebar_bg_active, Some(0x11223344));
+        assert_eq!(ui.desktop_background, Some(0x00000000));
     }
 }
 

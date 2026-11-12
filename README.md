@@ -9,12 +9,17 @@ A stacking window manager for the River Wayland compositor, written in Rust.
 - Stacking window management
 - Server-side decorations with classic window borders & titlebars
 - Titlebar/edge window movement and resizing (Super+Drag anywhere)
-- Multihead support (focus/send windows across outputs)
+- Multihead support (focus/send windows across outputs, windows follow
+  output layout and resolution changes, and move off unplugged outputs)
+- New windows open fully on screen; apps that ask for more room than the
+  screen has are shrunk to fit, as far as their minimum size allows
 - Window switcher (keyboard cycle + desktop right-click menu)
 - Window focus follows click
 - Minimized windows shown as icons on the desktop (can be disabled)
 - Optional forcing server-side decorations via per-window rules
 - Optional "swallowing" of client-side decoration via per-window rules
+- Screen sharing of whole screens or individual windows, picked by clicking them
+- Shaped text with font fallback and color emoji in titles, menus and icon labels
 
 ## Installation
 
@@ -26,6 +31,22 @@ cargo install canoe
 
 ```bash
 river -c canoe
+```
+
+To start Canoe from a display manager (GDM, SDDM, LightDM, greetd with
+tuigreet, …), install the session file:
+
+```bash
+sudo install -Dm644 contrib/canoe.desktop /usr/share/wayland-sessions/canoe.desktop
+```
+
+The display manager looks up `river` in its own `PATH`, which does not include
+your home directory, so changes in `~/.profile` or `~/.config/environment.d/`
+don't help. If `river` or `canoe` live in your home directory (e.g. after
+`cargo install`), link them somewhere on the system `PATH`:
+
+```bash
+sudo ln -s ~/.cargo/bin/canoe /usr/local/bin/
 ```
 
 ## Building From Source
@@ -68,12 +89,91 @@ cargo build --release
 | `Super+Left Drag` | Move window (anywhere) |
 | `Super+Right Drag` | Resize window (anywhere) |
 
+## Multiple Outputs
+
+Windows belong to the output they were opened or last moved on, and keep
+their place on it when the output layout changes:
+
+- When an output moves, e.g. because one next to it was unplugged or
+  rearranged with a tool like `wdisplays` or `kanshi`, its windows move with it.
+- When an output is unplugged, its windows move to the output you are working
+  on, or to the nearest remaining one if you were working on the unplugged
+  output. They keep their relative position and are shrunk only if they don't
+  fit. Snapped and maximized windows are snapped the same way on their new
+  output, and fullscreen windows go back to their windowed size.
+- When an output's resolution or scale changes, snapped and maximized windows
+  follow the new size. Windows that fit on the output before but are now cut
+  off are moved back onto it, and shrunk if needed and their minimum size
+  allows. Windows you placed partly off-screen yourself stay where they are.
+
+Sending a window to another output with `Super+Alt+Arrow` works the same way.
+
+## Screen Sharing
+
+Apps share the screen through the screencast portal. On River that portal is
+[xdg-desktop-portal-wlr](https://github.com/emersion/xdg-desktop-portal-wlr)
+(0.8 or newer for sharing single windows). It asks a *chooser* program what to
+share, and Canoe is one: when an app wants to share, Canoe dims all screens and
+highlights the window or screen under the pointer. Click to share it, or use
+`Tab`/arrow keys and `Return`; `Esc` or a right click cancels.
+
+Chrome asks twice per share: once for the preview in its own dialog, and again
+when you confirm there. A request within 10 seconds of your pick that offers the
+same window or screen gets the same answer without asking, once.
+
+1. Install `xdg-desktop-portal-wlr` (e.g. `apt install xdg-desktop-portal-wlr`).
+
+2. Route screen sharing to it in `~/.config/xdg-desktop-portal/river-portals.conf`:
+
+   ```ini
+   [preferred]
+   default=gtk
+   org.freedesktop.impl.portal.ScreenCast=wlr
+   org.freedesktop.impl.portal.Screenshot=wlr
+   ```
+
+3. Make Canoe its chooser in `~/.config/xdg-desktop-portal-wlr/config`:
+
+   ```ini
+   [screencast]
+   chooser_type=dmenu
+   chooser_cmd=canoe --share-picker
+   ```
+
+   The portal runs as a systemd user service, whose `PATH` may not include
+   `~/.cargo/bin`; give the full path to `canoe` if it lives there.
+
+4. Restart the portals (or log in again):
+   `systemctl --user restart xdg-desktop-portal xdg-desktop-portal-wlr`.
+
+The portal needs to know which Wayland display to capture. On startup Canoe
+exports `WAYLAND_DISPLAY` and `XDG_CURRENT_DESKTOP` (defaulting to `river`) to
+the systemd user manager and D-Bus activation environment, using the same
+values as the programs it launches (see [Environment
+variables](#environment-variables)). `XCURSOR_THEME` and `XCURSOR_SIZE` are
+exported too if set, so services started this way use the same cursors. If you
+manage the session environment yourself (or run Canoe nested), turn that off:
+
+```toml
+update_activation_environment = false
+```
+
+wlroots 0.20.2 and earlier can show a black share when an app captures a
+window that is already being captured (Chrome does this, previewing the window
+while it asks to share it) and the window doesn't change. To work around it,
+Canoe makes a window repaint shortly after you pick it, by briefly flagging it
+as resizing and tiled. Its size doesn't change.
+
 ## Configuration
 
 Canoe reads `~/.config/canoe/canoe.toml`. After editing it, send `SIGHUP` to
 re-read it without restarting (e.g. `pkill -HUP canoe`); this refreshes the
 theme, desktop, window rules, and key bindings. Pass `--no-config` to ignore the
 file and use the built-in defaults (reloads keep honoring this).
+
+[`contrib/canoe.toml`](contrib/canoe.toml) lists every setting with its
+default and is a good starting point for your own configuration;
+[`contrib/themes/`](contrib/themes) has an example theme.
 
 The main modifier defaults to `super`, but you can change it:
 
@@ -104,6 +204,78 @@ lock_cmd = "swaylock"
 # Or with arguments:
 lock_cmd = ["swaylock", "-f", "-c", "000000"]
 ```
+
+### Startup commands
+
+`startup_cmds` lists programs Canoe launches when it starts, e.g. to configure
+displays, set a wallpaper, or start a notification daemon. Each entry is a
+program name or an argv array, like `launcher_cmd`. A plain string is not run
+through a shell, so pass arguments as an array (`"swaybg -i wall.png"` would
+look for a program with that literal name).
+
+```toml
+startup_cmds = [
+    "kanshi",
+    "mako",
+    ["swaybg", "-i", "/home/me/wallpaper.png", "-m", "fill"],
+]
+
+[ui]
+desktop_background = "transparent"  # let the wallpaper show, see below
+```
+
+The commands are launched in order, but Canoe does not wait for one to finish
+before starting the next. They start once Canoe has set up the desktop on every
+output. They run only at startup: a `SIGHUP` reload does not run them again, so
+changes take effect the next time Canoe starts.
+
+When a program like `swaybg` draws your wallpaper, set `desktop_background =
+"transparent"`, as above; see [Desktop and wallpapers](#desktop-and-wallpapers)
+for why.
+
+### Environment variables
+
+Variables under the `[env]` table are set for every program Canoe launches:
+startup commands, the launcher, terminal, screen locker, and hotkey commands.
+They do not change Canoe's own environment. Changes apply to programs launched
+after the next `SIGHUP` reload. Values for `WAYLAND_DISPLAY` and
+`XDG_CURRENT_DESKTOP` are also what Canoe exports for the screen-sharing portal
+on startup (see [Screen Sharing](#screen-sharing)).
+
+```toml
+[env]
+MOZ_ENABLE_WAYLAND = "1"
+QT_QPA_PLATFORM = "wayland"
+```
+
+All values must be strings: `MOZ_ENABLE_WAYLAND = 1` is a type error, which
+makes Canoe ignore the whole configuration file.
+
+### Cursor theme
+
+`xcursor_theme` and `xcursor_size` set the XCursor theme and cursor size (in
+logical pixels) for cursors that River draws: on the desktop, titlebars and
+borders, and while moving or resizing windows. Canoe also sets
+`XCURSOR_THEME` and `XCURSOR_SIZE` for the programs it launches, so their
+cursors match.
+
+```toml
+xcursor_theme = "Adwaita"
+xcursor_size = 32
+```
+
+The theme and size are looked up separately: first in `canoe.toml`, then
+`XCURSOR_THEME`/`XCURSOR_SIZE` in the [`[env]`](#environment-variables) table,
+then Canoe's own environment. If none of them sets a value, River uses the
+`default` theme at size 24, and launched programs get no `XCURSOR_*` variable,
+so they pick their own default.
+
+A `SIGHUP` reload changes the cursors River draws right away. Programs that are
+already running keep the theme they started with.
+
+GTK apps usually ignore these variables and take their cursor theme from
+GNOME's settings instead (`gsettings set org.gnome.desktop.interface
+cursor-theme Adwaita`, and `cursor-size` for the size).
 
 ### Hotkeys
 
@@ -138,7 +310,10 @@ reload — no restart needed; canoe rebinds every seat's shortcuts.
 ### UI Settings
 
 UI options live under the `[ui]` table and let you tune borders, titlebars, and menu colors.
-Colors accept `#RGB`, `#RRGGBB`, or `#RRGGBBAA`.
+Colors accept `#RGB`, `#RRGGBB`, `#RRGGBBAA`, or `transparent`.
+
+Sizes (borders, shadows, fonts) are given in logical pixels. They scale with the
+display's (fractional) scale and are drawn crisply at its native resolution.
 
 ```toml
 [ui]
@@ -157,19 +332,54 @@ button_bg = "#202020"
 button_highlight = "#FFD000"
 button_shadow = "#000000"
 shadows_enabled = true          # master toggle; when false menus fall back to a flat L-shape
-shadows_active_size = 20        # soft shadow size for the focused window (and menus)
-shadows_inactive_size = 10      # soft shadow size for non-focused windows
+shadows_active_size = 25        # soft shadow size for the focused window (and menus)
+shadows_inactive_size = 12      # soft shadow size for non-focused windows
 shadows_color = "#00000033"     # shadow color used for the soft drop shadow
 font_name = "Sans"
-font_size = 12.0
+font_size = 15.0
 desktop_background = "#101010"
+desktop_menu = true             # set to false to let clicks on the empty desktop reach a wallpaper client
 icons_enabled = true            # set to false to hide minimized-window icons on the desktop
 icons_font_name = "Sans"        # optional; defaults to a regular-weight variant of font_name
-icons_font_size = 10.0          # optional; defaults to font_size * 0.80
+icons_font_size = 12.0          # optional; defaults to font_size * 0.80
 icons_text = "#FFFFFF"          # optional; defaults to menu_text
 icons_highlight_bg = "#FFD000"  # optional; defaults to menu_highlight_bg
-icons_highlight_text = "#000000"# optional; defaults to menu_highlight_text
+icons_highlight_text = "#000000" # optional; defaults to menu_highlight_text
 ```
+
+#### Desktop and wallpapers
+
+Canoe draws the desktop on two layer-shell surfaces per output:
+
+- `desktop_background` is a solid fill on the `background` layer.
+- Minimized-window icons are drawn on a transparent surface on the `bottom`
+  layer, above any wallpaper.
+
+**If you use a separate program to show a background image** (`swaybg`,
+`shaderbg`, `wpaperd`, …), set:
+
+```toml
+[ui]
+desktop_background = "transparent"
+```
+
+Wallpaper programs draw on the `background` layer too, and River stacks
+surfaces on the same layer in the order they are created; no client can move
+its surface below one that already exists. A wallpaper started from
+`startup_cmds` begins above Canoe's fill. But whenever Canoe creates the fill
+while the wallpaper is already running, the fill is placed on top and hides
+it: when you restart Canoe, when you plug in a monitor, or when the wallpaper
+is started outside of Canoe (e.g. from River's init). With `"transparent"`
+there is nothing to hide the wallpaper, whatever the order.
+
+By default the icon surface takes pointer input across the whole output,
+except where bars and panels reserve space (their exclusive zones), so clicks
+on them always reach them: right-clicking the empty desktop opens the window
+menu, and left-clicking it unfocuses the current window and deselects icons.
+With `desktop_menu = false`, only the icons take input and every other click
+goes to whatever is below, e.g. an interactive wallpaper like `shaderbg`.
+Canoe then no longer sees clicks on the empty desktop, so they neither open
+the menu nor unfocus windows.
 
 ### Rule Matching
 
@@ -203,6 +413,8 @@ swallow_top = 48
 - foot terminal (for Super+Shift+Return)
 - fuzzel (for Super+Space launcher)
 - swaylock (for Super+L screen lock)
+- xdg-desktop-portal-wlr (for screen sharing)
+- A color emoji font such as Noto Color Emoji (optional, for emoji in window titles; without one, emoji are drawn in monochrome if any installed font has them)
 
 ## License
 

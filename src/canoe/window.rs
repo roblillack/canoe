@@ -10,6 +10,7 @@ use crate::protocol::{RiverNodeV1, RiverOutputV1, RiverWindowV1};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Weak;
+use wayland_client::Proxy;
 
 /// Window identifier
 pub type WindowId = usize;
@@ -111,6 +112,9 @@ pub struct Window {
     pub app_id: Option<String>,
     /// Window title
     pub title: Option<String>,
+    /// Compositor-assigned identifier, shared with ext-foreign-toplevel-list-v1
+    /// (river_window_v1 version 4 and later)
+    pub identifier: Option<String>,
     /// Parent window (if any)
     pub parent: Option<WindowId>,
     /// Swallow top pixels from window content
@@ -165,6 +169,9 @@ pub struct Window {
     pub unhandled_events: VecDeque<WindowEvent>,
     /// Position is undefined (newly created)
     pub position_undefined: bool,
+    /// Placed while larger than its output's usable area; propose a size
+    /// that fits in the next manage sequence
+    pub pending_initial_fit: bool,
     /// Titlebar for server-side decoration
     pub titlebar: Option<super::Titlebar>,
     /// Shadow decoration surface
@@ -195,6 +202,7 @@ impl Window {
             pid: 0,
             app_id: None,
             title: None,
+            identifier: None,
             parent: None,
             swallow_top: 0,
             x: 0,
@@ -220,6 +228,7 @@ impl Window {
             operator: Operator::None,
             unhandled_events: VecDeque::new(),
             position_undefined: true,
+            pending_initial_fit: false,
             titlebar: None,
             shadow: None,
             titlebar_hovered: None,
@@ -274,6 +283,35 @@ impl Window {
         }
     }
 
+    /// How this window's frame takes up fractional-scale rounding: tiled
+    /// windows meet the screen edges and each other exactly; floating ones
+    /// keep their border and titlebar a constant size as they move.
+    pub fn frame_fit(&self) -> super::titlebar::FrameFit {
+        if self.maximized || self.snap_state.is_some() {
+            super::titlebar::FrameFit::Tiled
+        } else {
+            super::titlebar::FrameFit::Floating
+        }
+    }
+
+    /// The rectangle the window covers on screen, decorations included, in
+    /// global logical coordinates: `(x, y, width, height)`.
+    pub fn frame_rect(&self, ui: &crate::config::UiConfig) -> (i32, i32, i32, i32) {
+        let fullscreen = !matches!(self.fullscreen, FullscreenState::None);
+        if fullscreen || self.decoration == Some(WindowDecoration::Csd) {
+            return (self.x, self.y, self.width, self.height);
+        }
+        let border = super::titlebar::border_width(ui, self.frame_style());
+        let titlebar = super::titlebar::titlebar_height(ui);
+        let swallow_top = self.swallow_top.clamp(0, self.height);
+        (
+            self.x - border,
+            self.y - border - titlebar + swallow_top,
+            self.width + border * 2,
+            self.height - swallow_top + titlebar + border * 2,
+        )
+    }
+
     /// Check if window is visible on the given output
     pub fn is_visible_on(&self, output: &super::Output) -> bool {
         if self.hidden {
@@ -323,6 +361,22 @@ impl Window {
         self.proposed_height = 0;
         if let Some(ref rwm_window) = self.rwm_window {
             rwm_window.propose_dimensions(0, 0);
+        }
+    }
+
+    /// The dimensions last proposed to the compositor
+    #[cfg(test)]
+    pub fn proposed_dimensions(&self) -> (i32, i32) {
+        (self.proposed_width, self.proposed_height)
+    }
+
+    /// Recommend that the window keep within the given size when it picks
+    /// its own dimensions. Only a hint; ignored by River before version 4.
+    pub fn set_dimension_bounds(&self, max_width: i32, max_height: i32) {
+        if let Some(ref rwm_window) = self.rwm_window {
+            if rwm_window.version() >= 4 {
+                rwm_window.set_dimension_bounds(max_width.max(0), max_height.max(0));
+            }
         }
     }
 
@@ -433,6 +487,35 @@ impl Window {
             rwm_window.inform_not_fullscreen();
         }
         self.fullscreen = FullscreenState::None;
+    }
+
+    /// Whether the window is fullscreen on the output with the given id
+    pub fn is_fullscreen_on(&self, output_id: super::OutputId) -> bool {
+        match &self.fullscreen {
+            FullscreenState::Output(output) => output
+                .upgrade()
+                .is_some_and(|output| output.borrow().id == output_id),
+            _ => false,
+        }
+    }
+
+    /// River implicitly exits fullscreen when the fullscreen output is
+    /// removed (see river_window_v1.fullscreen). Sync our state and tell the
+    /// client. Returns whether the window was fullscreen on a removed output;
+    /// the caller must then propose a position and dimensions.
+    pub fn clear_stale_fullscreen(&mut self) -> bool {
+        let FullscreenState::Output(ref output) = self.fullscreen else {
+            return false;
+        };
+        if output.upgrade().is_some() {
+            return false;
+        }
+        if let Some(ref rwm_window) = self.rwm_window {
+            rwm_window.inform_not_fullscreen();
+        }
+        self.fullscreen = FullscreenState::None;
+        self.pending_unfullscreen_restore = false;
+        true
     }
 
     /// Inform window it's maximized
