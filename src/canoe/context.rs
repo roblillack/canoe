@@ -256,7 +256,23 @@ impl Context {
         let was_focused = self.focused_window == Some(window_id);
 
         self.focus_stack.retain(|&id| id != window_id);
-        self.windows.remove(&window_id);
+        let was_minimized = self
+            .windows
+            .remove(&window_id)
+            .is_some_and(|w| w.borrow().hidden);
+
+        // A minimized window has a desktop icon: redraw without it, and
+        // don't leave it selected for keyboard navigation.
+        if was_minimized {
+            for output in self.outputs.values() {
+                if let Some(desktop) = output.borrow_mut().desktop_surface.as_mut() {
+                    if desktop.selected_icon == Some(window_id) {
+                        desktop.selected_icon = None;
+                    }
+                }
+            }
+            self.mark_all_desktops_dirty();
+        }
 
         if let Some(picker) = self.share_picker.as_mut() {
             picker.remove_target(super::share_picker::ShareTarget::Window(window_id));

@@ -41,6 +41,8 @@ Xwayland. (#66)
 - The first click after moving or resizing a window by its own (client-side)
   decorations, as in GNOME Calculator, reaches what it is on instead of that
   window. (#66)
+- The desktop icon of a minimized window disappears when the window closes,
+  instead of staying until it is clicked. (#69)
 
 ## [0.6.2] - 2026-11-07
 

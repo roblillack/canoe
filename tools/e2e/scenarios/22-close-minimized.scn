@@ -1,0 +1,13 @@
+# A minimized window that closes takes its desktop icon with it right
+# away, not only once the desktop is redrawn for something else.
+spawn $WLTEST --app-id keep --title Keep --size 300x200
+wait-toplevel keep 4000
+key super+h
+spawn exec $WLTEST --app-id gone --title Gone --size 300x200 --color d03030
+wait-toplevel gone 4000
+key super+h
+shot 01-two-icons
+# [g]: don't match the shell running pkill itself.
+run pkill -f 'app-id [g]one'
+wait-gone gone 4000
+shot 02-after-close
