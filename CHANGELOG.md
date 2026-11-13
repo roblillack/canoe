@@ -94,6 +94,9 @@ Xwayland. (#66)
 
 ### Fixed
 
+- Drag and drop shows what is dragged and what a drop would do: the
+  program's drag icon follows the pointer, and the cursor shows copy, move,
+  ask or no-drop. Escape cancels the drag. (#91)
 - Windows are no longer minimized when the last output goes away, e.g.
   while the only monitor wakes up and reconnects; they come back on the
   first output that appears. (#82)

@@ -150,6 +150,16 @@ fn fallback_names(name: &str) -> &'static [&'static str] {
         "ns-resize" => &["sb_v_double_arrow", "left_ptr"],
         "all-scroll" => &["fleur", "left_ptr"],
         "text" => &["xterm", "left_ptr"],
+        "dnd-copy" => &["copy", "left_ptr"],
+        "dnd-move" => &["grabbing", "closedhand", "left_ptr"],
+        "dnd-ask" => &["context-menu", "left_ptr"],
+        "dnd-no-drop" => &[
+            "no-drop",
+            "not-allowed",
+            "forbidden",
+            "crossed_circle",
+            "left_ptr",
+        ],
         _ => &["left_ptr", "default"],
     }
 }

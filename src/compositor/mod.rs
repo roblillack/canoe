@@ -41,6 +41,7 @@ use smithay::output::Output;
 use smithay::reexports::calloop::generic::Generic;
 use smithay::reexports::calloop::{Interest, LoopHandle, LoopSignal, Mode, PostAction};
 use smithay::reexports::wayland_server::backend::{ClientData, ClientId, DisconnectReason};
+use smithay::reexports::wayland_server::protocol::wl_data_device_manager::DndAction;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::reexports::wayland_server::{Display, DisplayHandle};
 use smithay::utils::{Logical, Point, Size};
@@ -288,6 +289,41 @@ pub struct PointerOp {
     pub released: bool,
 }
 
+/// A drag a client is doing, from `started` to `dropped`.
+pub struct Dnd {
+    /// The icon it carries along under the pointer, if it gave one.
+    pub icon: Option<DndIcon>,
+    /// The surface under the pointer, which the drag is offered to.
+    pub target: Option<WlSurface>,
+    /// What a drop on `target` would do, as it chose: empty until it chooses,
+    /// and when it won't take the drag.
+    pub action: DndAction,
+}
+
+impl Dnd {
+    /// The cursor showing what a drop would do: the drag-and-drop cursors
+    /// themes have, fallen back on as `cursor` does.
+    pub fn cursor_name(&self) -> &'static str {
+        if self.action == DndAction::Copy {
+            "dnd-copy"
+        } else if self.action == DndAction::Move {
+            "dnd-move"
+        } else if self.action == DndAction::Ask {
+            "dnd-ask"
+        } else {
+            "dnd-no-drop"
+        }
+    }
+}
+
+/// The icon a client's drag carries along under the pointer.
+pub struct DndIcon {
+    pub surface: WlSurface,
+    /// Where its top left corner is from the pointer: the offsets of the
+    /// buffers the client attached to it, added up.
+    pub offset: Point<i32, Logical>,
+}
+
 /// Where a key press went, so its release goes there too.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KeyConsumer {
@@ -410,6 +446,8 @@ pub struct State {
     /// during pointer operations; `None` hides it.
     pub wm_cursor: Option<CursorShape>,
     pub client_cursor: smithay::input::pointer::CursorImageStatus,
+    /// The drag a client is doing, while it lasts.
+    pub dnd: Option<Dnd>,
     pub cursor: cursor::CursorTheme,
     /// Keyboard focus held by a layer surface (exclusive or on demand).
     pub layer_focus: Option<(WlSurface, bool)>,
@@ -624,6 +662,7 @@ impl State {
             pointer_location: (0.0, 0.0).into(),
             wm_cursor: Some(CursorShape::Default),
             client_cursor: smithay::input::pointer::CursorImageStatus::default_named(),
+            dnd: None,
             cursor,
             layer_focus: None,
             lock_state: LockState::Unlocked,
@@ -759,6 +798,15 @@ impl State {
         {
             smithay::desktop::utils::send_frames_surface_tree(
                 surface,
+                output,
+                time,
+                Some(Duration::ZERO),
+                |_, _| Some(output.clone()),
+            );
+        }
+        if let Some(icon) = self.dnd.as_ref().and_then(|d| d.icon.as_ref()) {
+            smithay::desktop::utils::send_frames_surface_tree(
+                &icon.surface,
                 output,
                 time,
                 Some(Duration::ZERO),

@@ -13,6 +13,8 @@ use smithay::output::Output;
 use smithay::reexports::wayland_protocols::xdg::decoration::zv1::server::zxdg_toplevel_decoration_v1::Mode as DecorationMode;
 use smithay::reexports::wayland_protocols::xdg::shell::server::xdg_toplevel;
 use smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer;
+use smithay::reexports::wayland_server::protocol::wl_data_device_manager::DndAction;
+use smithay::reexports::wayland_server::protocol::wl_data_source::WlDataSource;
 use smithay::reexports::wayland_server::protocol::wl_output::WlOutput;
 use smithay::reexports::wayland_server::protocol::wl_seat::WlSeat;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
@@ -21,7 +23,7 @@ use smithay::utils::{Logical, Point, Rectangle, Serial};
 use smithay::wayland::buffer::BufferHandler;
 use smithay::wayland::compositor::{
     get_parent, is_sync_subsurface, with_states, CompositorClientState, CompositorHandler,
-    CompositorState,
+    CompositorState, SurfaceAttributes,
 };
 use smithay::wayland::dmabuf::{DmabufHandler, DmabufState, ImportNotifier};
 use smithay::wayland::foreign_toplevel_list::{ForeignToplevelListHandler, ForeignToplevelListState};
@@ -31,7 +33,8 @@ use smithay::wayland::idle_notify::{IdleNotifierHandler, IdleNotifierState};
 use smithay::wayland::output::OutputHandler;
 use smithay::wayland::pointer_constraints::{with_pointer_constraint, PointerConstraintsHandler};
 use smithay::wayland::selection::data_device::{
-    set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler, DataDeviceState,
+    default_action_chooser, set_data_device_focus, ClientDndGrabHandler, DataDeviceHandler,
+    DataDeviceState,
     ServerDndGrabHandler,
 };
 use smithay::wayland::selection::primary_selection::{
@@ -94,6 +97,7 @@ impl CompositorHandler for State {
     fn commit(&mut self, surface: &WlSurface) {
         on_commit_buffer_handler::<Self>(surface);
         self.backend_early_import(surface);
+        self.dnd_icon_committed(surface);
 
         if !is_sync_subsurface(surface) {
             let mut root = surface.clone();
@@ -126,6 +130,26 @@ impl CompositorHandler for State {
 impl State {
     /// Upload buffers early where the backend wants it (no-op for now).
     fn backend_early_import(&mut self, _surface: &WlSurface) {}
+
+    /// A drag's icon committed: a buffer attached with an offset moves the
+    /// icon by it, relative to the pointer.
+    fn dnd_icon_committed(&mut self, surface: &WlSurface) {
+        let icon = self.dnd.as_mut().and_then(|d| d.icon.as_mut());
+        let Some(icon) = icon.filter(|i| &i.surface == surface) else {
+            return;
+        };
+        let delta = with_states(surface, |states| {
+            states
+                .cached_state
+                .get::<SurfaceAttributes>()
+                .current()
+                .buffer_delta
+                .take()
+        });
+        if let Some(delta) = delta {
+            icon.offset += delta;
+        }
+    }
 
     /// A layer surface committed: send the initial configure and re-arrange
     /// its output.
@@ -680,9 +704,44 @@ impl DataDeviceHandler for State {
     fn data_device_state(&self) -> &DataDeviceState {
         &self.data_device_state
     }
+
+    /// The target of a drag chose what a drop would do (or that it won't take
+    /// it): the cursor shows it.
+    fn action_choice(&mut self, available: DndAction, preferred: DndAction) -> DndAction {
+        let action = default_action_chooser(available, preferred);
+        if let Some(dnd) = self.dnd.as_mut() {
+            dnd.action = action;
+            self.queue_redraw_all();
+        }
+        action
+    }
 }
 
-impl ClientDndGrabHandler for State {}
+/// A client's drag shows the icon it gave, under the pointer, until it ends:
+/// dropped, refused or called off, Smithay reports each as `dropped`.
+impl ClientDndGrabHandler for State {
+    fn started(
+        &mut self,
+        _source: Option<WlDataSource>,
+        icon: Option<WlSurface>,
+        _seat: Seat<Self>,
+    ) {
+        self.dnd = Some(super::Dnd {
+            icon: icon.map(|surface| super::DndIcon {
+                surface,
+                offset: (0, 0).into(),
+            }),
+            target: None,
+            action: DndAction::empty(),
+        });
+        self.queue_redraw_all();
+    }
+
+    fn dropped(&mut self, _target: Option<WlSurface>, _validated: bool, _seat: Seat<Self>) {
+        self.dnd = None;
+        self.queue_redraw_all();
+    }
+}
 impl ServerDndGrabHandler for State {}
 
 impl PrimarySelectionHandler for State {
