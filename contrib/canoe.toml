@@ -94,6 +94,7 @@
 #titlebar_text_inactive = "#000000"
 #titlebar_bg_active = "#000080"
 #titlebar_bg_inactive = "#FFFFFF"
+#titlebar_text_align = "center" # or "left"
 #menu_bg = "#C0C0C0"
 #menu_text = "#000000"
 #menu_highlight_bg = "#000080"

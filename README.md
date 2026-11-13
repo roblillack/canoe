@@ -460,6 +460,7 @@ titlebar_text_active = "#000000"
 titlebar_text_inactive = "#808080"
 titlebar_bg_active = "#FFD000"
 titlebar_bg_inactive = "#202020"
+titlebar_text_align = "center"  # or "left", next to the close button
 menu_bg = "#000000"
 menu_text = "#FFFFFF"
 menu_highlight_bg = "#FFD000"
