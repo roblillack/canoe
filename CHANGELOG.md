@@ -80,6 +80,9 @@ Xwayland. (#66)
 - Super+Tab, Super+` and the window menu of the desktop list only the
   windows on their output. `window_list_scope = "all"` lists the windows on
   every output again.
+- Super+Alt+Arrow sends the focused window to the output in that direction,
+  like Super+Shift+Arrow, instead of to the "next" or "previous" output in
+  no particular order.
 
 - Window titles are centered in the titlebar, moving aside where the
   buttons are in the way. `titlebar_text_align = "left"` under `[ui]` puts

@@ -79,8 +79,8 @@ pub enum Action {
     /// with the pointer in its middle
     FocusOutput { direction: OutputDirection },
 
-    /// Send focused window to another output
-    SendToOutput { direction: Direction },
+    /// Send the focused window to the output next to its own
+    SendToOutput { direction: OutputDirection },
     /// Start pointer move operation
     PointerMove,
     /// Start pointer resize operation
@@ -207,7 +207,7 @@ pub fn default_xkb_bindings(
             Keysym::Left.raw(),
             super_alt,
             Action::SendToOutput {
-                direction: Direction::Reverse,
+                direction: OutputDirection::Left,
             },
             super::BindingEvent::Pressed,
         ),
@@ -216,7 +216,7 @@ pub fn default_xkb_bindings(
             Keysym::Right.raw(),
             super_alt,
             Action::SendToOutput {
-                direction: Direction::Forward,
+                direction: OutputDirection::Right,
             },
             super::BindingEvent::Pressed,
         ),
@@ -225,7 +225,7 @@ pub fn default_xkb_bindings(
             Keysym::Up.raw(),
             super_alt,
             Action::SendToOutput {
-                direction: Direction::Reverse,
+                direction: OutputDirection::Up,
             },
             super::BindingEvent::Pressed,
         ),
@@ -234,7 +234,7 @@ pub fn default_xkb_bindings(
             Keysym::Down.raw(),
             super_alt,
             Action::SendToOutput {
-                direction: Direction::Forward,
+                direction: OutputDirection::Down,
             },
             super::BindingEvent::Pressed,
         ),
