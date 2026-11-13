@@ -45,6 +45,18 @@ impl MainModifier {
     }
 }
 
+/// Which windows the window lists (Super+Tab, Super+` and the desktop's
+/// window menu) show.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowListScope {
+    /// The windows on the output the list opens on.
+    #[default]
+    Output,
+    /// The windows on every output.
+    All,
+}
+
 /// Input mode for bindings
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Mode {
@@ -279,6 +291,8 @@ pub struct Config {
     /// monitors and set them up that way again when it comes back.
     pub remember_outputs: bool,
     pub main_modifier: MainModifier,
+    /// Which windows the window lists show.
+    pub window_list_scope: WindowListScope,
 
     pub repeat_rate: i32,
     pub repeat_delay: i32,
@@ -320,6 +334,7 @@ impl Default for Config {
             emulate_kwin: false,
             remember_outputs: true,
             main_modifier: MainModifier::default(),
+            window_list_scope: WindowListScope::default(),
 
             repeat_rate: 50,
             repeat_delay: 300,
@@ -507,6 +522,7 @@ fn xcursor_search_paths_from(
 struct FileConfig {
     env: Option<HashMap<String, String>>,
     main_modifier: Option<MainModifier>,
+    window_list_scope: Option<WindowListScope>,
     xcursor_theme: Option<String>,
     xcursor_size: Option<u32>,
     xwayland_hidpi: Option<bool>,
@@ -991,6 +1007,9 @@ impl Config {
         if let Some(main_modifier) = file.main_modifier {
             self.main_modifier = main_modifier;
         }
+        if let Some(scope) = file.window_list_scope {
+            self.window_list_scope = scope;
+        }
         if let Some(name) = file.xcursor_theme {
             let name = name.trim();
             self.xcursor_theme = (!name.is_empty()).then(|| name.to_string());
@@ -1269,6 +1288,7 @@ mod tests {
 
         let defaults = Config::default();
         assert_eq!(config.main_modifier, defaults.main_modifier);
+        assert_eq!(config.window_list_scope, defaults.window_list_scope);
         assert_eq!(config.launcher_cmd, defaults.launcher_cmd);
         assert_eq!(config.terminal_cmd, defaults.terminal_cmd);
         assert_eq!(config.lock_cmd, defaults.lock_cmd);

@@ -1,0 +1,23 @@
+#! outputs 1280x720,1280x720
+# Super+Shift+Arrow focuses the output in that direction: its last focused
+# window, with the pointer in its middle. Super+Tab lists only the windows
+# on its output.
+devices
+spawn $WLTEST --app-id one --color c04040 | sed -u 's/^/one: /'
+wait-toplevel one
+spawn $WLTEST --app-id two --color 40a040 | sed -u 's/^/two: /'
+wait-toplevel two
+key super+alt+Right
+spawn $WLTEST --app-id three --color 4040c0 | sed -u 's/^/three: /'
+wait-toplevel three
+sleep 300
+key super+shift+Left
+shot 01-left-output
+key super+shift+Right
+shot 02-right-output
+# Nothing past the last output: the focus stays.
+key super+shift+Right
+shot 03-no-wrap-around
+key super+shift+Left
+spawn sleep 0.7; grim -c $OUT/04-switcher-left-output.png
+keydown super ; key Tab ; sleep 1200 ; key Escape ; keyup super

@@ -27,6 +27,15 @@ impl SnapSide {
     }
 }
 
+/// Where an output lies from another one
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OutputDirection {
+    Left,
+    Right,
+    Up,
+    Down,
+}
+
 /// Window manager state for custom actions
 #[derive(Debug, Clone)]
 pub struct State {}
@@ -66,11 +75,12 @@ pub enum Action {
 
     /// Cycle focus through windows
     FocusIter { direction: Direction },
-    /// Cycle focus through outputs
-    FocusOutputIter { direction: Direction },
+    /// Focus the output next to the current one: its last focused window,
+    /// with the pointer in its middle
+    FocusOutput { direction: OutputDirection },
 
-    /// Send focused window to another output
-    SendToOutput { direction: Direction },
+    /// Send the focused window to the output next to its own
+    SendToOutput { direction: OutputDirection },
     /// Start pointer move operation
     PointerMove,
     /// Start pointer resize operation
@@ -197,7 +207,7 @@ pub fn default_xkb_bindings(
             Keysym::Left.raw(),
             super_alt,
             Action::SendToOutput {
-                direction: Direction::Reverse,
+                direction: OutputDirection::Left,
             },
             super::BindingEvent::Pressed,
         ),
@@ -206,7 +216,7 @@ pub fn default_xkb_bindings(
             Keysym::Right.raw(),
             super_alt,
             Action::SendToOutput {
-                direction: Direction::Forward,
+                direction: OutputDirection::Right,
             },
             super::BindingEvent::Pressed,
         ),
@@ -215,7 +225,7 @@ pub fn default_xkb_bindings(
             Keysym::Up.raw(),
             super_alt,
             Action::SendToOutput {
-                direction: Direction::Reverse,
+                direction: OutputDirection::Up,
             },
             super::BindingEvent::Pressed,
         ),
@@ -224,7 +234,44 @@ pub fn default_xkb_bindings(
             Keysym::Down.raw(),
             super_alt,
             Action::SendToOutput {
-                direction: Direction::Forward,
+                direction: OutputDirection::Down,
+            },
+            super::BindingEvent::Pressed,
+        ),
+        // Focus the output next to the current one
+        (
+            Mode::Default,
+            Keysym::Left.raw(),
+            main | shift,
+            Action::FocusOutput {
+                direction: OutputDirection::Left,
+            },
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::Default,
+            Keysym::Right.raw(),
+            main | shift,
+            Action::FocusOutput {
+                direction: OutputDirection::Right,
+            },
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::Default,
+            Keysym::Up.raw(),
+            main | shift,
+            Action::FocusOutput {
+                direction: OutputDirection::Up,
+            },
+            super::BindingEvent::Pressed,
+        ),
+        (
+            Mode::Default,
+            Keysym::Down.raw(),
+            main | shift,
+            Action::FocusOutput {
+                direction: OutputDirection::Down,
             },
             super::BindingEvent::Pressed,
         ),

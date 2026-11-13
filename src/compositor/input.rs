@@ -469,6 +469,17 @@ impl State {
         pointer.frame(self);
     }
 
+    /// Move the pointer to `location` for the window manager, unless it is
+    /// busy moving or resizing a window or carrying a drag, which would
+    /// lose track of where they started.
+    pub fn warp_pointer(&mut self, location: Point<f64, Logical>) {
+        if self.pointer_op.is_some() || self.pointer_dragging() {
+            return;
+        }
+        let time = self.start_time.elapsed().as_millis() as u32;
+        self.on_pointer_motion(location, time, None);
+    }
+
     /// Give pointer focus to what is under the pointer again.
     pub fn refresh_pointer_focus(&mut self) {
         let location = self.pointer_location;

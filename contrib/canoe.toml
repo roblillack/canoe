@@ -13,6 +13,11 @@
 # Modifier for the built-in shortcuts: "super" or "alt".
 #main_modifier = "super"
 
+# Which windows the window lists (Super+Tab, Super+` and the window menu of
+# the desktop) show: "output" for those on the output the list opens on,
+# "all" for the windows on every output.
+#window_list_scope = "output"
+
 # Programs Canoe launches. Each is a program name or an argv array. A plain
 # string is not run through a shell, so pass arguments as an array, e.g.
 # lock_cmd = ["swaylock", "-f", "-c", "000000"].

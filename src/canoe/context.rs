@@ -1,5 +1,6 @@
 //! Core context - central state management
 
+use crate::binding::action::OutputDirection;
 use crate::binding::{Action, Direction, PointerBinding, XkbBinding};
 use crate::config::{load_config, Config, WindowDecoration};
 use crate::rule;
@@ -714,8 +715,8 @@ impl Context {
             Action::FocusIter { direction } => {
                 self.focus_iter(direction);
             }
-            Action::FocusOutputIter { direction } => {
-                self.focus_output_iter(direction);
+            Action::FocusOutput { direction } => {
+                self.focus_output_toward(direction, seat_id);
             }
             Action::SendToOutput { direction } => {
                 self.send_to_output(direction);
@@ -942,60 +943,45 @@ impl Context {
         }
     }
 
-    /// Focus next/previous output
-    fn focus_output_iter(&mut self, direction: Direction) {
-        let output_ids: Vec<OutputId> = self.outputs.keys().copied().collect();
-        if output_ids.len() <= 1 {
+    /// Focus the output next to the current one in `direction` (see
+    /// [`output_toward`]): its last focused window, or none if it shows no
+    /// window, and put the pointer in its middle so it is where the
+    /// keyboard is.
+    fn focus_output_toward(&mut self, direction: OutputDirection, seat_id: SeatId) {
+        let Some(target) = self
+            .window_list_output()
+            .and_then(|from| self.output_next_to(from, direction))
+        else {
             return;
-        }
-
-        let current_idx = self
-            .current_output
-            .and_then(|id| output_ids.iter().position(|&oid| oid == id))
-            .unwrap_or(0);
-
-        let next_idx = match direction {
-            Direction::Forward => (current_idx + 1) % output_ids.len(),
-            Direction::Reverse => {
-                if current_idx == 0 {
-                    output_ids.len() - 1
-                } else {
-                    current_idx - 1
-                }
-            }
         };
 
-        self.current_output = Some(output_ids[next_idx]);
-
-        // Focus top window on new output
-        if let Some(output) = self.outputs.get(&output_ids[next_idx]) {
-            let output_ref = output.borrow();
-            if let Some(window_id) = self.windows.iter().find_map(|(&id, w)| {
-                if w.borrow().is_visible_on(&output_ref) {
-                    Some(id)
-                } else {
-                    None
-                }
-            }) {
-                drop(output_ref);
-                self.focus(window_id);
-            }
+        self.focus_output(target);
+        let (x, y, width, height) = output_rect(&self.outputs[&target]);
+        if let Some(seat) = self.seats.get(&seat_id) {
+            seat.borrow().warp_pointer(x + width / 2, y + height / 2);
         }
     }
 
+    /// The output next to `from` in `direction` (see [`output_toward`]).
+    fn output_next_to(&self, from: OutputId, direction: OutputDirection) -> Option<OutputId> {
+        let from_rect = output_rect(self.outputs.get(&from)?);
+        let others: Vec<(OutputId, OutputRect)> = self
+            .outputs
+            .iter()
+            .filter(|&(&id, _)| id != from)
+            .map(|(&id, output)| (id, output_rect(output)))
+            .collect();
+        output_toward(from_rect, &others, direction)
+    }
+
     /// Send focused window to next/previous output
-    fn send_to_output(&mut self, direction: Direction) {
+    fn send_to_output(&mut self, direction: OutputDirection) {
         let window_id = match self.focused_window {
             Some(id) => id,
             None => return,
         };
 
-        let output_ids: Vec<OutputId> = self.outputs.keys().copied().collect();
-        if output_ids.len() <= 1 {
-            return;
-        }
-
-        let current_output_id = self
+        let Some(current_output_id) = self
             .windows
             .get(&window_id)
             .and_then(|window| {
@@ -1007,29 +993,12 @@ impl Context {
             })
             .map(|output| output.borrow().id)
             .or(self.current_output)
-            .unwrap_or(output_ids[0]);
-
-        let current_idx = output_ids
-            .iter()
-            .position(|&oid| oid == current_output_id)
-            .unwrap_or(0);
-
-        let next_idx = match direction {
-            Direction::Forward => (current_idx + 1) % output_ids.len(),
-            Direction::Reverse => {
-                if current_idx == 0 {
-                    output_ids.len() - 1
-                } else {
-                    current_idx - 1
-                }
-            }
-        };
-
-        let current_output_id = output_ids[current_idx];
-        let target_output_id = output_ids[next_idx];
-        if target_output_id == current_output_id {
+        else {
             return;
-        }
+        };
+        let Some(target_output_id) = self.output_next_to(current_output_id, direction) else {
+            return;
+        };
 
         let (old_area, new_area, window_rect, fullscreen) = {
             let Some(window) = self.windows.get(&window_id) else {
@@ -2928,9 +2897,30 @@ impl Context {
         }
     }
 
-    /// Build menu items for windows (including hidden, but not those that
-    /// skip switchers).
-    pub fn collect_menu_items(&self, _output_id: OutputId) -> Vec<MenuItem> {
+    /// The output Super+Tab and Super+` open their window list on: the
+    /// focused window's, or the current one with no window focused.
+    pub fn window_list_output(&self) -> Option<OutputId> {
+        self.focused_window
+            .and_then(|id| self.output_for_window_id(id))
+            .or(self.current_output)
+    }
+
+    /// Whether a window belongs in a window list opened on `output_id`: it
+    /// doesn't skip switchers and, unless the lists show every window, is
+    /// on that output.
+    fn in_window_list(&self, window_id: WindowId, w: &Window, output_id: OutputId) -> bool {
+        !w.skip_switcher
+            && match self.config.window_list_scope {
+                crate::config::WindowListScope::All => true,
+                crate::config::WindowListScope::Output => {
+                    self.output_for_window_id(window_id) == Some(output_id)
+                }
+            }
+    }
+
+    /// Build menu items for the window list opened on `output_id` (including
+    /// hidden windows, but not those that skip switchers).
+    pub fn collect_menu_items(&self, output_id: OutputId) -> Vec<MenuItem> {
         let focused = self.focused_window;
 
         let mut items = Vec::new();
@@ -2940,7 +2930,7 @@ impl Context {
             if let Some(window) = self.windows.get(window_id) {
                 seen.insert(*window_id);
                 let w = window.borrow();
-                if !w.skip_switcher {
+                if self.in_window_list(*window_id, &w, output_id) {
                     items.push(menu_item_from_window(*window_id, focused, &w, true));
                 }
             }
@@ -2951,7 +2941,7 @@ impl Context {
                 continue;
             }
             let w = window.borrow();
-            if !w.skip_switcher {
+            if self.in_window_list(window_id, &w, output_id) {
                 items.push(menu_item_from_window(window_id, focused, &w, true));
             }
         }
@@ -2959,9 +2949,10 @@ impl Context {
         items
     }
 
-    /// Build menu items for windows sharing the given app id (including
-    /// hidden, but not those that skip switchers).
-    pub fn collect_menu_items_for_app(&self, _output_id: OutputId, app_id: &str) -> Vec<MenuItem> {
+    /// Build menu items for windows sharing the given app id in the window
+    /// list opened on `output_id` (including hidden windows, but not those
+    /// that skip switchers).
+    pub fn collect_menu_items_for_app(&self, output_id: OutputId, app_id: &str) -> Vec<MenuItem> {
         let focused = self.focused_window;
 
         let mut items = Vec::new();
@@ -2970,7 +2961,9 @@ impl Context {
         for window_id in &self.focus_stack {
             if let Some(window) = self.windows.get(window_id) {
                 let w = window.borrow();
-                if w.app_id.as_deref() == Some(app_id) && !w.skip_switcher {
+                if w.app_id.as_deref() == Some(app_id)
+                    && self.in_window_list(*window_id, &w, output_id)
+                {
                     items.push(menu_item_from_window(*window_id, focused, &w, false));
                     seen.insert(*window_id);
                 }
@@ -2982,7 +2975,8 @@ impl Context {
                 continue;
             }
             let w = window.borrow();
-            if w.app_id.as_deref() == Some(app_id) && !w.skip_switcher {
+            if w.app_id.as_deref() == Some(app_id) && self.in_window_list(window_id, &w, output_id)
+            {
                 items.push(menu_item_from_window(window_id, focused, &w, false));
             }
         }
@@ -4004,6 +3998,56 @@ fn calculate_resize_edges_near_border(
     edges
 }
 
+/// An output's rectangle in the global space: x, y, width, height.
+type OutputRect = (i32, i32, i32, i32);
+
+fn output_rect(output: &Rc<RefCell<Output>>) -> OutputRect {
+    let o = output.borrow();
+    (o.x, o.y, o.width, o.height)
+}
+
+/// The output to go to from the output at `from` in `direction`, among
+/// `others`.
+///
+/// An output lies in a direction when its center is past that edge of
+/// `from`. Of those, the one closest along the direction wins, preferring
+/// outputs that line up with `from` across it. Past the last output there
+/// is none: it doesn't wrap around.
+fn output_toward(
+    from: OutputRect,
+    others: &[(OutputId, OutputRect)],
+    direction: OutputDirection,
+) -> Option<OutputId> {
+    // Work in a frame where the direction is to the right: each rectangle
+    // as (start, end) along the direction and across it, doubled to keep
+    // centers whole.
+    let frame = |(x, y, w, h): OutputRect| {
+        let (x, y, w, h) = (x as i64 * 2, y as i64 * 2, w as i64 * 2, h as i64 * 2);
+        let (along, across) = match direction {
+            OutputDirection::Right => ((x, x + w), (y, y + h)),
+            OutputDirection::Left => ((-x - w, -x), (y, y + h)),
+            OutputDirection::Down => ((y, y + h), (x, x + w)),
+            OutputDirection::Up => ((-y - h, -y), (x, x + w)),
+        };
+        (along, across)
+    };
+    let center = |(start, end): (i64, i64)| (start + end) / 2;
+    let ((_, from_end), from_across) = frame(from);
+    others
+        .iter()
+        .map(|&(id, rect)| {
+            let (along, across) = frame(rect);
+            let overlaps = across.0 < from_across.1 && from_across.0 < across.1;
+            let skew = (center(across) - center(from_across)).abs();
+            (id, along, overlaps, skew)
+        })
+        .filter(|&(_, along, ..)| center(along) > from_end)
+        .min_by_key(|&(id, along, overlaps, skew)| {
+            (!overlaps, (along.0 - from_end).max(0), skew, id)
+        })
+        .map(|(id, ..)| id)
+}
+
 fn cursor_shape_for_edges(edges: u32) -> Option<CursorShape> {
     let horiz = edges & (4 | 8);
     let vert = edges & (1 | 2);
@@ -5017,5 +5061,150 @@ mod tests {
 
         assert_eq!(ctx.focused_window, None);
         assert!(ctx.show_desktop.is_none());
+    }
+
+    // Outputs for the tests below: (id, x, y, width, height).
+    fn rects(outputs: &[(OutputId, i32, i32, i32, i32)]) -> Vec<(OutputId, OutputRect)> {
+        outputs
+            .iter()
+            .map(|&(id, x, y, w, h)| (id, (x, y, w, h)))
+            .collect()
+    }
+
+    fn toward(
+        outputs: &[(OutputId, i32, i32, i32, i32)],
+        from: OutputId,
+        direction: OutputDirection,
+    ) -> Option<OutputId> {
+        let all = rects(outputs);
+        let rect = all.iter().find(|(id, _)| *id == from).unwrap().1;
+        let others: Vec<_> = all.into_iter().filter(|(id, _)| *id != from).collect();
+        output_toward(rect, &others, direction)
+    }
+
+    #[test]
+    fn output_toward_goes_to_the_neighbor_without_wrapping_around() {
+        // Three outputs in a row, the middle one taller.
+        let outputs = [
+            (1, 0, 0, 1920, 1080),
+            (2, 1920, 0, 2560, 1440),
+            (3, 4480, 0, 1920, 1080),
+        ];
+        assert_eq!(toward(&outputs, 1, OutputDirection::Right), Some(2));
+        assert_eq!(toward(&outputs, 2, OutputDirection::Right), Some(3));
+        assert_eq!(toward(&outputs, 2, OutputDirection::Left), Some(1));
+        // Nothing past the last one.
+        assert_eq!(toward(&outputs, 3, OutputDirection::Right), None);
+        assert_eq!(toward(&outputs, 1, OutputDirection::Left), None);
+        // Nothing above or below.
+        assert_eq!(toward(&outputs, 2, OutputDirection::Up), None);
+        assert_eq!(toward(&outputs, 2, OutputDirection::Down), None);
+    }
+
+    #[test]
+    fn output_toward_ignores_outputs_mostly_across() {
+        // A laptop below a monitor, a little to the right of its middle.
+        let outputs = [(1, 0, 0, 2560, 1440), (2, 1000, 1440, 1920, 1200)];
+        assert_eq!(toward(&outputs, 2, OutputDirection::Up), Some(1));
+        assert_eq!(toward(&outputs, 1, OutputDirection::Down), Some(2));
+        assert_eq!(toward(&outputs, 1, OutputDirection::Right), None);
+        assert_eq!(toward(&outputs, 2, OutputDirection::Left), None);
+    }
+
+    #[test]
+    fn output_toward_prefers_outputs_lined_up() {
+        // Two outputs stacked on the right of the first: the lower one
+        // lines up with it, the upper one is closer but sits above it.
+        let outputs = [
+            (1, 0, 1080, 1920, 1080),
+            (2, 1920, 0, 1920, 1080),
+            (3, 1920, 1080, 1920, 1080),
+        ];
+        assert_eq!(toward(&outputs, 1, OutputDirection::Right), Some(3));
+        assert_eq!(toward(&outputs, 2, OutputDirection::Left), Some(1));
+        assert_eq!(toward(&outputs, 3, OutputDirection::Up), Some(2));
+    }
+
+    fn two_outputs_with_windows() -> Context {
+        let mut ctx = Context::new(true);
+        for (id, x) in [(1, 0), (2, 1920)] {
+            let mut output = Output::new(id);
+            output.update_position(x, 0);
+            output.update_dimensions(1920, 1080);
+            ctx.outputs.insert(id, Rc::new(RefCell::new(output)));
+        }
+        // Most recently focused first: 10 on output 1, then 21 and 20 on
+        // output 2.
+        for (id, output_id, x) in [(10, 1, 100), (21, 2, 2000), (20, 2, 2100)] {
+            add_window(&mut ctx, id, output_id, (x, 100, 800, 600));
+            ctx.focus_stack.push(id);
+        }
+        ctx.focus(10);
+        ctx
+    }
+
+    #[test]
+    fn focusing_an_output_focuses_its_last_focused_window() {
+        let mut ctx = two_outputs_with_windows();
+
+        ctx.focus_output_toward(OutputDirection::Right, 0);
+
+        assert_eq!(ctx.focused_window, Some(21));
+        assert_eq!(ctx.current_output, Some(2));
+
+        ctx.focus_output_toward(OutputDirection::Left, 0);
+
+        assert_eq!(ctx.focused_window, Some(10));
+        assert_eq!(ctx.current_output, Some(1));
+    }
+
+    #[test]
+    fn focusing_an_output_without_visible_windows_clears_focus() {
+        let mut ctx = two_outputs_with_windows();
+        for id in [20, 21] {
+            ctx.windows[&id].borrow_mut().hidden = true;
+        }
+
+        ctx.focus_output_toward(OutputDirection::Right, 0);
+
+        assert_eq!(ctx.focused_window, None);
+        assert_eq!(ctx.current_output, Some(2));
+    }
+
+    #[test]
+    fn sending_a_window_uses_the_output_in_that_direction() {
+        let mut ctx = two_outputs_with_windows();
+        let output_of = |ctx: &Context, id: WindowId| {
+            let w = ctx.windows[&id].borrow();
+            let output = w.output.as_ref().and_then(|o| o.upgrade());
+            (output.map(|o| o.borrow().id), w.x)
+        };
+
+        // Nothing above or below.
+        ctx.send_to_output(OutputDirection::Up);
+        assert_eq!(output_of(&ctx, 10), (Some(1), 100));
+
+        ctx.send_to_output(OutputDirection::Right);
+        assert_eq!(output_of(&ctx, 10), (Some(2), 2020));
+
+        // Nothing past the last output.
+        ctx.send_to_output(OutputDirection::Right);
+        assert_eq!(output_of(&ctx, 10), (Some(2), 2020));
+
+        ctx.send_to_output(OutputDirection::Left);
+        assert_eq!(output_of(&ctx, 10), (Some(1), 100));
+    }
+
+    #[test]
+    fn window_list_shows_the_windows_of_its_output_by_default() {
+        let mut ctx = two_outputs_with_windows();
+        ctx.windows[&20].borrow_mut().hidden = true;
+        let ids = |items: Vec<MenuItem>| items.iter().map(|i| i.window_id).collect::<Vec<_>>();
+
+        assert_eq!(ids(ctx.collect_menu_items(2)), vec![21, 20]);
+        assert_eq!(ids(ctx.collect_menu_items(1)), vec![10]);
+
+        ctx.config.window_list_scope = crate::config::WindowListScope::All;
+        assert_eq!(ids(ctx.collect_menu_items(1)), vec![10, 21, 20]);
     }
 }
