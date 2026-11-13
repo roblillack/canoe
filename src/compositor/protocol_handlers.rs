@@ -1,19 +1,18 @@
 //! Handlers for the protocols canoe implements itself.
 
 use smithay::backend::input::ButtonState;
-use smithay::output::{Mode, Scale};
 
 use super::protocols::gamma_control::{
     delegate_gamma_control, GammaControlHandler, GammaControlManagerState,
 };
 use super::protocols::output_management::{
-    delegate_output_management, HeadConfiguration, ModeConfiguration, OutputManagementHandler,
-    OutputManagementState,
+    delegate_output_management, HeadConfiguration, OutputManagementHandler, OutputManagementState,
 };
 use super::protocols::output_power::{
     delegate_output_power, Mode as PowerMode, OutputPowerHandler, OutputPowerManagerState,
 };
 use super::protocols::plasma_shell::{delegate_plasma_shell, PlasmaShellHandler};
+use super::protocols::primary_output::delegate_primary_output;
 use super::protocols::toplevel_icon::delegate_toplevel_icon;
 use super::protocols::virtual_pointer::{
     delegate_virtual_pointer, VirtualPointer, VirtualPointerEvent, VirtualPointerHandler,
@@ -200,75 +199,17 @@ impl OutputManagementHandler for State {
         config: Vec<HeadConfiguration>,
         test_only: bool,
     ) -> bool {
-        // Leave at least one output on.
-        if !config.iter().any(|head| head.enabled) {
+        if !self.check_output_layout(&config) {
             return false;
-        }
-        for head in &config {
-            if let Some(scale) = head.scale {
-                if !(0.25..=8.0).contains(&scale) {
-                    return false;
-                }
-            }
-            if let Some(mode) = head.mode {
-                let mode = match mode {
-                    ModeConfiguration::Mode(mode) => mode,
-                    ModeConfiguration::Custom { size, refresh } => Mode {
-                        size,
-                        refresh: refresh.unwrap_or(60_000),
-                    },
-                };
-                if !super::backend::Backend::can_set_mode(self, &head.output, mode) {
-                    return false;
-                }
-            }
         }
         if test_only {
             return true;
         }
-
-        // Move the layout so it starts at 0,0 at the least: Xwayland's
-        // screen starts there, and the pointer can't reach X11 windows on
-        // parts of outputs above or left of it.
-        let (min_x, min_y) = config
-            .iter()
-            .filter(|head| head.enabled)
-            .map(|head| {
-                head.position
-                    .unwrap_or_else(|| head.output.current_location())
-            })
-            .fold((0, 0), |(x, y), pos| (x.min(pos.x), y.min(pos.y)));
-        let shift = smithay::utils::Point::from((-min_x, -min_y));
-
-        for head in config {
-            let output = head.output.clone();
-            if !head.enabled {
-                self.set_output_enabled(&output, false);
-                continue;
-            }
-            if let Some(mode) = head.mode {
-                let mode = match mode {
-                    ModeConfiguration::Mode(mode) => mode,
-                    ModeConfiguration::Custom { size, refresh } => Mode {
-                        size,
-                        refresh: refresh.unwrap_or(60_000),
-                    },
-                };
-                if !super::backend::Backend::set_mode(self, &output, mode) {
-                    return false;
-                }
-            }
-            output.change_current_state(
-                None,
-                head.transform,
-                head.scale.map(Scale::Fractional),
-                Some(head.position.unwrap_or_else(|| output.current_location()) + shift),
-            );
-            self.set_output_enabled(&output, true);
-            self.output_changed(&output);
+        let ok = self.apply_output_layout(config);
+        if ok {
+            self.remember_output_layout();
         }
-        self.queue_redraw_all();
-        true
+        ok
     }
 }
 
@@ -277,6 +218,7 @@ delegate_output_management!(State);
 delegate_output_power!(State);
 delegate_gamma_control!(State);
 delegate_xdg_foreign!(State);
+delegate_primary_output!(State);
 delegate_toplevel_icon!(State);
 delegate_plasma_shell!(State);
 

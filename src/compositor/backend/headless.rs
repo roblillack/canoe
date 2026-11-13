@@ -4,7 +4,9 @@
 //!
 //! `CANOE_HEADLESS_OUTPUTS` lists the outputs as `WIDTHxHEIGHT[@SCALE]`,
 //! comma-separated (default `1280x720`). With `CANOE_HEADLESS_REVERSE` set
-//! they are announced last to first.
+//! they are announced last to first. `CANOE_HEADLESS_LID=open|closed`
+//! makes the first output a laptop's own panel with its lid open or
+//! closed, and SIGUSR1 then opens or closes the lid.
 
 use std::time::{Duration, Instant};
 
@@ -17,6 +19,7 @@ use smithay::reexports::pixman;
 use smithay::utils::{Size, Transform};
 
 use super::Backend;
+use crate::compositor::output_profiles::{self, Lid};
 use crate::compositor::render::CLEAR_COLOR;
 use crate::compositor::State;
 
@@ -97,11 +100,34 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
     if std::env::var_os("CANOE_HEADLESS_REVERSE").is_some() {
         outputs.reverse();
     }
+    match std::env::var("CANOE_HEADLESS_LID").as_deref() {
+        Ok("open") | Ok("closed") | Err(_) => {}
+        Ok(other) => return Err(format!("bad CANOE_HEADLESS_LID {other:?}").into()),
+    }
+    if let Ok(lid) = std::env::var("CANOE_HEADLESS_LID") {
+        if let Some(first) = outputs.iter().find(|o| o.name() == "HEADLESS-1") {
+            output_profiles::set_internal(first);
+        }
+        if lid == "closed" {
+            state.set_lid(Lid::Closed);
+        }
+    }
     for output in outputs {
         add_backend_output(state, &output)?;
         state.add_output(output);
     }
     Ok(())
+}
+
+/// Open or close the lid, if CANOE_HEADLESS_LID gave the headless outputs
+/// one.
+pub fn toggle_lid(state: &mut State) {
+    if !matches!(state.backend, Backend::Headless(_))
+        || std::env::var_os("CANOE_HEADLESS_LID").is_none()
+    {
+        return;
+    }
+    state.set_lid(state.lid().other());
 }
 
 fn add_backend_output(

@@ -1,6 +1,7 @@
 //! Where outputs and input come from: a DRM/KMS session (udev), a window
 //! in another compositor (winit), or nowhere (headless, for tests).
 
+mod edid;
 pub mod headless;
 pub mod udev;
 #[cfg(feature = "winit")]

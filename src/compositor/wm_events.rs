@@ -658,6 +658,8 @@ impl State {
         let id = self.context.borrow_mut().create_output(handle).borrow().id;
         let global = output.create_global::<State>(&self.display_handle);
         self.output_management_state.add_head(&output);
+        self.output_management_state
+            .set_serial_number(&output, super::output_profiles::serial_number(&output));
         self.outputs.push(ManagedOutput {
             key,
             id,
@@ -673,6 +675,8 @@ impl State {
         });
         self.output_management_state.update::<State>();
         self.output_changed(&output);
+        self.announce_lids();
+        self.queue_output_profile();
     }
 
     pub fn remove_output(&mut self, output: &Output) {
@@ -693,6 +697,8 @@ impl State {
         }
         self.update_x11_settings();
         self.schedule_wm();
+        self.announce_lids();
+        self.queue_output_profile();
     }
 
     /// Let clients know `output`, no longer among the active outputs, is

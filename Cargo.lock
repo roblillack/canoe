@@ -375,6 +375,7 @@ dependencies = [
  "toml",
  "unicode-properties",
  "wayland-protocols-plasma",
+ "wayland-scanner",
  "xcursor",
  "xkbcommon",
  "yeslogic-fontconfig-sys",

@@ -53,6 +53,24 @@ Xwayland. (#66)
 - `xdg-toplevel-tag-v1`: windows may tag themselves. The tags aren't used
   yet, but KDE programs expect the protocol and Spectacle crashes without
   it. (#81)
+- Canoe remembers the output layout for each combination of connected
+  monitors and restores it when the combination comes back, so kanshi is no
+  longer needed: whatever an output tool like `wdisplays` or `wlr-randr`
+  applies is saved, in `~/.local/state/canoe/outputs.toml`.
+  `remember_outputs = false` turns this off. (#82)
+- A primary output per combination of monitors, where new windows open
+  after monitors come or go and where layer surfaces without an output go.
+  The pointer starts in its middle.
+  It is chosen with an experimental protocol of canoe's own,
+  `xx-primary-output-v1`. (#82)
+- Monitors report their make, model and serial number from their EDID, so
+  output tools can tell them apart. (#82)
+- Closing a laptop's lid turns its panel off, and opening it turns the
+  panel back on, unless the remembered layout says otherwise: the lid
+  open and the lid closed each have a layout of their own. Until one of
+  them is set up, the other one is used.
+  `xx-primary-output-v1` tells output tools which outputs are a laptop's
+  panel and whether the lid is closed over them. (#82)
 
 ### Changed
 
@@ -71,6 +89,9 @@ Xwayland. (#66)
 
 ### Fixed
 
+- Windows are no longer minimized when the last output goes away, e.g.
+  while the only monitor wakes up and reconnects; they come back on the
+  first output that appears. (#82)
 - X11 programs take clicks and notice the pointer on outputs placed above or
   left of others (at negative positions, e.g. by kanshi). Such a layout is
   moved so it starts at 0,0, as Xwayland's screen does. (#66)

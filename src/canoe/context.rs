@@ -128,6 +128,9 @@ pub struct Context {
     pending_output_orphans: Vec<(WindowId, (i32, i32, i32, i32))>,
     /// Windows fullscreen on a removed output they are not anchored to.
     pending_fullscreen_exits: Vec<WindowId>,
+    /// The primary output was chosen or came back: new windows go there
+    /// (see [`Self::focus_output`]). Waits while the session is locked.
+    pub pending_primary_output: Option<OutputId>,
 }
 
 impl Context {
@@ -184,6 +187,7 @@ impl Context {
             pending_output_shifts: Vec::new(),
             pending_output_resizes: Vec::new(),
             pending_usable_area_changes: Vec::new(),
+            pending_primary_output: None,
             pending_output_orphans: Vec::new(),
             pending_fullscreen_exits: Vec::new(),
         }
@@ -907,6 +911,35 @@ impl Context {
     /// Spawn a shell command
     pub fn spawn_shell(&self, cmd: &str) {
         self.spawn(&["sh".to_string(), "-c".to_string(), cmd.to_string()]);
+    }
+
+    /// Make `output_id` the output new windows open on: focus its topmost
+    /// window, or no window at all if it has none, so that new windows
+    /// don't follow a focused window elsewhere.
+    pub fn focus_output(&mut self, output_id: OutputId) {
+        if !self.outputs.contains_key(&output_id) {
+            return;
+        }
+        self.current_output = Some(output_id);
+        self.last_focused_output = Some(output_id);
+        let focused_here = self
+            .focused_window
+            .and_then(|id| self.output_for_window_id(id))
+            == Some(output_id);
+        if focused_here {
+            return;
+        }
+        let top = self.stacking_order().into_iter().find(|&id| {
+            self.output_for_window_id(id) == Some(output_id)
+                && self
+                    .windows
+                    .get(&id)
+                    .is_some_and(|w| !w.borrow().skip_switcher)
+        });
+        match top {
+            Some(window_id) => self.focus(window_id),
+            None => self.clear_keyboard_focus(),
+        }
     }
 
     /// Focus next/previous output
@@ -2210,6 +2243,11 @@ impl Context {
         if std::mem::take(&mut self.pending_unlock_focus) {
             self.restore_focus_after_unlock();
         }
+        if !self.session_locked {
+            if let Some(output_id) = self.pending_primary_output.take() {
+                self.focus_output(output_id);
+            }
+        }
 
         // Keep window output association in sync with window positions.
         let window_ids: Vec<WindowId> = self.windows.keys().copied().collect();
@@ -2463,9 +2501,13 @@ impl Context {
                 // Disable compositor borders; custom decoration handles borders.
                 let edges = Edges::all();
                 w.set_borders(edges, 0, 0, 0, 0, 0);
-            } else {
+            } else if !self.outputs.is_empty() {
                 w.hide();
             }
+            // With no output at all (the last monitor went, maybe just
+            // while it wakes up) a window is visible on none, but hiding
+            // it would minimize it for good: leave it as it is, so it comes
+            // back on the first output that appears.
         }
 
         // Raise the focused window's root ancestor to the top. For a focused
@@ -4311,6 +4353,39 @@ mod tests {
     }
 
     #[test]
+    fn losing_the_last_output_minimizes_no_window() {
+        let mut ctx = context_with_outputs(&[(1, 0, 0, 1920, 1080)]);
+        ctx.startup_unminimize_done = true;
+        add_window(&mut ctx, 10, 1, (100, 100, 800, 600));
+        add_window(&mut ctx, 11, 1, (300, 200, 400, 300));
+        ctx.windows[&11].borrow_mut().hidden = true;
+
+        ctx.destroy_output(1);
+        ctx.handle_manage_start();
+        ctx.handle_render_start();
+        assert!(!ctx.windows[&10].borrow().hidden);
+        assert!(ctx.windows[&11].borrow().hidden);
+
+        // The monitor is back: the window is on it, still not minimized.
+        let mut output = Output::new(2);
+        output.update_position(0, 0);
+        output.update_dimensions(1920, 1080);
+        ctx.outputs.insert(2, Rc::new(RefCell::new(output)));
+        ctx.handle_manage_start();
+        ctx.handle_render_start();
+        let w = ctx.windows[&10].borrow();
+        assert!(!w.hidden);
+        assert_eq!((w.x, w.y), (100, 100));
+        let on = w
+            .output
+            .as_ref()
+            .and_then(|o| o.upgrade())
+            .map(|o| o.borrow().id);
+        assert_eq!(on, Some(2));
+        assert!(ctx.windows[&11].borrow().hidden);
+    }
+
+    #[test]
     fn removed_output_exits_fullscreen_of_window_anchored_elsewhere() {
         let mut ctx = context_with_outputs(&[(1, 0, 0, 1920, 1080), (2, 1920, 0, 3840, 2160)]);
         add_window(&mut ctx, 10, 1, (100, 100, 800, 600));
@@ -4331,6 +4406,55 @@ mod tests {
         ));
         assert_eq!((w.x, w.y), (100, 100));
         assert_eq!(w.proposed_dimensions(), (800, 600));
+    }
+
+    #[test]
+    fn primary_output_takes_focus_and_new_windows() {
+        let mut ctx = context_with_outputs(&[(1, 0, 0, 1920, 1080), (2, 1920, 0, 1920, 1080)]);
+        add_window(&mut ctx, 10, 1, (100, 100, 800, 600));
+        add_window(&mut ctx, 20, 2, (2000, 100, 800, 600));
+        add_window(&mut ctx, 21, 2, (2100, 200, 800, 600));
+        ctx.focus(20);
+        ctx.focus(21);
+        ctx.focus(10);
+        ctx.current_output = Some(1);
+
+        ctx.pending_primary_output = Some(2);
+        ctx.handle_manage_start();
+
+        assert_eq!(ctx.focused_window, Some(21));
+        assert_eq!(ctx.current_output, Some(2));
+        assert_eq!(ctx.current_output_for_new_window(), Some(2));
+    }
+
+    #[test]
+    fn empty_primary_output_leaves_no_window_focused() {
+        let mut ctx = context_with_outputs(&[(1, 0, 0, 1920, 1080), (2, 1920, 0, 1920, 1080)]);
+        add_window(&mut ctx, 10, 1, (100, 100, 800, 600));
+        ctx.focus(10);
+
+        ctx.pending_primary_output = Some(2);
+        ctx.handle_manage_start();
+
+        assert_eq!(ctx.focused_window, None);
+        assert_eq!(ctx.current_output_for_new_window(), Some(2));
+    }
+
+    #[test]
+    fn primary_output_waits_for_unlock() {
+        let mut ctx = context_with_outputs(&[(1, 0, 0, 1920, 1080), (2, 1920, 0, 1920, 1080)]);
+        add_window(&mut ctx, 10, 1, (100, 100, 800, 600));
+        ctx.focus(10);
+        ctx.session_locked = true;
+
+        ctx.pending_primary_output = Some(2);
+        ctx.handle_manage_start();
+        assert_eq!(ctx.current_output_for_new_window(), Some(1));
+
+        ctx.handle_session_unlocked();
+        ctx.handle_manage_start();
+        assert_eq!(ctx.focused_window, None);
+        assert_eq!(ctx.current_output_for_new_window(), Some(2));
     }
 
     #[test]

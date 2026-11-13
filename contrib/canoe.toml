@@ -23,7 +23,7 @@
 # Programs launched once when Canoe starts (not on reload). Empty by default.
 # When one of them draws a wallpaper, set desktop_background = "transparent"
 # under [ui] below.
-#startup_cmds = ["kanshi", "mako", ["swaybg", "-i", "/home/me/bg.png"]]
+#startup_cmds = ["mako", ["swaybg", "-i", "/home/me/bg.png"]]
 
 # Cursor theme and size (in logical pixels) for cursors Canoe draws, also set
 # as XCURSOR_THEME and XCURSOR_SIZE for programs Canoe launches. Unset by
@@ -44,6 +44,12 @@
 # activation environment on startup (needed for screen sharing). Turn it off
 # if something else manages the session environment.
 #update_activation_environment = true
+
+# Remember how the outputs are set up (with wdisplays, wlr-randr, ...) for
+# each combination of connected monitors, and which one is primary, and set
+# them up that way again when the combination comes back. Kept in
+# ~/.local/state/canoe/outputs.toml. See "Multiple Outputs" in the README.
+#remember_outputs = true
 
 # Pretend to be sway and KWin for screenshot tools that only work with them
 # (see Screenshots in the README). Changes apply on reload.

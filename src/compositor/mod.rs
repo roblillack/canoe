@@ -15,6 +15,7 @@ pub mod focus;
 pub mod handlers;
 pub mod input;
 pub mod kwin_screenshot;
+pub mod output_profiles;
 pub mod protocol_handlers;
 pub mod protocols;
 pub mod render;
@@ -348,6 +349,9 @@ pub struct State {
     pub xdg_foreign_state: protocols::xdg_foreign::XdgForeignState,
     pub toplevel_icon_state: protocols::toplevel_icon::ToplevelIconManagerState,
     pub plasma_shell_state: protocols::plasma_shell::PlasmaShellState,
+    pub primary_output_state: protocols::primary_output::PrimaryOutputState,
+    /// Output layouts remembered per set of monitors.
+    pub output_profiles: output_profiles::OutputProfiles,
     pub dmabuf: Option<handlers::DmabufGlobal>,
     pub popups: PopupManager,
     pub xwayland_shell_state: smithay::wayland::xwayland_shell::XWaylandShellState,
@@ -501,6 +505,7 @@ impl State {
         let toplevel_icon_state =
             protocols::toplevel_icon::ToplevelIconManagerState::new::<State>(&dh);
         let plasma_shell_state = protocols::plasma_shell::PlasmaShellState::new::<State>(&dh);
+        let primary_output_state = protocols::primary_output::PrimaryOutputState::new::<State>(&dh);
         let xwayland_shell_state =
             smithay::wayland::xwayland_shell::XWaylandShellState::new::<State>(&dh);
 
@@ -583,6 +588,8 @@ impl State {
             xdg_foreign_state,
             toplevel_icon_state,
             plasma_shell_state,
+            primary_output_state,
+            output_profiles: Default::default(),
             dmabuf: None,
             popups: PopupManager::default(),
             xwayland_shell_state,

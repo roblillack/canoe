@@ -189,7 +189,8 @@ fn parse_args() -> CliArgs {
     args
 }
 
-/// Forward SIGINT/SIGTERM/SIGQUIT/SIGHUP/SIGCHLD into the event loop.
+/// Forward SIGINT/SIGTERM/SIGQUIT/SIGHUP/SIGCHLD/SIGUSR1 into the event
+/// loop.
 fn install_signal_handlers() -> Result<OwnedFd, Box<dyn std::error::Error>> {
     let (signal_read_fd, signal_write_fd) = pipe2(OFlag::O_CLOEXEC | OFlag::O_NONBLOCK)?;
     SIGNAL_WRITE_FD.store(signal_write_fd.as_raw_fd(), Ordering::Relaxed);
@@ -206,6 +207,7 @@ fn install_signal_handlers() -> Result<OwnedFd, Box<dyn std::error::Error>> {
         Signal::SIGQUIT,
         Signal::SIGCHLD,
         Signal::SIGHUP,
+        Signal::SIGUSR1,
     ] {
         unsafe { sigaction(sig, &action)? };
     }
@@ -230,6 +232,8 @@ fn handle_signals(state: &mut State, fd: &OwnedFd) {
                             state.update_x11_settings();
                             state.schedule_wm();
                         }
+                        // For tests: open or close the headless lid.
+                        Ok(Signal::SIGUSR1) => compositor::backend::headless::toggle_lid(state),
                         Ok(Signal::SIGCHLD) => loop {
                             match nix::sys::wait::waitpid(
                                 None,
@@ -268,6 +272,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // since a nested session must still reach its host until then.
     let socket_name = state.socket_name.clone();
 
+    // Restored once the outputs the backend finds are all there. Loaded
+    // first, as the backend tells it whether the lid is closed.
+    state.output_profiles = compositor::output_profiles::OutputProfiles::load(
+        compositor::output_profiles::store_path(args.backend == BackendKind::Headless),
+    );
     match args.backend {
         BackendKind::Headless => compositor::backend::headless::init(&mut state)?,
         #[cfg(feature = "winit")]

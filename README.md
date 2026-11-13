@@ -134,6 +134,53 @@ their place on it when the output layout changes:
 
 Sending a window to another output with `Super+Alt+Arrow` works the same way.
 
+### Remembered layouts and the primary output
+
+Canoe remembers how the outputs are set up for each combination of connected
+monitors, and sets them up that way again when that combination comes back,
+e.g. when you dock your laptop. Set them up once with any tool that speaks
+wlr-output-management, such as `wdisplays` or `wlr-randr`: which outputs are
+on, their modes, positions, scales and transforms are saved as they are
+applied. kanshi isn't needed, though it still works: whatever it applies is
+remembered just the same.
+
+Monitors are recognized by make, model and serial number, so a layout follows
+a monitor to another port. Two identical monitors without serial numbers are
+told apart by their ports.
+
+On a laptop the lid counts too: the laptop's panel with an external monitor
+and the lid open is another combination than with the lid closed, and each
+has its own layout. Until the lid closed has a layout of its own, the one for
+the lid open is used with the panel off, and the other way round with the
+panel on, left of the other outputs. Closing the lid with nothing else
+connected leaves the panel as it is, and a panel that is off stays off when
+the other monitors go, e.g. while they wake up. To keep the panel on with the
+lid closed, turn it on again while the lid is closed; that is remembered like
+any other change.
+
+Each combination can have a primary output: the one new windows open on when
+monitors come or go, and the one launchers and other panels without an output
+of their own appear on. Choosing it moves the focus there. Canoe starts with
+the pointer in the middle of the primary output (or, without one, of the
+output at the top left). Output tools choose
+it through Canoe's experimental `xx-primary-output-v1` protocol; for now
+`tools/wlinput` has a small client for it:
+
+```sh
+wlprimary              # print the primary output
+wlprimary set DP-1     # make DP-1 primary for the monitors connected now
+wlprimary unset
+wlprimary lids         # print each laptop panel and whether its lid is closed
+wlprimary watch        # print the primary output and lids as they change
+```
+
+The same protocol tells which outputs are a laptop's panel and whether the
+lid is closed over them, so a configuration tool can show them asleep.
+
+The layouts are kept in `~/.local/state/canoe/outputs.toml` (under
+`$XDG_STATE_HOME` if set). `remember_outputs = false` in the configuration
+file turns all of this off; new outputs are then lined up left to right.
+
 ## Screen Sharing
 
 Apps share the screen through the screencast portal. For Canoe that portal is
@@ -275,15 +322,14 @@ lock_cmd = ["swaylock", "-f", "-c", "000000"]
 
 ### Startup commands
 
-`startup_cmds` lists programs Canoe launches when it starts, e.g. to configure
-displays, set a wallpaper, or start a notification daemon. Each entry is a
+`startup_cmds` lists programs Canoe launches when it starts, e.g. to set a
+wallpaper or start a notification daemon. Each entry is a
 program name or an argv array, like `launcher_cmd`. A plain string is not run
 through a shell, so pass arguments as an array (`"swaybg -i wall.png"` would
 look for a program with that literal name).
 
 ```toml
 startup_cmds = [
-    "kanshi",
     "mako",
     ["swaybg", "-i", "/home/me/wallpaper.png", "-m", "fill"],
 ]
