@@ -65,6 +65,18 @@ pub enum WindowDecoration {
     Ssd,
 }
 
+/// Where the title sits in a window's titlebar.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TitleAlign {
+    /// Next to the close button.
+    Left,
+    /// In the middle of the titlebar, moved aside as far as needed to stay
+    /// clear of the buttons.
+    #[default]
+    Center,
+}
+
 /// Border colors
 #[derive(Debug, Clone, Copy)]
 pub struct BorderColor {
@@ -131,6 +143,7 @@ pub struct UiConfig {
     pub titlebar_text_inactive: u32,
     pub titlebar_bg_active: u32,
     pub titlebar_bg_inactive: u32,
+    pub titlebar_text_align: TitleAlign,
     pub menu_bg: u32,
     pub menu_text: u32,
     pub menu_highlight_bg: u32,
@@ -207,6 +220,7 @@ impl Default for UiConfig {
             titlebar_text_inactive: 0x000000FF,
             titlebar_bg_active: 0x000080FF,
             titlebar_bg_inactive: 0xFFFFFFFF,
+            titlebar_text_align: TitleAlign::Center,
             menu_bg: 0xC0C0C0FF,
             menu_text: 0x000000FF,
             menu_highlight_bg: 0x000080FF,
@@ -408,6 +422,7 @@ struct UiConfigFile {
     titlebar_bg_active: Option<u32>,
     #[serde(default, deserialize_with = "deserialize_opt_color")]
     titlebar_bg_inactive: Option<u32>,
+    titlebar_text_align: Option<TitleAlign>,
     #[serde(default, deserialize_with = "deserialize_opt_color")]
     menu_bg: Option<u32>,
     #[serde(default, deserialize_with = "deserialize_opt_color")]
@@ -493,6 +508,9 @@ impl UiConfig {
         }
         if let Some(color) = overrides.titlebar_bg_inactive {
             self.titlebar_bg_inactive = color;
+        }
+        if let Some(align) = overrides.titlebar_text_align {
+            self.titlebar_text_align = align;
         }
         if let Some(color) = overrides.menu_bg {
             self.menu_bg = color;
@@ -1183,6 +1201,29 @@ mod tests {
         let contents = include_str!("../contrib/themes/yellow.toml");
         let file_config: FileConfig = toml::from_str(contents).expect("theme parses");
         assert!(file_config.ui.is_some());
+    }
+
+    #[test]
+    fn test_titlebar_text_align() {
+        let parse = |contents: &str| {
+            let file_config = toml::from_str::<FileConfig>(contents)?;
+            let mut ui = UiConfig::default();
+            if let Some(overrides) = file_config.ui {
+                ui.apply(overrides);
+            }
+            Ok::<_, toml::de::Error>(ui.titlebar_text_align)
+        };
+
+        assert_eq!(parse("").unwrap(), TitleAlign::Center);
+        assert_eq!(
+            parse("[ui]\ntitlebar_text_align = \"left\"").unwrap(),
+            TitleAlign::Left
+        );
+        assert_eq!(
+            parse("[ui]\ntitlebar_text_align = \"center\"").unwrap(),
+            TitleAlign::Center
+        );
+        assert!(parse("[ui]\ntitlebar_text_align = \"middle\"").is_err());
     }
 
     #[test]

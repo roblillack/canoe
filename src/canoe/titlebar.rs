@@ -1,9 +1,10 @@
 //! Titlebar rendering for windows
 
+use super::font;
 use super::render::{ColorGlyphs, Renderer};
 use super::scale::{FractionalSurface, Origin, Scale};
 use super::surface::{Decoration, PixelPool, Region, Surface};
-use crate::config::UiConfig;
+use crate::config::{TitleAlign, UiConfig};
 use resvg::{tiny_skia, usvg};
 
 /// Titlebar height in logical pixels: `0.8·font_size` rounded, doubled plus
@@ -1012,6 +1013,21 @@ impl Titlebar {
                             .unwrap_or(strip.right());
                         let text_end = (right_x - line - text_padding).min(strip.right());
                         let text_width = (text_end - text_start).max(0);
+                        let (text_start, text_width) = match ui.titlebar_text_align {
+                            TitleAlign::Left => (text_start, text_width),
+                            TitleAlign::Center => {
+                                let font_px = ui.font_size * scale.factor();
+                                let measured =
+                                    font::measure_text(ui.font_name.as_deref(), font_px, title_str);
+                                center_title(
+                                    strip,
+                                    text_start,
+                                    text_width,
+                                    text_padding,
+                                    measured.map(|w| w as i32),
+                                )
+                            }
+                        };
                         if text_width > 0 {
                             let text_color = if is_active {
                                 ui.titlebar_text_active
@@ -1192,6 +1208,31 @@ impl Titlebar {
     pub fn sync_next_commit(&self) {
         self.decoration.sync_next_commit();
     }
+}
+
+/// The area to draw a centered title of `title_width` in: centered on the
+/// whole titlebar `strip` when that leaves it clear of the buttons, else
+/// pushed aside as far as needed. `area_x` and `area_width` are the area
+/// between the buttons, whose inner `padding` on either side the text stays
+/// out of. A title that does not fit, or could not be measured, keeps that
+/// area and starts at its left.
+fn center_title(
+    strip: Rect,
+    area_x: i32,
+    area_width: i32,
+    padding: i32,
+    title_width: Option<i32>,
+) -> (i32, i32) {
+    let available = area_width - 2 * padding;
+    let Some(title_width) = title_width.filter(|w| (1..=available).contains(w)) else {
+        return (area_x, area_width);
+    };
+    let min_x = area_x + padding;
+    let max_x = area_x + area_width - padding - title_width;
+    let x = (strip.x + (strip.width - title_width) / 2).clamp(min_x, max_x);
+    // Keep the area's right edge, so the text is clipped where it was.
+    let origin_x = x - padding;
+    (origin_x, area_x + area_width - origin_x)
 }
 
 fn icon_size_for_titlebar(titlebar_height: i32) -> i32 {
@@ -1469,6 +1510,40 @@ mod tests {
 
     /// Either way, the cut-out covers exactly the device pixels the
     /// compositor draws the client's content into.
+    fn strip() -> Rect {
+        Rect {
+            x: 0,
+            y: 0,
+            width: 400,
+            height: 20,
+        }
+    }
+
+    #[test]
+    fn a_short_title_sits_in_the_middle_of_the_titlebar() {
+        // Close button on the left up to 20, two buttons on the right from 360.
+        let (x, w) = center_title(strip(), 20, 330, 5, Some(100));
+        assert_eq!(x + 5, 150);
+        assert_eq!(x + w, 350);
+    }
+
+    #[test]
+    fn a_centered_title_makes_way_for_the_buttons() {
+        let (x, w) = center_title(strip(), 20, 330, 5, Some(300));
+        assert_eq!(x + 5, 45);
+        assert_eq!(x + w, 350);
+
+        let (x, _) = center_title(strip(), 150, 200, 5, Some(100));
+        assert_eq!(x + 5, 155);
+    }
+
+    #[test]
+    fn a_title_too_long_to_center_starts_at_the_left() {
+        assert_eq!(center_title(strip(), 20, 330, 5, Some(321)), (20, 330));
+        assert_eq!(center_title(strip(), 20, 330, 5, None), (20, 330));
+        assert_eq!(center_title(strip(), 20, 8, 5, Some(1)), (20, 8));
+    }
+
     #[test]
     fn cut_out_matches_content_wherever_the_window_sits() {
         for device in SCALES {
