@@ -22,7 +22,7 @@ use smithay::desktop::{layer_map_for_output, PopupManager};
 use smithay::input::pointer::{CursorImageStatus, CursorImageSurfaceData};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
-use smithay::utils::{Logical, Physical, Point, Rectangle, Scale};
+use smithay::utils::{IsAlive, Logical, Physical, Point, Rectangle, Scale};
 use smithay::wayland::compositor::{with_states, with_surface_tree_downward, TraversalAction};
 use smithay::wayland::shell::wlr_layer::Layer as WlrLayer;
 
@@ -517,8 +517,57 @@ impl State {
         let _ = geometry;
     }
 
-    /// The pointer's cursor, if it is on `output`.
+    /// The pointer's cursor, and under it the icon of a drag going on.
     fn cursor_elements<R>(
+        &mut self,
+        renderer: &mut R,
+        output: &Output,
+        geometry: Rectangle<i32, Logical>,
+        scale: Scale<f64>,
+    ) -> Vec<CanoeElement<R>>
+    where
+        R: Renderer + ImportAll + ImportMem,
+        R::TextureId: Clone + Send + 'static,
+    {
+        let mut elements = self.pointer_image_elements(renderer, output, geometry, scale);
+        elements.extend(self.dnd_icon_elements(renderer, geometry, scale));
+        elements
+    }
+
+    /// The icon a client's drag carries, beside the pointer. Drawn on every
+    /// output, so one straddling an edge shows on both sides, and even where
+    /// the cursor is left out or drawn by the backend: it is the drag's
+    /// content, not the cursor.
+    fn dnd_icon_elements<R>(
+        &self,
+        renderer: &mut R,
+        geometry: Rectangle<i32, Logical>,
+        scale: Scale<f64>,
+    ) -> Vec<CanoeElement<R>>
+    where
+        R: Renderer + ImportAll + ImportMem,
+        R::TextureId: Clone + Send + 'static,
+    {
+        let icon = self.dnd.as_ref().and_then(|d| d.icon.as_ref());
+        let Some(icon) = icon.filter(|i| i.surface.alive()) else {
+            return Vec::new();
+        };
+        let local = self.pointer_location - geometry.loc.to_f64() + icon.offset.to_f64();
+        surface_tree_elements(
+            renderer,
+            &icon.surface,
+            local.to_physical(scale),
+            scale,
+            1.0,
+            Kind::Unspecified,
+        )
+        .into_iter()
+        .map(Into::into)
+        .collect()
+    }
+
+    /// The pointer's cursor, if it is on `output`.
+    fn pointer_image_elements<R>(
         &mut self,
         renderer: &mut R,
         output: &Output,
@@ -548,7 +597,10 @@ impl State {
             || self.pointer_canoe_target != canoe::PointerTarget::None
             || (!pointer_on_client && self.lock_state == LockState::Unlocked);
 
-        let name = if wm_controls {
+        let name = if let Some(dnd) = &self.dnd {
+            // A drag shows what a drop would do, wherever it goes.
+            dnd.cursor_name()
+        } else if wm_controls {
             match self.wm_cursor {
                 Some(shape) => shape.xcursor_name(),
                 None => return Vec::new(),

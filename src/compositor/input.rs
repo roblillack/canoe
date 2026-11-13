@@ -10,8 +10,10 @@ use smithay::desktop::{layer_map_for_output, WindowSurfaceType};
 use smithay::input::keyboard::{FilterResult, KeyboardTarget, Keycode, ModifiersState};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
 use smithay::output::Output;
+use smithay::reexports::wayland_server::protocol::wl_data_device_manager::DndAction;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
 use smithay::utils::{Logical, Point, Rectangle, SERIAL_COUNTER};
+use smithay::wayland::selection::data_device::DnDGrab;
 use smithay::wayland::shell::wlr_layer::{KeyboardInteractivity, Layer as WlrLayer};
 
 use super::{KeyConsumer, LockState, State};
@@ -75,6 +77,7 @@ pub fn modifier_mask(mods: &ModifiersState) -> u32 {
 enum KeyAction {
     Binding(usize, bool),
     SwitchVt(i32),
+    CancelDrag,
 }
 
 impl State {
@@ -173,6 +176,16 @@ impl State {
                             )));
                         }
                     }
+                    // Escape calls off a client's drag, as it does in-window
+                    // drags in most programs; the client never sees it.
+                    if translated.contains(&xkbcommon::xkb::keysyms::KEY_Escape)
+                        && state.pointer_dragging()
+                    {
+                        state
+                            .key_consumers
+                            .insert(keycode, KeyConsumer::Binding(None));
+                        return FilterResult::Intercept(Some(KeyAction::CancelDrag));
+                    }
                     // Shift is what translation usually consumes.
                     let consumed = if raw != translated {
                         modifiers::SHIFT
@@ -227,6 +240,7 @@ impl State {
             Some(KeyAction::Binding(index, true)) => self.xkb_binding_pressed(index),
             Some(KeyAction::Binding(index, false)) => self.xkb_binding_released(index),
             Some(KeyAction::SwitchVt(vt)) => super::backend::Backend::switch_vt(self, vt),
+            Some(KeyAction::CancelDrag) => self.cancel_drag(time),
             None => {}
         }
     }
@@ -294,6 +308,7 @@ impl State {
         }
 
         let focus = self.update_pointer_target(location);
+        self.retarget_drag(focus.as_ref().map(|(surface, _)| surface));
         pointer.motion(
             self,
             focus.clone(),
@@ -383,6 +398,51 @@ impl State {
             self.canoe_pointer_leave();
             self.pointer_canoe_target = PointerTarget::None;
         }
+    }
+
+    /// Whether the pointer is carrying a client's drag (rather than a finger).
+    fn pointer_dragging(&self) -> bool {
+        self.dnd.is_some()
+            && self
+                .seat
+                .get_pointer()
+                .and_then(|p| p.with_grab(|_, grab| grab.is::<DnDGrab<State>>()))
+                .unwrap_or(false)
+    }
+
+    /// A drag offered to another surface than before: it hasn't chosen yet
+    /// what a drop would do.
+    fn retarget_drag(&mut self, surface: Option<&WlSurface>) {
+        if let Some(dnd) = self.dnd.as_mut() {
+            if dnd.target.as_ref() != surface {
+                dnd.target = surface.cloned();
+                dnd.action = DndAction::empty();
+            }
+        }
+    }
+
+    /// Call off a client's drag. Leaving the target first means ending the
+    /// grab drops nothing: the source is told the drag was cancelled. The
+    /// pointer stays with no client until it moves, so the release of the
+    /// button still held goes nowhere.
+    fn cancel_drag(&mut self, time: u32) {
+        if !self.pointer_dragging() {
+            return;
+        }
+        let pointer = self.seat.get_pointer().unwrap();
+        self.retarget_drag(None);
+        pointer.motion(
+            self,
+            None,
+            &MotionEvent {
+                location: self.pointer_location,
+                serial: SERIAL_COUNTER.next_serial(),
+                time,
+            },
+        );
+        pointer.unset_grab(self, SERIAL_COUNTER.next_serial(), time);
+        pointer.frame(self);
+        self.queue_redraw_all();
     }
 
     /// Take pointer focus from clients, for the start of a pointer
