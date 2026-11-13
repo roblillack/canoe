@@ -130,7 +130,8 @@ where
     (main, popups)
 }
 
-/// One of the window manager's surfaces at global `origin`.
+/// One of the window manager's surfaces at global `origin`: one element,
+/// or one for each piece of a buffer with a hole.
 pub(super) fn canoe_surface<R>(
     renderer: &mut R,
     surface: &canoe::surface::Surface,
@@ -138,47 +139,88 @@ pub(super) fn canoe_surface<R>(
     output_loc: Point<f64, Logical>,
     scale: Scale<f64>,
     alpha: f32,
-) -> Option<CanoeElement<R>>
+) -> Vec<CanoeElement<R>>
 where
     R: Renderer + ImportAll + ImportMem,
     R::TextureId: Clone + Send + 'static,
 {
-    let content = surface.content()?;
+    let Some(content) = surface.content() else {
+        return Vec::new();
+    };
     let location = (origin - output_loc).to_physical(scale);
+    // The device pixels the surface covers.
+    let size = content.logical_size;
+    let start = location.to_i32_round::<i32>();
+    let end = (location
+        + Point::<f64, Logical>::from((size.0 as f64, size.1 as f64)).to_physical(scale))
+    .to_i32_round::<i32>();
     if let Some(mut solid) = content.solid {
         if solid.color().a() == 0.0 {
-            return None;
+            return Vec::new();
         }
-        // Covers the same device pixels as a buffer would.
-        let size = content.logical_size;
-        let end = (location
-            + Point::<f64, Logical>::from((size.0 as f64, size.1 as f64)).to_physical(scale))
-        .to_i32_round::<i32>();
-        let start = location.to_i32_round::<i32>();
         solid.resize(((end.x - start.x).max(0), (end.y - start.y).max(0)));
-        return Some(CanoeElement::Solid(SolidColorRenderElement::from_buffer(
+        return vec![CanoeElement::Solid(SolidColorRenderElement::from_buffer(
             &solid,
             start,
             Scale::from(1.0),
             alpha,
             Kind::Unspecified,
+        ))];
+    }
+    let (bw, bh) = content.buffer_size;
+    let alpha = (alpha < 1.0).then_some(alpha);
+    let mut elements = Vec::with_capacity(content.pieces.len());
+    for piece in &content.pieces {
+        let rect = piece.rect;
+        if rect.size == (bw, bh).into() {
+            // The whole buffer, drawn at the surface's logical size: device
+            // pixels map 1:1 where canoe drew for this scale; a single pixel
+            // stretches.
+            let src = Rectangle::from_size((bw as f64, bh as f64).into());
+            elements.extend(
+                MemoryRenderBufferRenderElement::from_buffer(
+                    renderer,
+                    location,
+                    &piece.memory,
+                    alpha,
+                    Some(src),
+                    Some(size.into()),
+                    Kind::Unspecified,
+                )
+                .ok()
+                .map(CanoeElement::Memory),
+            );
+            continue;
+        }
+        // A piece covers the part of the surface's device pixels its own
+        // pixels are of the buffer's, so pieces meet without a seam.
+        let along = |from: i32, to: i32, at: i32, total: i32| {
+            from + (at as f64 * (to - from) as f64 / total as f64).round() as i32
+        };
+        let x0 = along(start.x, end.x, rect.loc.x, bw);
+        let x1 = along(start.x, end.x, rect.loc.x + rect.size.w, bw);
+        let y0 = along(start.y, end.y, rect.loc.y, bh);
+        let y1 = along(start.y, end.y, rect.loc.y + rect.size.h, bh);
+        if x1 <= x0 || y1 <= y0 {
+            continue;
+        }
+        let Ok(element) = MemoryRenderBufferRenderElement::from_buffer(
+            renderer,
+            Point::<f64, Physical>::from((x0 as f64, y0 as f64)),
+            &piece.memory,
+            alpha,
+            None,
+            None,
+            Kind::Unspecified,
+        ) else {
+            continue;
+        };
+        elements.push(CanoeElement::Warped(WarpedElement::at(
+            CanoeElement::Memory(element),
+            Rectangle::new((x0, y0).into(), (x1 - x0, y1 - y0).into()),
         )));
     }
-    // The whole buffer, drawn at the surface's logical size: device pixels
-    // map 1:1 where canoe drew for this scale; a single pixel stretches.
-    let (bw, bh) = content.buffer_size;
-    let src = Rectangle::from_size((bw as f64, bh as f64).into());
-    MemoryRenderBufferRenderElement::from_buffer(
-        renderer,
-        location,
-        &content.buffer,
-        (alpha < 1.0).then_some(alpha),
-        Some(src),
-        Some(content.logical_size.into()),
-        Kind::Unspecified,
-    )
-    .ok()
-    .map(CanoeElement::Memory)
+    elements
 }
 
 /// Where a layer-type surface of the window manager's sits, globally.
@@ -254,16 +296,14 @@ impl State {
                 if let Some(origin) =
                     canoe_layer_origin(&background.surface, geometry.loc, output_size)
                 {
-                    if let Some(e) = canoe_surface(
+                    bottom_up.extend(canoe_surface(
                         renderer,
                         &background.surface,
                         origin,
                         output_loc,
                         scale,
                         1.0,
-                    ) {
-                        bottom_up.push(e);
-                    }
+                    ));
                 }
             }
         }
@@ -283,11 +323,14 @@ impl State {
                 if let Some(origin) =
                     canoe_layer_origin(&desktop.surface, geometry.loc, output_size)
                 {
-                    if let Some(e) =
-                        canoe_surface(renderer, &desktop.surface, origin, output_loc, scale, 1.0)
-                    {
-                        bottom_up.push(e);
-                    }
+                    bottom_up.extend(canoe_surface(
+                        renderer,
+                        &desktop.surface,
+                        origin,
+                        output_loc,
+                        scale,
+                        1.0,
+                    ));
                 }
             }
         }
@@ -341,11 +384,9 @@ impl State {
             if let Some(shadow) = w.shadow.as_ref().filter(|_| !iconify) {
                 if let canoe::surface::Role::Decoration { offset, .. } = shadow.surface.role() {
                     let origin = pos + Point::<i32, Logical>::from(offset).to_f64();
-                    if let Some(e) =
-                        canoe_surface(renderer, &shadow.surface, origin, output_loc, scale, 1.0)
-                    {
-                        bottom_up.extend(fit(vec![e], Fit::Slice));
-                    }
+                    let shadow =
+                        canoe_surface(renderer, &shadow.surface, origin, output_loc, scale, 1.0);
+                    bottom_up.extend(fit(shadow, Fit::Slice));
                 }
             }
             let surface_origin = window.surface_origin(None).to_f64();
@@ -377,16 +418,15 @@ impl State {
                     if let canoe::surface::Role::Decoration { offset, .. } = titlebar.surface.role()
                     {
                         let origin = pos + Point::<i32, Logical>::from(offset).to_f64();
-                        if let Some(e) = canoe_surface(
+                        let frame = canoe_surface(
                             renderer,
                             &titlebar.surface,
                             origin,
                             output_loc,
                             scale,
                             alpha,
-                        ) {
-                            bottom_up.extend(fit(vec![e], frame_fit));
-                        }
+                        );
+                        bottom_up.extend(fit(frame, frame_fit));
                     }
                 }
             }
@@ -461,11 +501,14 @@ impl State {
         if let Some(menu) = context.window_menu.as_ref() {
             if menu.output_id == output_id {
                 if let Some(origin) = canoe_layer_origin(&menu.surface, geometry.loc, output_size) {
-                    if let Some(e) =
-                        canoe_surface(renderer, &menu.surface, origin, output_loc, scale, 1.0)
-                    {
-                        bottom_up.push(e);
-                    }
+                    bottom_up.extend(canoe_surface(
+                        renderer,
+                        &menu.surface,
+                        origin,
+                        output_loc,
+                        scale,
+                        1.0,
+                    ));
                 }
             }
         }
@@ -474,11 +517,14 @@ impl State {
                 if let Some(origin) =
                     canoe_layer_origin(&surface.surface, geometry.loc, output_size)
                 {
-                    if let Some(e) =
-                        canoe_surface(renderer, &surface.surface, origin, output_loc, scale, 1.0)
-                    {
-                        bottom_up.push(e);
-                    }
+                    bottom_up.extend(canoe_surface(
+                        renderer,
+                        &surface.surface,
+                        origin,
+                        output_loc,
+                        scale,
+                        1.0,
+                    ));
                 }
             }
         }

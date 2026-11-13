@@ -392,6 +392,18 @@ pub struct WarpedElement<E> {
     geometry: Rectangle<i32, Physical>,
 }
 
+impl<E: Element> WarpedElement<E> {
+    /// All of `element`, drawn into `geometry`.
+    pub fn at(element: E, geometry: Rectangle<i32, Physical>) -> Self {
+        WarpedElement {
+            id: element.id().clone(),
+            src: element.src(),
+            element: Rc::new(element),
+            geometry,
+        }
+    }
+}
+
 impl<E: Element> Element for WarpedElement<E> {
     fn id(&self) -> &Id {
         &self.id

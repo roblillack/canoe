@@ -6,6 +6,7 @@ use super::scale::{FractionalSurface, Origin, Scale};
 use super::surface::{Decoration, PixelPool, Region, Surface};
 use crate::config::{TitleAlign, UiConfig};
 use resvg::{tiny_skia, usvg};
+use smithay::utils::{Buffer, Rectangle};
 
 /// Titlebar height in logical pixels: `0.8·font_size` rounded, doubled plus
 /// one so the bar always has a center row.
@@ -785,28 +786,20 @@ impl Titlebar {
             return false;
         }
 
-        let stride = match buffer_width.checked_mul(4) {
-            Some(s) => s,
-            None => return false,
-        };
+        // The surface spans the whole window, but only the border ring and
+        // the titlebar carry pixels: the window's content is left out.
+        let hole = frame_hole(&rects, scale.line());
 
         #[cfg(feature = "debug-logging")]
         let prep_t0 = std::time::Instant::now();
         let allocated_before = self.shm_pool.allocate_fresh_count();
-        if self
-            .shm_pool
-            .prepare(buffer_width, buffer_height, stride)
-            .is_none()
-        {
+        if !self.shm_pool.prepare(buffer_width, buffer_height, hole) {
             return false;
         }
         let allocated_fresh = self.shm_pool.allocate_fresh_count() != allocated_before;
         #[cfg(feature = "debug-logging")]
         let prep_us = prep_t0.elapsed().as_micros();
 
-        let Some(buffer) = self.shm_pool.current_buffer().cloned() else {
-            return false;
-        };
         let paint = FramePaint {
             base: BaseFrameParams {
                 ui,
@@ -831,24 +824,21 @@ impl Titlebar {
 
         #[cfg(feature = "debug-logging")]
         let draw_t0 = std::time::Instant::now();
-        let drawn = buffer.draw(|pixels| {
-            // The titlebar surface spans the whole window but only the border
-            // ring and titlebar strip carry pixels; the rest must stay fully
-            // transparent. The buffer still holds the last frame drawn, so
-            // start from zero.
-            pixels.fill(0);
-            let Some(mut renderer) = Renderer::new(pixels, buffer_width, buffer_height) else {
-                return false;
-            };
-            paint_frame(&mut renderer, &paint);
-            true
+        let drawn = self.shm_pool.paint(|renderer| {
+            // The buffer still holds the last frame drawn: start from zero.
+            renderer.clear();
+            paint_frame(renderer, &paint);
         });
         #[cfg(feature = "debug-logging")]
         eprintln!(
-            "[canoe titlebar] {}x{} bytes={} alloc_fresh={} prepare={:.2}ms draw={:.2}ms",
+            "[canoe titlebar] {}x{} kept={}px alloc_fresh={} prepare={:.2}ms draw={:.2}ms",
             buffer_width,
             buffer_height,
-            buffer_width as i64 * buffer_height as i64 * 4,
+            self.shm_pool.current_buffer().map_or(0, |b| b
+                .pieces()
+                .iter()
+                .map(|p| p.rect.size.w as i64 * p.rect.size.h as i64)
+                .sum::<i64>()),
             allocated_fresh,
             prep_us as f64 / 1000.0,
             draw_t0.elapsed().as_micros() as f64 / 1000.0,
@@ -1092,6 +1082,21 @@ fn build_button_bevel_cache(
 }
 
 /// Fill the ring between `outer` and `inner` (which lies within it).
+/// What a frame leaves transparent: the content, below the line that
+/// separates it from the titlebar. `None` if that is nothing.
+fn frame_hole(rects: &FrameRects, line: i32) -> Option<Rectangle<i32, Buffer>> {
+    let content = rects.content;
+    // The titlebar's bottom line is drawn over the content's first rows.
+    let line = if rects.titlebar.height > 0 { line } else { 0 };
+    let height = content.height - line;
+    (content.width > 0 && height > 0).then(|| {
+        Rectangle::new(
+            (content.x, content.y + line).into(),
+            (content.width, height).into(),
+        )
+    })
+}
+
 /// Paint a frame with `renderer`, which must start out fully transparent.
 fn paint_frame(renderer: &mut Renderer, paint: &FramePaint<'_>) {
     Titlebar::draw_base_frame(renderer, &paint.base);
@@ -1648,6 +1653,68 @@ mod tests {
         // The case that used to leave a gap: content at x = 2 starts at
         // device pixel round(2.5) = 3.
         assert_eq!(frame.inside.x, 3);
+    }
+
+    /// Painted piece by piece around its hole, a frame comes out as it does
+    /// painted whole, and nothing of it falls into the hole.
+    #[test]
+    fn frames_paint_the_same_in_pieces() {
+        let ui = UiConfig::default();
+        for scale in SCALES.map(Scale::new) {
+            let origin = Origin::new(3 - BORDER, 7 - BORDER - TITLE);
+            let rects =
+                FrameRects::new(&scale, FrameFit::Floating, origin, BORDER, TITLE, 300, 160);
+            let (w, h) = (rects.outer.right() + 1, rects.outer.bottom() + 1);
+            let button_size = rects.titlebar.height;
+            let icon_size = scale
+                .px(icon_size_for_titlebar(TITLE))
+                .clamp(1, button_size.max(1));
+            let icons = IconCache::build(icon_size);
+            let hole = frame_hole(&rects, scale.line());
+            assert!(hole.is_some());
+            for frame_style in [
+                FrameStyle::Normal,
+                FrameStyle::Dialog,
+                FrameStyle::FixedSize,
+            ] {
+                for is_active in [true, false] {
+                    for icons in [None, icons.as_ref()] {
+                        let paint = FramePaint {
+                            base: BaseFrameParams {
+                                ui: &ui,
+                                is_active,
+                                rects: &rects,
+                                scale,
+                                show_minimize: true,
+                                show_maximize: true,
+                                frame_style,
+                            },
+                            title: Some("A window's title"),
+                            is_maximized: false,
+                            hovered_button: Some(TitlebarButton::Close),
+                            left_down: true,
+                            titlebar_height: TITLE,
+                            button_size,
+                            icon_size,
+                            bevel: (scale.bevel(1), scale.bevel(2)),
+                            icons,
+                            buttons: None,
+                        };
+                        let mut whole = vec![0u8; (w * h * 4) as usize];
+                        paint_frame(&mut Renderer::new(&mut whole, w, h).unwrap(), &paint);
+
+                        let buffer = crate::canoe::surface::Buffer::with_hole(w, h, hole).unwrap();
+                        buffer.paint(|r| paint_frame(r, &paint));
+                        assert!(
+                            buffer.to_vec() == whole,
+                            "scale={} style={frame_style:?} active={is_active} icons={}",
+                            scale.factor(),
+                            icons.is_some()
+                        );
+                    }
+                }
+            }
+        }
     }
 
     /// In the buffer, the frame sits where its surface puts it.

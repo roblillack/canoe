@@ -338,7 +338,7 @@ impl State {
         let w = context.windows.get(&window.id).map(|w| w.borrow());
         let decoration = |surface: &crate::canoe::surface::Surface, renderer: &mut R| {
             let crate::canoe::surface::Role::Decoration { offset, .. } = surface.role() else {
-                return None;
+                return Vec::new();
             };
             canoe_surface(
                 renderer,
