@@ -174,6 +174,13 @@ impl Seat {
         self.cursor_shape = Some(desired);
     }
 
+    /// Move the pointer to `(x, y)` in the global space.
+    pub fn warp_pointer(&self, x: i32, y: i32) {
+        if let Some(ref rwm_seat) = self.rwm_seat {
+            rwm_seat.warp_pointer(x, y);
+        }
+    }
+
     /// Hide the cursor while the pointer is on canoe's surfaces.
     pub fn hide_cursor(&mut self) {
         if let Some(ref rwm_seat) = self.rwm_seat {

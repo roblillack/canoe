@@ -254,6 +254,7 @@ impl State {
                 self.wm_cursor = shape;
                 self.queue_redraw_all();
             }
+            Request::WarpPointer(_, x, y) => self.warp_pointer((x as f64, y as f64).into()),
             Request::SetDefaultLayerOutput(output_key) => {
                 self.default_layer_output = Some(output_key);
             }

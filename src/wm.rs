@@ -148,6 +148,8 @@ pub enum Request {
     OpEnd(SeatKey),
     SetXcursorTheme(SeatKey, String, u32),
     SetCursorShape(SeatKey, Option<CursorShape>),
+    /// Move the pointer to this point in the global space.
+    WarpPointer(SeatKey, i32, i32),
 
     /// Layer surfaces created without an output open on this one.
     SetDefaultLayerOutput(OutputKey),
@@ -464,6 +466,12 @@ impl SeatHandle {
     /// manager's, or during a pointer operation. `None` hides the cursor.
     pub fn set_cursor_shape(&self, shape: Option<CursorShape>) {
         self.requests.push(Request::SetCursorShape(self.key, shape));
+    }
+
+    /// Move the pointer to `(x, y)` in the global space, as if the user had
+    /// moved it there. Ignored during a pointer operation or a drag.
+    pub fn warp_pointer(&self, x: i32, y: i32) {
+        self.requests.push(Request::WarpPointer(self.key, x, y));
     }
 }
 

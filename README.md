@@ -100,6 +100,7 @@ cargo build --release
 | `Super+d` | Minimize all windows; press again to bring them back |
 | `Super+Left` | Snap focused window to left half; restore if snapped right |
 | `Super+Right` | Snap focused window to right half; restore if snapped left |
+| `Super+Shift+Arrow` | Focus the output in that direction |
 | `Super+Alt+Left` | Send focused window to previous output |
 | `Super+Alt+Right` | Send focused window to next output |
 | `Super+Alt+Up` | Send focused window to previous output |
@@ -133,6 +134,19 @@ their place on it when the output layout changes:
   allows. Windows you placed partly off-screen yourself stay where they are.
 
 Sending a window to another output with `Super+Alt+Arrow` works the same way.
+
+`Super+Shift+Arrow` moves to the output in that direction: the window you last
+used there gets the focus, or none if it shows no windows, and the pointer jumps
+to the middle of the output. Past the last output, it wraps around to the first
+one on the other side, so with two monitors side by side either arrow goes to
+the other one.
+
+`Super+Tab`, ``Super+` `` and the window menu of the desktop list the windows
+on the output they open on. To list the windows on every output instead, set:
+
+```toml
+window_list_scope = "all"
+```
 
 ### Remembered layouts and the primary output
 

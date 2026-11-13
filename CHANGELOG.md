@@ -71,8 +71,15 @@ Xwayland. (#66)
   them is set up, the other one is used.
   `xx-primary-output-v1` tells output tools which outputs are a laptop's
   panel and whether the lid is closed over them. (#82)
+- Super+Shift+Arrow focuses the output in that direction: the window last
+  focused there, or none if it shows no windows, with the pointer in the
+  middle of the output.
 
 ### Changed
+
+- Super+Tab, Super+` and the window menu of the desktop list only the
+  windows on their output. `window_list_scope = "all"` lists the windows on
+  every output again.
 
 - Window titles are centered in the titlebar, moving aside where the
   buttons are in the way. `titlebar_text_align = "left"` under `[ui]` puts

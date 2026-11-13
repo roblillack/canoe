@@ -486,31 +486,7 @@ pub(super) fn handle_window_menu_cycle(state: &mut State, direction: binding::Di
         return;
     }
 
-    let output_id = {
-        let context = state.context.borrow();
-        let focused_output = context.focused_window.and_then(|window_id| {
-            context.windows.get(&window_id).and_then(|window| {
-                let window_ref = window.borrow();
-                let center_x = window_ref.x + (window_ref.width / 2);
-                let center_y = window_ref.y + (window_ref.height / 2);
-                if let Some(output) = window_ref.output.as_ref().and_then(|o| o.upgrade()) {
-                    let out_ref = output.borrow();
-                    if out_ref.contains_point(center_x, center_y) {
-                        return Some(out_ref.id);
-                    }
-                }
-                context.outputs.iter().find_map(|(&id, output)| {
-                    if output.borrow().contains_point(center_x, center_y) {
-                        Some(id)
-                    } else {
-                        None
-                    }
-                })
-            })
-        });
-        focused_output.or(context.current_output)
-    };
-    let Some(output_id) = output_id else {
+    let Some(output_id) = state.context.borrow().window_list_output() else {
         return;
     };
 
@@ -524,7 +500,10 @@ pub(super) fn handle_window_menu_cycle(state: &mut State, direction: binding::Di
         Some("Windows".to_string()),
         Some(direction),
     );
-    ensure_window_menu_shield(state, output_id);
+    // An empty list (e.g. on an output without windows) opens no menu.
+    if state.context.borrow().window_menu.is_some() {
+        ensure_window_menu_shield(state, output_id);
+    }
 }
 
 pub(super) fn handle_window_menu_cycle_app(state: &mut State) {
@@ -538,30 +517,7 @@ pub(super) fn handle_window_menu_cycle_app(state: &mut State) {
         let Some(app_id) = app_id else {
             return;
         };
-        let output_id = {
-            let focused_output = context.focused_window.and_then(|window_id| {
-                context.windows.get(&window_id).and_then(|window| {
-                    let window_ref = window.borrow();
-                    let center_x = window_ref.x + (window_ref.width / 2);
-                    let center_y = window_ref.y + (window_ref.height / 2);
-                    if let Some(output) = window_ref.output.as_ref().and_then(|o| o.upgrade()) {
-                        let out_ref = output.borrow();
-                        if out_ref.contains_point(center_x, center_y) {
-                            return Some(out_ref.id);
-                        }
-                    }
-                    context.outputs.iter().find_map(|(&id, output)| {
-                        if output.borrow().contains_point(center_x, center_y) {
-                            Some(id)
-                        } else {
-                            None
-                        }
-                    })
-                })
-            });
-            focused_output.or(context.current_output)
-        };
-        let Some(output_id) = output_id else {
+        let Some(output_id) = context.window_list_output() else {
             return;
         };
         let items = context.collect_menu_items_for_app(output_id, &app_id);
