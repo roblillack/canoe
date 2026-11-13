@@ -163,6 +163,7 @@ impl State {
             Backend::Headless(ref mut data) => self.capture_with(&mut data.renderer, target, dest),
             #[cfg(feature = "winit")]
             Backend::Winit(ref mut data) => self.capture_with(data.renderer(), target, dest),
+            #[cfg(target_os = "linux")]
             Backend::Udev(ref mut data) => match data.renderer() {
                 Some(renderer) => self.capture_with(renderer, target, dest),
                 None => None,

@@ -1,0 +1,8 @@
+# OpenBSD installs base libraries (xkbcommon, libseat, ...) in /usr/local/lib,
+# which isn't on the default linker search path. The xkbcommon crate uses a
+# plain #[link(name = "xkbcommon")] and relies on the linker finding it.
+[target.x86_64-unknown-openbsd]
+rustflags = ["-L", "/usr/local/lib"]
+
+[target.aarch64-unknown-openbsd]
+rustflags = ["-L", "/usr/local/lib"]

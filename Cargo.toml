@@ -24,14 +24,13 @@ pre-release-replacements = [
 ]
 
 [dependencies]
-# The compositor itself
+# The compositor itself. Backends that bind to Linux kernel interfaces
+# (DRM/KMS, GBM, udev, libinput, libseat) are only pulled in on Linux; see
+# the target-specific section at the bottom. The rest is cross-platform
+# enough to let canoe build a winit-nested session on other Unixes
+# (OpenBSD).
 smithay = { version = "0.7", default-features = false, features = [
-    "backend_drm",
-    "backend_gbm",
     "backend_egl",
-    "backend_libinput",
-    "backend_udev",
-    "backend_session_libseat",
     "desktop",
     "renderer_gl",
     "renderer_pixman",
@@ -81,6 +80,18 @@ serde_json = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+
+# Linux-only smithay backends. Features are additive across target
+# sections, so this pulls the DRM/KMS/udev/libinput/libseat stack in only
+# on Linux.
+[target.'cfg(target_os = "linux")'.dependencies]
+smithay = { version = "0.7", features = [
+    "backend_drm",
+    "backend_gbm",
+    "backend_libinput",
+    "backend_udev",
+    "backend_session_libseat",
+] }
 
 [features]
 default = ["winit"]
