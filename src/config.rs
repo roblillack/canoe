@@ -251,6 +251,10 @@ pub struct Config {
     pub xcursor_theme: Option<String>,
     /// XCursor size from the config file.
     pub xcursor_size: Option<u32>,
+    /// Let X11 programs draw at the outputs' scale (crisp, but programs
+    /// that can't scale come out small) instead of drawing them at scale 1
+    /// and stretching them (blurry).
+    pub xwayland_hidpi: bool,
     pub main_modifier: MainModifier,
 
     pub repeat_rate: i32,
@@ -288,6 +292,7 @@ impl Default for Config {
             update_activation_environment: true,
             xcursor_theme: None,
             xcursor_size: None,
+            xwayland_hidpi: true,
             main_modifier: MainModifier::default(),
 
             repeat_rate: 50,
@@ -344,6 +349,7 @@ struct FileConfig {
     main_modifier: Option<MainModifier>,
     xcursor_theme: Option<String>,
     xcursor_size: Option<u32>,
+    xwayland_hidpi: Option<bool>,
     launcher_cmd: Option<StringOrVec>,
     terminal_cmd: Option<StringOrVec>,
     lock_cmd: Option<StringOrVec>,
@@ -822,6 +828,9 @@ impl Config {
         }
         if let Some(size) = file.xcursor_size {
             self.xcursor_size = (size > 0).then_some(size);
+        }
+        if let Some(hidpi) = file.xwayland_hidpi {
+            self.xwayland_hidpi = hidpi;
         }
         if let Some(launcher_cmd) = string_or_vec(file.launcher_cmd) {
             let launcher_cmd = clean_cmd_args(launcher_cmd);

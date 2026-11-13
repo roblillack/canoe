@@ -39,6 +39,11 @@ Xwayland. (#66)
   back out of them when brought back. `animations_enabled` and
   `animations_duration` (in milliseconds, 150 by default) under `[ui]` turn
   the animations off or change their speed. (#76)
+- X11 programs are crisp on scaled outputs: they draw at the outputs'
+  scale, rounded up, and learn it through `Xft.dpi` and XSETTINGS
+  (`Gdk/WindowScalingFactor`), as does their default cursor. Programs
+  that can't scale come out small; `xwayland_hidpi = false` goes back to
+  drawing them at scale 1, stretched and blurry. (#80)
 
 ### Changed
 

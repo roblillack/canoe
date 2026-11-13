@@ -32,6 +32,13 @@
 #xcursor_theme = "Adwaita"
 #xcursor_size = 24
 
+# X11 programs (through Xwayland) draw at the scale of the outputs, rounded
+# up to a whole number, and are told so (Xft.dpi, XSETTINGS), so they're
+# crisp on scaled outputs. Programs that can't scale themselves come out
+# small. With false, they draw at scale 1 and are stretched: blurry, but at
+# the size they'd have on an unscaled output.
+#xwayland_hidpi = true
+
 # Export WAYLAND_DISPLAY, XDG_CURRENT_DESKTOP, XDG_SESSION_TYPE and, if set,
 # XCURSOR_THEME and XCURSOR_SIZE to the systemd user manager and D-Bus
 # activation environment on startup (needed for screen sharing). Turn it off

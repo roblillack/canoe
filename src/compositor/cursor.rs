@@ -54,6 +54,11 @@ impl CursorTheme {
         self.size
     }
 
+    /// The theme's name.
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     /// The frame of cursor `name` to show `elapsed` into its animation, drawn
     /// for an output of integer scale `scale`.
     pub fn frame(&mut self, name: &str, scale: u32, elapsed: Duration) -> Option<CursorFrame> {
@@ -80,16 +85,18 @@ impl CursorTheme {
         frames.first().cloned()
     }
 
-    /// The theme's default cursor, as RGBA pixels with its size and hotspot
-    /// (for X11 programs, which draw their own cursors).
-    pub fn default_image(&self) -> Option<CursorImage> {
+    /// The theme's default cursor, as RGBA pixels with its size and hotspot,
+    /// for programs drawing at integer scale `scale` (X11 programs, which
+    /// draw their own cursors).
+    pub fn default_image(&self, scale: u32) -> Option<CursorImage> {
+        let target = (self.size * scale.max(1)) as i32;
         let theme = xcursor::CursorTheme::load(&self.name);
         let image = ["default", "left_ptr"].iter().find_map(|name| {
             let data = std::fs::read(theme.load_icon(name)?).ok()?;
             let images = parse_xcursor(&data)?;
             images
                 .into_iter()
-                .min_by_key(|image| (image.size as i32 - self.size as i32).abs())
+                .min_by_key(|image| (image.size as i32 - target).abs())
         })?;
         Some((
             image.pixels_rgba,

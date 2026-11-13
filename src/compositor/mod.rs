@@ -359,6 +359,12 @@ pub struct State {
     pub x11_unmanaged: Vec<smithay::xwayland::X11Surface>,
     /// The stacking order last given to the X server, bottom first.
     pub x11_stacking: Vec<smithay::xwayland::xwm::X11Window>,
+    /// The Xwayland server's Wayland client, once it is started.
+    pub xwayland_client: Option<smithay::reexports::wayland_server::Client>,
+    /// What X11 programs were last told about scale and cursor.
+    pub x11_settings: Option<xwayland::X11Settings>,
+    /// Writes the X resources, once Xwayland is up.
+    pub x11_resources: Option<xwayland::ResourceWriter>,
 
     pub seat: Seat<State>,
 
@@ -577,6 +583,9 @@ impl State {
             x11_pending: Vec::new(),
             x11_unmanaged: Vec::new(),
             x11_stacking: Vec::new(),
+            xwayland_client: None,
+            x11_settings: None,
+            x11_resources: None,
             seat,
             context,
             requests,
