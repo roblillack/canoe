@@ -157,59 +157,51 @@ impl WindowShadow {
         #[cfg(feature = "debug-logging")]
         let prep_t0 = std::time::Instant::now();
         let allocated_before = self.shm_pool.allocate_fresh_count();
-        let slot_idx = match self.shm_pool.prepare(buffer_width, buffer_height, stride) {
-            Some(s) => s,
-            None => return false,
-        };
+        if self
+            .shm_pool
+            .prepare(buffer_width, buffer_height, stride)
+            .is_none()
+        {
+            return false;
+        }
         let allocated_fresh = self.shm_pool.allocate_fresh_count() != allocated_before;
         #[cfg(feature = "debug-logging")]
         let prep_us = prep_t0.elapsed().as_micros();
 
-        let mut pixels = match self.shm_pool.slot_bytes_mut(slot_idx) {
-            Some(p) => p,
-            None => return false,
-        };
-        let pixels = pixels.as_mut_slice();
-
-        #[cfg(feature = "debug-logging")]
-        let fill_t0 = std::time::Instant::now();
-        // The shadow only paints the perimeter band; the interior must stay
-        // transparent. Either the slot's bytes are stale from a previous frame
-        // (pool reused) or zero from a fresh allocation -- in both cases we
-        // need a clean slate before drawing.
-        pixels.fill(0);
-        #[cfg(feature = "debug-logging")]
-        let fill_us = fill_t0.elapsed().as_micros();
-
         #[cfg(feature = "debug-logging")]
         let draw_t0 = std::time::Instant::now();
-        if let Some(mut renderer) = Renderer::new(pixels, buffer_width, buffer_height) {
-            let scale = self.scale;
-            let shadow_size = shadow_size.max(0);
-            draw_shadow_soft(
-                &mut renderer,
-                rect,
-                scale.px(shadow_size),
-                scale.px(shadow_size / 2),
-                shadow_color,
-            );
-        }
-        #[cfg(feature = "debug-logging")]
-        let draw_us = draw_t0.elapsed().as_micros();
-
+        let scale = self.scale;
+        let shadow_size = shadow_size.max(0);
+        let drawn = self.shm_pool.draw(|pixels| {
+            // The shadow only paints the perimeter band; the interior must
+            // stay transparent. The buffer still holds the last shadow drawn,
+            // or is fresh and zeroed: start from zero either way.
+            pixels.fill(0);
+            if let Some(mut renderer) = Renderer::new(pixels, buffer_width, buffer_height) {
+                draw_shadow_soft(
+                    &mut renderer,
+                    rect,
+                    scale.px(shadow_size),
+                    scale.px(shadow_size / 2),
+                    shadow_color,
+                );
+            }
+        });
         #[cfg(feature = "debug-logging")]
         eprintln!(
-            "[canoe shadow] {}x{} bytes={} alloc_fresh={} prepare={:.2}ms fill={:.2}ms draw={:.2}ms",
+            "[canoe shadow] {}x{} bytes={} alloc_fresh={} prepare={:.2}ms draw={:.2}ms",
             buffer_width,
             buffer_height,
             buffer_width as i64 * buffer_height as i64 * 4,
             allocated_fresh,
             prep_us as f64 / 1000.0,
-            fill_us as f64 / 1000.0,
-            draw_us as f64 / 1000.0,
+            draw_t0.elapsed().as_micros() as f64 / 1000.0,
         );
         #[cfg(not(feature = "debug-logging"))]
         let _ = allocated_fresh;
+        if drawn.is_none() {
+            return false;
+        }
 
         self.last_key = Some(key);
         true

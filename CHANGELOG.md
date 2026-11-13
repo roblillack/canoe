@@ -89,6 +89,10 @@ Xwayland. (#66)
   "Google Chrome — Page". The menu of one application's windows has that
   name as its header instead of the app id. Desktop entries are also found
   by lower-case app id and by `StartupWMClass`, for names and icons alike. (#73)
+- Canoe keeps what it draws for window frames, shadows, menus and the
+  desktop once, in the memory it is shown from, rather than drawing it in
+  one buffer and copying it to another. A 1920×1080 window's frame and
+  shadow took some 33 MB and take half that.
 
 ### Fixed
 

@@ -32,12 +32,28 @@ struct BaseFrameParams<'a> {
     ui: &'a UiConfig,
     is_active: bool,
     rects: &'a FrameRects,
-    buffer_width: i32,
-    buffer_height: i32,
     scale: Scale,
     show_minimize: bool,
     show_maximize: bool,
     frame_style: FrameStyle,
+}
+
+/// Everything a frame is painted from: the base frame, and the buttons and
+/// title drawn over it.
+struct FramePaint<'a> {
+    base: BaseFrameParams<'a>,
+    title: Option<&'a str>,
+    is_maximized: bool,
+    hovered_button: Option<TitlebarButton>,
+    left_down: bool,
+    titlebar_height: i32,
+    button_size: i32,
+    icon_size: i32,
+    bevel: (i32, i32),
+    /// The button icons, once they could be rendered; glyphs are drawn
+    /// in their place until then.
+    icons: Option<&'a IconCache>,
+    buttons: Option<&'a ButtonCache>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -596,18 +612,10 @@ impl Titlebar {
         self.icon_cache.is_some()
     }
 
-    /// Paint the static base frame (borders + titlebar background) directly
-    /// into `pixels`. Caller must have cleared `pixels` to fully transparent
-    /// (the base frame leaves the content cut-out untouched).
-    fn draw_base_frame(pixels: &mut [u8], params: &BaseFrameParams<'_>) -> bool {
-        if params.buffer_width <= 0 || params.buffer_height <= 0 {
-            return false;
-        }
-        let mut renderer = match Renderer::new(pixels, params.buffer_width, params.buffer_height) {
-            Some(renderer) => renderer,
-            None => return false,
-        };
-
+    /// Paint the static base frame (borders + titlebar background) with
+    /// `renderer`, which must start out fully transparent (the base frame
+    /// leaves the content cut-out untouched).
+    fn draw_base_frame(renderer: &mut Renderer, params: &BaseFrameParams<'_>) {
         let mut border_colors = if params.is_active {
             params.ui.border_active
         } else {
@@ -632,20 +640,15 @@ impl Titlebar {
         if matches!(params.frame_style, FrameStyle::FixedSize) {
             // Non-resizable toplevels: the border is just the outline,
             // hugging the content.
-            fill_ring(
-                &mut renderer,
-                rects.outer,
-                rects.inside,
-                border_colors.outer,
-            );
+            fill_ring(renderer, rects.outer, rects.inside, border_colors.outer);
         } else {
             // A thin outer and inner line with the bulk of the border between
             // them, however many device pixels the border comes to.
             let outer_in = rects.outer.inset(line);
             let inner_out = rects.inside.inset(-line);
-            fill_ring(&mut renderer, rects.outer, outer_in, border_colors.outer);
-            fill_ring(&mut renderer, outer_in, inner_out, border_colors.mid);
-            fill_ring(&mut renderer, inner_out, rects.inside, border_colors.inner);
+            fill_ring(renderer, rects.outer, outer_in, border_colors.outer);
+            fill_ring(renderer, outer_in, inner_out, border_colors.mid);
+            fill_ring(renderer, inner_out, rects.inside, border_colors.inner);
         }
 
         let bg_argb = rgba_to_argb(titlebar_bg);
@@ -678,8 +681,6 @@ impl Titlebar {
                 );
             }
         }
-
-        true
     }
 
     fn ensure_button_cache(&mut self, ui: &UiConfig, size_px: i32, bevel: (i32, i32)) {
@@ -763,7 +764,6 @@ impl Titlebar {
 
         let scale = self.scale;
         let rects = self.rects;
-        let line = scale.line();
         let bevel = (scale.bevel(1), scale.bevel(2));
         let titlebar_height = titlebar_height(ui);
         let button_size = rects.titlebar.height;
@@ -793,286 +793,72 @@ impl Titlebar {
         #[cfg(feature = "debug-logging")]
         let prep_t0 = std::time::Instant::now();
         let allocated_before = self.shm_pool.allocate_fresh_count();
-        let slot_idx = match self.shm_pool.prepare(buffer_width, buffer_height, stride) {
-            Some(s) => s,
-            None => return false,
-        };
+        if self
+            .shm_pool
+            .prepare(buffer_width, buffer_height, stride)
+            .is_none()
+        {
+            return false;
+        }
         let allocated_fresh = self.shm_pool.allocate_fresh_count() != allocated_before;
         #[cfg(feature = "debug-logging")]
         let prep_us = prep_t0.elapsed().as_micros();
 
-        let base_params = BaseFrameParams {
-            ui,
-            is_active,
-            rects: &rects,
-            buffer_width,
-            buffer_height,
-            scale,
-            show_minimize,
-            show_maximize,
-            frame_style,
-        };
-
-        let mut pixels = match self.shm_pool.slot_bytes_mut(slot_idx) {
-            Some(p) => p,
-            None => return false,
-        };
-        let pixels = pixels.as_mut_slice();
-
-        #[cfg(feature = "debug-logging")]
-        let fill_t0 = std::time::Instant::now();
-        // The titlebar surface spans the whole window but only the border ring
-        // and titlebar strip carry pixels; the rest must stay fully transparent.
-        // The pool rotates slots each prepare, so even when geometry is steady
-        // the slot we just took may still hold the *other* focus state's
-        // pixels -- start from zero.
-        pixels.fill(0);
-        #[cfg(feature = "debug-logging")]
-        let fill_us = fill_t0.elapsed().as_micros();
-
-        #[cfg(feature = "debug-logging")]
-        let base_t0 = std::time::Instant::now();
-        if !Self::draw_base_frame(pixels, &base_params) {
+        let Some(buffer) = self.shm_pool.current_buffer().cloned() else {
             return false;
-        }
-        #[cfg(feature = "debug-logging")]
-        let base_us = base_t0.elapsed().as_micros();
+        };
+        let paint = FramePaint {
+            base: BaseFrameParams {
+                ui,
+                is_active,
+                rects: &rects,
+                scale,
+                show_minimize,
+                show_maximize,
+                frame_style,
+            },
+            title,
+            is_maximized,
+            hovered_button,
+            left_down,
+            titlebar_height,
+            button_size,
+            icon_size,
+            bevel,
+            icons: self.icon_cache.as_ref().filter(|_| icons_ready),
+            buttons: self.button_cache.as_ref(),
+        };
 
         #[cfg(feature = "debug-logging")]
-        let dyn_t0 = std::time::Instant::now();
-        #[cfg(not(feature = "debug-logging"))]
-        let _ = allocated_fresh;
-        {
-            let mut renderer = match Renderer::new(pixels, buffer_width, buffer_height) {
-                Some(renderer) => renderer,
-                None => return false,
+        let draw_t0 = std::time::Instant::now();
+        let drawn = buffer.draw(|pixels| {
+            // The titlebar surface spans the whole window but only the border
+            // ring and titlebar strip carry pixels; the rest must stay fully
+            // transparent. The buffer still holds the last frame drawn, so
+            // start from zero.
+            pixels.fill(0);
+            let Some(mut renderer) = Renderer::new(pixels, buffer_width, buffer_height) else {
+                return false;
             };
-            let button_cache = self.button_cache.as_ref();
-
-            let border_colors = if is_active {
-                ui.border_active
-            } else {
-                ui.border_inactive
-            };
-            let strip = rects.titlebar;
-            if strip.height > 0 {
-                let buttons = layout_buttons(strip, line, show_minimize, show_maximize);
-                let pressed_hover = if left_down { hovered_button } else { None };
-                // Centers the icon in a button, nudged by `offset` when pressed.
-                let icon_origin = |button: Rect, offset: i32| {
-                    (
-                        button.x + (button.width - icon_size) / 2 + offset,
-                        button.y + (button.height - icon_size) / 2 + offset,
-                    )
-                };
-
-                let close = buttons.close;
-                let close_pressed = pressed_hover == Some(TitlebarButton::Close);
-                if let Some(cache) = button_cache {
-                    let close_bg = if close_pressed {
-                        &cache.close_pressed
-                    } else {
-                        &cache.close_normal
-                    };
-                    renderer.blit_argb(close_bg, button_size, button_size, close.x, close.y);
-                } else {
-                    let close_bg = if close_pressed {
-                        rgba_to_argb(BUTTON_BG_PRESSED_LEFT)
-                    } else {
-                        rgba_to_argb(ui.button_bg)
-                    };
-                    renderer.fill_rect(close.x, close.y, close.width, close.height, close_bg);
-                }
-                if icons_ready {
-                    if let Some(ref icons) = self.icon_cache {
-                        let (x, y) = icon_origin(close, 0);
-                        renderer.blit_pixmap(&icons.close, x, y);
-                    }
-                } else {
-                    draw_glyph_close(
-                        &mut renderer,
-                        close.x,
-                        close.y,
-                        close.width,
-                        rgba_to_argb(border_colors.outer),
-                        titlebar_height,
-                    );
-                }
-
-                if let Some(hide) = buttons.hide {
-                    let hide_pressed = pressed_hover == Some(TitlebarButton::Hide);
-                    let hide_offset = if hide_pressed { bevel.0 } else { 0 };
-                    if let Some(cache) = button_cache {
-                        let hide_bg = if hide_pressed {
-                            &cache.hide_pressed
-                        } else {
-                            &cache.hide_normal
-                        };
-                        renderer.blit_argb(hide_bg, button_size, button_size, hide.x, hide.y);
-                    } else {
-                        draw_button_bevel(
-                            &mut renderer,
-                            hide.x,
-                            hide.y,
-                            hide.width,
-                            rgba_to_argb(ui.button_bg),
-                            rgba_to_argb(ui.button_highlight),
-                            rgba_to_argb(ui.button_shadow),
-                            hide_pressed,
-                            bevel,
-                        );
-                    }
-                    if icons_ready {
-                        if let Some(ref icons) = self.icon_cache {
-                            let (x, y) = icon_origin(hide, hide_offset);
-                            renderer.blit_pixmap(&icons.minimize, x, y);
-                        }
-                    } else {
-                        draw_glyph_caret(
-                            &mut renderer,
-                            hide.x + hide_offset,
-                            hide.y + hide_offset,
-                            hide.width,
-                            rgba_to_argb(border_colors.outer),
-                            true,
-                            titlebar_height,
-                        );
-                    }
-                }
-
-                if let Some(maximize) = buttons.maximize {
-                    let maximize_pressed = pressed_hover == Some(TitlebarButton::Maximize);
-                    let maximize_offset = if maximize_pressed { bevel.0 } else { 0 };
-                    if let Some(cache) = button_cache {
-                        let maximize_bg = if maximize_pressed {
-                            &cache.maximize_pressed
-                        } else {
-                            &cache.maximize_normal
-                        };
-                        renderer.blit_argb(
-                            maximize_bg,
-                            button_size,
-                            button_size,
-                            maximize.x,
-                            maximize.y,
-                        );
-                    } else {
-                        draw_button_bevel(
-                            &mut renderer,
-                            maximize.x,
-                            maximize.y,
-                            maximize.width,
-                            rgba_to_argb(ui.button_bg),
-                            rgba_to_argb(ui.button_highlight),
-                            rgba_to_argb(ui.button_shadow),
-                            maximize_pressed,
-                            bevel,
-                        );
-                    }
-                    if icons_ready {
-                        if let Some(ref icons) = self.icon_cache {
-                            let icon = if is_maximized {
-                                &icons.unmaximize
-                            } else {
-                                &icons.maximize
-                            };
-                            let (x, y) = icon_origin(maximize, maximize_offset);
-                            renderer.blit_pixmap(icon, x, y);
-                        }
-                    } else if is_maximized {
-                        draw_glyph_caret_pair(
-                            &mut renderer,
-                            maximize.x + maximize_offset,
-                            maximize.y + maximize_offset,
-                            maximize.width,
-                            rgba_to_argb(border_colors.outer),
-                            titlebar_height,
-                        );
-                    } else {
-                        draw_glyph_caret(
-                            &mut renderer,
-                            maximize.x + maximize_offset,
-                            maximize.y + maximize_offset,
-                            maximize.width,
-                            rgba_to_argb(border_colors.outer),
-                            false,
-                            titlebar_height,
-                        );
-                    }
-                }
-
-                // Render title text if we have a title and font
-                if let Some(title_str) = title {
-                    if !title_str.is_empty() {
-                        let text_start = close.right() + line;
-                        let text_padding = scale.px((ui.font_size * 0.5).round().max(0.0) as i32);
-                        let right_x = buttons
-                            .hide
-                            .map(|r| r.x)
-                            .or_else(|| buttons.maximize.map(|r| r.x))
-                            .unwrap_or(strip.right());
-                        let text_end = (right_x - line - text_padding).min(strip.right());
-                        let text_width = (text_end - text_start).max(0);
-                        let (text_start, text_width) = match ui.titlebar_text_align {
-                            TitleAlign::Left => (text_start, text_width),
-                            TitleAlign::Center => {
-                                let font_px = ui.font_size * scale.factor();
-                                let measured =
-                                    font::measure_text(ui.font_name.as_deref(), font_px, title_str);
-                                center_title(
-                                    strip,
-                                    text_start,
-                                    text_width,
-                                    text_padding,
-                                    measured.map(|w| w as i32),
-                                )
-                            }
-                        };
-                        if text_width > 0 {
-                            let text_color = if is_active {
-                                ui.titlebar_text_active
-                            } else {
-                                ui.titlebar_text_inactive
-                            };
-                            let text_argb = rgba_to_argb(text_color);
-                            renderer.render_text(
-                                title_str,
-                                text_start,
-                                strip.y,
-                                text_width,
-                                strip.height,
-                                scale.factor(),
-                                text_argb,
-                                if is_active {
-                                    ColorGlyphs::Natural
-                                } else {
-                                    ColorGlyphs::Tinted
-                                },
-                                ui.font_size,
-                                ui.font_name.as_deref(),
-                                text_padding,
-                            );
-                        }
-                    }
-                }
-            }
-
-            self.dirty = false;
-        }
-        #[cfg(feature = "debug-logging")]
-        let dyn_us = dyn_t0.elapsed().as_micros();
+            paint_frame(&mut renderer, &paint);
+            true
+        });
         #[cfg(feature = "debug-logging")]
         eprintln!(
-            "[canoe titlebar] {}x{} bytes={} alloc_fresh={} prepare={:.2}ms fill={:.2}ms base={:.2}ms dynamic={:.2}ms",
+            "[canoe titlebar] {}x{} bytes={} alloc_fresh={} prepare={:.2}ms draw={:.2}ms",
             buffer_width,
             buffer_height,
             buffer_width as i64 * buffer_height as i64 * 4,
             allocated_fresh,
             prep_us as f64 / 1000.0,
-            fill_us as f64 / 1000.0,
-            base_us as f64 / 1000.0,
-            dyn_us as f64 / 1000.0,
+            draw_t0.elapsed().as_micros() as f64 / 1000.0,
         );
+        #[cfg(not(feature = "debug-logging"))]
+        let _ = allocated_fresh;
+        if !drawn {
+            return false;
+        }
+        self.dirty = false;
         true
     }
 
@@ -1306,6 +1092,237 @@ fn build_button_bevel_cache(
 }
 
 /// Fill the ring between `outer` and `inner` (which lies within it).
+/// Paint a frame with `renderer`, which must start out fully transparent.
+fn paint_frame(renderer: &mut Renderer, paint: &FramePaint<'_>) {
+    Titlebar::draw_base_frame(renderer, &paint.base);
+
+    let FramePaint {
+        ref base,
+        title,
+        is_maximized,
+        hovered_button,
+        left_down,
+        titlebar_height,
+        button_size,
+        icon_size,
+        bevel,
+        icons,
+        buttons: button_cache,
+    } = *paint;
+    let BaseFrameParams {
+        ui,
+        is_active,
+        rects,
+        scale,
+        show_minimize,
+        show_maximize,
+        ..
+    } = *base;
+    let line = scale.line();
+
+    let border_colors = if is_active {
+        ui.border_active
+    } else {
+        ui.border_inactive
+    };
+    let strip = rects.titlebar;
+    if strip.height > 0 {
+        let buttons = layout_buttons(strip, line, show_minimize, show_maximize);
+        let pressed_hover = if left_down { hovered_button } else { None };
+        // Centers the icon in a button, nudged by `offset` when pressed.
+        let icon_origin = |button: Rect, offset: i32| {
+            (
+                button.x + (button.width - icon_size) / 2 + offset,
+                button.y + (button.height - icon_size) / 2 + offset,
+            )
+        };
+
+        let close = buttons.close;
+        let close_pressed = pressed_hover == Some(TitlebarButton::Close);
+        if let Some(cache) = button_cache {
+            let close_bg = if close_pressed {
+                &cache.close_pressed
+            } else {
+                &cache.close_normal
+            };
+            renderer.blit_argb(close_bg, button_size, button_size, close.x, close.y);
+        } else {
+            let close_bg = if close_pressed {
+                rgba_to_argb(BUTTON_BG_PRESSED_LEFT)
+            } else {
+                rgba_to_argb(ui.button_bg)
+            };
+            renderer.fill_rect(close.x, close.y, close.width, close.height, close_bg);
+        }
+        if let Some(icons) = icons {
+            let (x, y) = icon_origin(close, 0);
+            renderer.blit_pixmap(&icons.close, x, y);
+        } else {
+            draw_glyph_close(
+                renderer,
+                close.x,
+                close.y,
+                close.width,
+                rgba_to_argb(border_colors.outer),
+                titlebar_height,
+            );
+        }
+
+        if let Some(hide) = buttons.hide {
+            let hide_pressed = pressed_hover == Some(TitlebarButton::Hide);
+            let hide_offset = if hide_pressed { bevel.0 } else { 0 };
+            if let Some(cache) = button_cache {
+                let hide_bg = if hide_pressed {
+                    &cache.hide_pressed
+                } else {
+                    &cache.hide_normal
+                };
+                renderer.blit_argb(hide_bg, button_size, button_size, hide.x, hide.y);
+            } else {
+                draw_button_bevel(
+                    renderer,
+                    hide.x,
+                    hide.y,
+                    hide.width,
+                    rgba_to_argb(ui.button_bg),
+                    rgba_to_argb(ui.button_highlight),
+                    rgba_to_argb(ui.button_shadow),
+                    hide_pressed,
+                    bevel,
+                );
+            }
+            if let Some(icons) = icons {
+                let (x, y) = icon_origin(hide, hide_offset);
+                renderer.blit_pixmap(&icons.minimize, x, y);
+            } else {
+                draw_glyph_caret(
+                    renderer,
+                    hide.x + hide_offset,
+                    hide.y + hide_offset,
+                    hide.width,
+                    rgba_to_argb(border_colors.outer),
+                    true,
+                    titlebar_height,
+                );
+            }
+        }
+
+        if let Some(maximize) = buttons.maximize {
+            let maximize_pressed = pressed_hover == Some(TitlebarButton::Maximize);
+            let maximize_offset = if maximize_pressed { bevel.0 } else { 0 };
+            if let Some(cache) = button_cache {
+                let maximize_bg = if maximize_pressed {
+                    &cache.maximize_pressed
+                } else {
+                    &cache.maximize_normal
+                };
+                renderer.blit_argb(
+                    maximize_bg,
+                    button_size,
+                    button_size,
+                    maximize.x,
+                    maximize.y,
+                );
+            } else {
+                draw_button_bevel(
+                    renderer,
+                    maximize.x,
+                    maximize.y,
+                    maximize.width,
+                    rgba_to_argb(ui.button_bg),
+                    rgba_to_argb(ui.button_highlight),
+                    rgba_to_argb(ui.button_shadow),
+                    maximize_pressed,
+                    bevel,
+                );
+            }
+            if let Some(icons) = icons {
+                let icon = if is_maximized {
+                    &icons.unmaximize
+                } else {
+                    &icons.maximize
+                };
+                let (x, y) = icon_origin(maximize, maximize_offset);
+                renderer.blit_pixmap(icon, x, y);
+            } else if is_maximized {
+                draw_glyph_caret_pair(
+                    renderer,
+                    maximize.x + maximize_offset,
+                    maximize.y + maximize_offset,
+                    maximize.width,
+                    rgba_to_argb(border_colors.outer),
+                    titlebar_height,
+                );
+            } else {
+                draw_glyph_caret(
+                    renderer,
+                    maximize.x + maximize_offset,
+                    maximize.y + maximize_offset,
+                    maximize.width,
+                    rgba_to_argb(border_colors.outer),
+                    false,
+                    titlebar_height,
+                );
+            }
+        }
+
+        // Render title text if we have a title and font
+        if let Some(title_str) = title {
+            if !title_str.is_empty() {
+                let text_start = close.right() + line;
+                let text_padding = scale.px((ui.font_size * 0.5).round().max(0.0) as i32);
+                let right_x = buttons
+                    .hide
+                    .map(|r| r.x)
+                    .or_else(|| buttons.maximize.map(|r| r.x))
+                    .unwrap_or(strip.right());
+                let text_end = (right_x - line - text_padding).min(strip.right());
+                let text_width = (text_end - text_start).max(0);
+                let (text_start, text_width) = match ui.titlebar_text_align {
+                    TitleAlign::Left => (text_start, text_width),
+                    TitleAlign::Center => {
+                        let font_px = ui.font_size * scale.factor();
+                        let measured =
+                            font::measure_text(ui.font_name.as_deref(), font_px, title_str);
+                        center_title(
+                            strip,
+                            text_start,
+                            text_width,
+                            text_padding,
+                            measured.map(|w| w as i32),
+                        )
+                    }
+                };
+                if text_width > 0 {
+                    let text_color = if is_active {
+                        ui.titlebar_text_active
+                    } else {
+                        ui.titlebar_text_inactive
+                    };
+                    let text_argb = rgba_to_argb(text_color);
+                    renderer.render_text(
+                        title_str,
+                        text_start,
+                        strip.y,
+                        text_width,
+                        strip.height,
+                        scale.factor(),
+                        text_argb,
+                        if is_active {
+                            ColorGlyphs::Natural
+                        } else {
+                            ColorGlyphs::Tinted
+                        },
+                        ui.font_size,
+                        ui.font_name.as_deref(),
+                        text_padding,
+                    );
+                }
+            }
+        }
+    }
+}
+
 fn fill_ring(renderer: &mut Renderer, outer: Rect, inner: Rect, color: u32) {
     let argb = rgba_to_argb(color);
     if inner.width <= 0 || inner.height <= 0 {

@@ -51,7 +51,7 @@ impl ShieldSurface {
 
     pub fn render(&mut self) {
         if let Some(ref buffer) = self.buffer {
-            buffer.pixels_mut().fill(0);
+            buffer.draw(|pixels| pixels.fill(0));
         }
     }
 

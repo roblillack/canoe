@@ -11,7 +11,8 @@
 
 #![allow(dead_code)]
 
-use std::cell::{Ref, RefCell, RefMut};
+use std::cell::RefCell;
+use std::convert::Infallible;
 use std::rc::Rc;
 
 use smithay::backend::allocator::Fourcc;
@@ -23,13 +24,16 @@ use super::OutputId;
 
 /// Pixels canoe drew: ARGB8888, premultiplied, little endian (the `wl_shm`
 /// format), with rows `width * 4` bytes apart.
+///
+/// They are kept in the [`MemoryRenderBuffer`] the compositor draws them
+/// from, so canoe draws straight into what it shows, and committing a
+/// surface only tells the compositor which parts changed. Clones refer to the
+/// same pixels.
 #[derive(Clone)]
-pub struct Buffer(Rc<BufferData>);
-
-struct BufferData {
+pub struct Buffer {
     width: i32,
     height: i32,
-    pixels: RefCell<Vec<u8>>,
+    memory: MemoryRenderBuffer,
 }
 
 impl Buffer {
@@ -44,37 +48,51 @@ impl Buffer {
         if len > i32::MAX as usize {
             return None;
         }
-        Some(Self(Rc::new(BufferData {
+        Some(Self {
             width,
             height,
-            pixels: RefCell::new(vec![0; len]),
-        })))
+            memory: MemoryRenderBuffer::new(
+                Fourcc::Argb8888,
+                (width, height),
+                1,
+                Transform::Normal,
+                None,
+            ),
+        })
     }
 
     pub fn width(&self) -> i32 {
-        self.0.width
+        self.width
     }
 
     pub fn height(&self) -> i32 {
-        self.0.height
+        self.height
     }
 
-    pub fn stride(&self) -> i32 {
-        self.0.width * 4
+    /// Hand the pixels to `f`. What it changes shows once the parts it
+    /// changed are committed as damage.
+    pub fn draw<T>(&self, f: impl FnOnce(&mut [u8]) -> T) -> T {
+        let mut memory = self.memory.clone();
+        let mut context = memory.render();
+        let mut result = None;
+        let _ = context.draw(|pixels| {
+            result = Some(f(pixels));
+            Ok::<_, Infallible>(Vec::new())
+        });
+        result.expect("the closure is always called")
     }
 
-    pub fn pixels(&self) -> Ref<'_, Vec<u8>> {
-        self.0.pixels.borrow()
-    }
-
-    pub fn pixels_mut(&self) -> RefMut<'_, Vec<u8>> {
-        self.0.pixels.borrow_mut()
+    /// Tell the compositor these parts changed, for it to take them up.
+    fn damage(&self, damage: Vec<Rectangle<i32, BufferCoords>>) {
+        let mut memory = self.memory.clone();
+        let mut context = memory.render();
+        let _ = context.draw(|_| Ok::<_, Infallible>(damage));
     }
 }
 
 /// A buffer that is redrawn in place, sized on demand. Stands in for the
-/// double-buffered shm pools a Wayland client needs: canoe's compositor
-/// copies the pixels when a surface is committed, so one buffer suffices.
+/// double-buffered shm pools a Wayland client needs: canoe draws into the
+/// pixels the compositor shows, so one buffer suffices.
 #[derive(Default)]
 pub struct PixelPool {
     buffer: Option<Buffer>,
@@ -109,9 +127,9 @@ impl PixelPool {
 
     pub fn mark_attached(&self) {}
 
-    /// The pixels of the prepared slot.
-    pub fn slot_bytes_mut(&mut self, _slot: usize) -> Option<RefMut<'_, Vec<u8>>> {
-        self.buffer.as_ref().map(|b| b.pixels_mut())
+    /// Draw into the prepared buffer, if there is one.
+    pub fn draw<T>(&self, f: impl FnOnce(&mut [u8]) -> T) -> Option<T> {
+        self.buffer.as_ref().map(|b| b.draw(f))
     }
 
     pub fn current_buffer(&self) -> Option<&Buffer> {
@@ -263,8 +281,7 @@ struct State {
     pending_destination: Option<(i32, i32)>,
 
     // Committed state, what the compositor shows.
-    texture: Option<MemoryRenderBuffer>,
-    texture_size: (i32, i32),
+    buffer: Option<Buffer>,
     /// A one-pixel buffer, kept as its color: it is drawn as a solid fill
     /// rather than stretched (which would blur its edges).
     solid: Option<SolidColorBuffer>,
@@ -319,8 +336,7 @@ impl Surface {
             pending_input_region: None,
             pending_buffer_scale: 1,
             pending_destination: None,
-            texture: None,
-            texture_size: (0, 0),
+            buffer: None,
             solid: None,
             buffer_scale: 1,
             destination: None,
@@ -377,37 +393,15 @@ impl Surface {
         let damage = std::mem::take(&mut state.pending_damage);
         match state.pending_buffer.take() {
             Some(None) => {
-                state.texture = None;
-                state.texture_size = (0, 0);
+                state.buffer = None;
                 state.solid = None;
             }
             Some(Some(buffer)) => {
                 let size = (buffer.width(), buffer.height());
-                let fresh = state.texture.is_none() || state.texture_size != size;
-                if fresh {
-                    state.texture = Some(MemoryRenderBuffer::new(
-                        Fourcc::Argb8888,
-                        size,
-                        1,
-                        Transform::Normal,
-                        None,
-                    ));
-                    state.texture_size = size;
-                }
-                let full = Rectangle::from_size(size.into());
-                let damage: Vec<_> = if fresh || damage.is_empty() {
-                    vec![full]
-                } else {
-                    damage
-                        .into_iter()
-                        .filter_map(|rect| rect.intersection(full))
-                        .collect()
-                };
-                let stride = buffer.stride() as usize;
-                let pixels = buffer.pixels();
                 if size == (1, 1) {
                     // Premultiplied BGRA bytes.
-                    let [b, g, r, a] = [pixels[0], pixels[1], pixels[2], pixels[3]];
+                    let [b, g, r, a] =
+                        buffer.draw(|pixels| [pixels[0], pixels[1], pixels[2], pixels[3]]);
                     let color = [
                         r as f32 / 255.0,
                         g as f32 / 255.0,
@@ -421,21 +415,17 @@ impl Surface {
                 } else {
                     state.solid = None;
                 }
-                if let Some(texture) = state.texture.as_mut() {
-                    let mut context = texture.render();
-                    let _ = context.draw(|dst: &mut [u8]| {
-                        for rect in &damage {
-                            let x0 = rect.loc.x as usize * 4;
-                            let x1 = (rect.loc.x + rect.size.w) as usize * 4;
-                            for y in rect.loc.y..rect.loc.y + rect.size.h {
-                                let row = y as usize * stride;
-                                dst[row + x0..row + x1]
-                                    .copy_from_slice(&pixels[row + x0..row + x1]);
-                            }
-                        }
-                        Result::<_, std::convert::Infallible>::Ok(damage.clone())
-                    });
-                }
+                let full = Rectangle::from_size(size.into());
+                let damage: Vec<_> = if damage.is_empty() {
+                    vec![full]
+                } else {
+                    damage
+                        .into_iter()
+                        .filter_map(|rect| rect.intersection(full))
+                        .collect()
+                };
+                buffer.damage(damage);
+                state.buffer = Some(buffer);
             }
             None => {}
         }
@@ -446,20 +436,20 @@ impl Surface {
     pub fn destroy(&self) {
         let mut state = self.0.borrow_mut();
         state.destroyed = true;
-        state.texture = None;
+        state.buffer = None;
     }
 
     /// The committed content, if the surface is mapped.
     pub fn content(&self) -> Option<SurfaceContent> {
         let state = self.0.borrow();
-        let buffer = state.texture.clone()?;
-        let (bw, bh) = state.texture_size;
+        let buffer = state.buffer.as_ref()?;
+        let (bw, bh) = (buffer.width(), buffer.height());
         let logical_size = state.destination.unwrap_or((
             bw / state.buffer_scale.max(1),
             bh / state.buffer_scale.max(1),
         ));
         Some(SurfaceContent {
-            buffer,
+            buffer: buffer.memory.clone(),
             solid: state.solid.clone(),
             buffer_size: (bw, bh),
             logical_size,
@@ -468,7 +458,7 @@ impl Surface {
     }
 
     pub fn is_mapped(&self) -> bool {
-        self.0.borrow().texture.is_some()
+        self.0.borrow().buffer.is_some()
     }
 
     /// The committed size in logical pixels.
