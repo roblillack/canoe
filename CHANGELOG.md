@@ -98,7 +98,7 @@ Xwayland. (#66)
 - Cursors keep their shapes where no `default` XCursor theme is installed, as
   on NixOS: Canoe falls back to a theme that is, and tells clients about it.
   With no theme at all, the built-in cursor is now a proper arrow instead of
-  a triangle. (#84)
+  a triangle. (#88)
 - X11 programs take clicks and notice the pointer on outputs placed above or
   left of others (at negative positions, e.g. by kanshi). Such a layout is
   moved so it starts at 0,0, as Xwayland's screen does. (#66)
