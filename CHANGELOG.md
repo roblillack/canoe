@@ -76,7 +76,7 @@ Xwayland. (#66)
 
 - Window titles are centered in the titlebar, moving aside where the
   buttons are in the way. `titlebar_text_align = "left"` under `[ui]` puts
-  them next to the close button again.
+  them next to the close button again. (#89)
 - Windows that only draw their own decorations, as libadwaita apps do, keep
   them instead of getting Canoe's titlebar on top. A `force_ssd` rule still
   gives them one. Every other window is decorated by Canoe, even one that
