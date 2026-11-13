@@ -155,9 +155,11 @@ impl DesktopSurface {
         if let Some(ref buffer) = self.buffer {
             let argb = rgba_to_premultiplied_argb(rgba);
             let color_bytes = argb.to_ne_bytes();
-            for pixel in buffer.pixels_mut().as_chunks_mut::<4>().0 {
-                *pixel = color_bytes;
-            }
+            buffer.draw(|pixels| {
+                for pixel in pixels.as_chunks_mut::<4>().0 {
+                    *pixel = color_bytes;
+                }
+            });
         }
     }
 
@@ -221,158 +223,158 @@ impl DesktopSurface {
         let Some(buffer) = self.buffer.clone() else {
             return;
         };
-        let mut pixels = buffer.pixels_mut();
-        let pixels = pixels.as_mut_slice();
-        let Some(mut renderer) = Renderer::new(pixels, buf_w, buf_h) else {
-            return;
-        };
+        buffer.draw(|pixels| {
+            let Some(mut renderer) = Renderer::new(pixels, buf_w, buf_h) else {
+                return;
+            };
 
-        let selected = self.selected_icon;
+            let selected = self.selected_icon;
 
-        // Render order: non-selected first, selected last so its (possibly
-        // wider) label overlays neighbouring labels.
-        let mut order: Vec<usize> = (0..desktop_icons.len()).collect();
-        if let Some(sel) = selected {
-            if let Some(pos) = order
-                .iter()
-                .position(|&i| desktop_icons[i].window_id == sel)
-            {
-                let idx = order.remove(pos);
-                order.push(idx);
+            // Render order: non-selected first, selected last so its (possibly
+            // wider) label overlays neighbouring labels.
+            let mut order: Vec<usize> = (0..desktop_icons.len()).collect();
+            if let Some(sel) = selected {
+                if let Some(pos) = order
+                    .iter()
+                    .position(|&i| desktop_icons[i].window_id == sel)
+                {
+                    let idx = order.remove(pos);
+                    order.push(idx);
+                }
             }
-        }
 
-        for &i in &order {
-            let icon = &desktop_icons[i];
-            let layout = &self.icons[i];
-            let is_selected = selected == Some(icon.window_id);
-            let color_glyphs = if is_selected {
-                ColorGlyphs::Natural
-            } else {
-                ColorGlyphs::Tinted
-            };
+            for &i in &order {
+                let icon = &desktop_icons[i];
+                let layout = &self.icons[i];
+                let is_selected = selected == Some(icon.window_id);
+                let color_glyphs = if is_selected {
+                    ColorGlyphs::Natural
+                } else {
+                    ColorGlyphs::Tinted
+                };
 
-            let icon_bg = if is_selected {
-                rgba_to_argb(theme.highlight_bg)
-            } else {
-                rgba_to_argb(theme.titlebar_bg)
-            };
-            let icon_text = if is_selected {
-                rgba_to_argb(theme.highlight_text)
-            } else {
-                rgba_to_argb(theme.titlebar_text)
-            };
-            let label_bg = if is_selected {
-                rgba_to_argb(theme.highlight_bg)
-            } else {
-                0 // transparent - no label background unless selected
-            };
-            let label_text = if is_selected {
-                rgba_to_argb(theme.highlight_text)
-            } else {
-                rgba_to_argb(theme.text)
-            };
+                let icon_bg = if is_selected {
+                    rgba_to_argb(theme.highlight_bg)
+                } else {
+                    rgba_to_argb(theme.titlebar_bg)
+                };
+                let icon_text = if is_selected {
+                    rgba_to_argb(theme.highlight_text)
+                } else {
+                    rgba_to_argb(theme.titlebar_text)
+                };
+                let label_bg = if is_selected {
+                    rgba_to_argb(theme.highlight_bg)
+                } else {
+                    0 // transparent - no label background unless selected
+                };
+                let label_text = if is_selected {
+                    rgba_to_argb(theme.highlight_text)
+                } else {
+                    rgba_to_argb(theme.text)
+                };
 
-            let ix = layout.x;
-            let iy = layout.y;
-            let icon_px = scale.px(ICON_SIZE);
+                let ix = layout.x;
+                let iy = layout.y;
+                let icon_px = scale.px(ICON_SIZE);
 
-            // Center the 32x32 icon square within the cell width
-            let icon_offset_x = (cell_w - icon_px) / 2;
+                // Center the 32x32 icon square within the cell width
+                let icon_offset_x = (cell_w - icon_px) / 2;
 
-            let has_icon_image = icon.icon.is_some();
+                let has_icon_image = icon.icon.is_some();
 
-            if !has_icon_image {
-                // Draw icon background (32x32 area)
-                renderer.fill_rect(ix + icon_offset_x, iy, icon_px, icon_px, icon_bg);
+                if !has_icon_image {
+                    // Draw icon background (32x32 area)
+                    renderer.fill_rect(ix + icon_offset_x, iy, icon_px, icon_px, icon_bg);
 
-                // Draw 1px border around icon square
-                let border_color = rgba_to_argb(theme.border);
-                let b = scale.line();
-                renderer.fill_rect(ix + icon_offset_x, iy, icon_px, b, border_color);
-                renderer.fill_rect(
-                    ix + icon_offset_x,
-                    iy + icon_px - b,
-                    icon_px,
-                    b,
-                    border_color,
+                    // Draw 1px border around icon square
+                    let border_color = rgba_to_argb(theme.border);
+                    let b = scale.line();
+                    renderer.fill_rect(ix + icon_offset_x, iy, icon_px, b, border_color);
+                    renderer.fill_rect(
+                        ix + icon_offset_x,
+                        iy + icon_px - b,
+                        icon_px,
+                        b,
+                        border_color,
+                    );
+                    renderer.fill_rect(ix + icon_offset_x, iy, b, icon_px, border_color);
+                    renderer.fill_rect(
+                        ix + icon_offset_x + icon_px - b,
+                        iy,
+                        b,
+                        icon_px,
+                        border_color,
+                    );
+
+                    // Render first character centered in the icon
+                    let first_char: String = icon
+                        .title
+                        .chars()
+                        .next()
+                        .unwrap_or('?')
+                        .to_uppercase()
+                        .collect();
+                    renderer.render_text(
+                        &first_char,
+                        ix + icon_offset_x,
+                        iy,
+                        icon_px,
+                        icon_px,
+                        scale.factor(),
+                        icon_text,
+                        color_glyphs,
+                        font_size,
+                        font_name,
+                        0,
+                    );
+                } else {
+                    renderer.blit_pixmap(icon.icon.as_ref().unwrap(), ix + icon_offset_x, iy);
+                }
+
+                // Render window title centered below icon. Non-selected labels
+                // are truncated with an ellipsis to fit within the cell so they
+                // don't overlap neighbours; the selected label is allowed to
+                // overflow up to 5x the icon width before being truncated.
+                let label_y = iy + icon_px;
+                let label_h = scale.px(ICON_LABEL_HEIGHT);
+                let scaled_label_size = scale.px_f(label_font_size);
+                let max_label_w = if is_selected { icon_px * 5 } else { cell_w };
+                let display_title = truncate_with_ellipsis(
+                    &icon.title,
+                    max_label_w,
+                    label_font_name,
+                    scaled_label_size,
                 );
-                renderer.fill_rect(ix + icon_offset_x, iy, b, icon_px, border_color);
-                renderer.fill_rect(
-                    ix + icon_offset_x + icon_px - b,
-                    iy,
-                    b,
-                    icon_px,
-                    border_color,
-                );
+                let text_w =
+                    super::font::measure_text(label_font_name, scaled_label_size, &display_title)
+                        .unwrap_or(0.0) as i32;
+                let icon_center_x = ix + cell_w / 2;
+                let label_x = icon_center_x - text_w / 2;
 
-                // Render first character centered in the icon
-                let first_char: String = icon
-                    .title
-                    .chars()
-                    .next()
-                    .unwrap_or('?')
-                    .to_uppercase()
-                    .collect();
+                // Draw label background if selected, sized to the text
+                if is_selected {
+                    let margin = scale.px(LABEL_MARGIN);
+                    let bg_x = label_x - margin;
+                    let bg_w = text_w + margin * 2;
+                    renderer.fill_rect(bg_x, label_y, bg_w, label_h, label_bg);
+                }
+
                 renderer.render_text(
-                    &first_char,
-                    ix + icon_offset_x,
-                    iy,
-                    icon_px,
-                    icon_px,
+                    &display_title,
+                    label_x,
+                    label_y,
+                    text_w.max(1),
+                    label_h,
                     scale.factor(),
-                    icon_text,
+                    label_text,
                     color_glyphs,
-                    font_size,
-                    font_name,
+                    label_font_size,
+                    label_font_name,
                     0,
                 );
-            } else {
-                renderer.blit_pixmap(icon.icon.as_ref().unwrap(), ix + icon_offset_x, iy);
             }
-
-            // Render window title centered below icon. Non-selected labels
-            // are truncated with an ellipsis to fit within the cell so they
-            // don't overlap neighbours; the selected label is allowed to
-            // overflow up to 5x the icon width before being truncated.
-            let label_y = iy + icon_px;
-            let label_h = scale.px(ICON_LABEL_HEIGHT);
-            let scaled_label_size = scale.px_f(label_font_size);
-            let max_label_w = if is_selected { icon_px * 5 } else { cell_w };
-            let display_title = truncate_with_ellipsis(
-                &icon.title,
-                max_label_w,
-                label_font_name,
-                scaled_label_size,
-            );
-            let text_w =
-                super::font::measure_text(label_font_name, scaled_label_size, &display_title)
-                    .unwrap_or(0.0) as i32;
-            let icon_center_x = ix + cell_w / 2;
-            let label_x = icon_center_x - text_w / 2;
-
-            // Draw label background if selected, sized to the text
-            if is_selected {
-                let margin = scale.px(LABEL_MARGIN);
-                let bg_x = label_x - margin;
-                let bg_w = text_w + margin * 2;
-                renderer.fill_rect(bg_x, label_y, bg_w, label_h, label_bg);
-            }
-
-            renderer.render_text(
-                &display_title,
-                label_x,
-                label_y,
-                text_w.max(1),
-                label_h,
-                scale.factor(),
-                label_text,
-                color_glyphs,
-                label_font_size,
-                label_font_name,
-                0,
-            );
-        }
+        });
     }
 
     /// Hit test: return the window id of the icon at the given surface-local

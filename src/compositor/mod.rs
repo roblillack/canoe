@@ -15,6 +15,7 @@ pub mod focus;
 pub mod handlers;
 pub mod input;
 pub mod kwin_screenshot;
+pub mod memory;
 pub mod output_profiles;
 pub mod protocol_handlers;
 pub mod protocols;
@@ -428,6 +429,8 @@ pub struct State {
     /// sway's IPC socket, while emulated (`emulate_sway`).
     pub sway_ipc: Option<sway_ipc::SwayIpc>,
     pub share_timer: Option<smithay::reexports::calloop::RegistrationToken>,
+    /// Trims the heap after windows closed; see [`memory`].
+    pub trim_timer: Option<smithay::reexports::calloop::RegistrationToken>,
     /// The startup commands are still to be launched.
     pub startup_pending: bool,
 
@@ -630,6 +633,7 @@ impl State {
             kwin_screenshot: None,
             sway_ipc: None,
             share_timer: None,
+            trim_timer: None,
             startup_pending: true,
             backdrop_ids: HashMap::new(),
             cursor_hidden_by_backend: false,

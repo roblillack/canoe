@@ -243,12 +243,15 @@ impl PickerSurface {
         let Some(buffer) = self.buffer.clone() else {
             return;
         };
-        {
-            let mut pixels = buffer.pixels_mut();
-            let Some(mut renderer) = Renderer::new(pixels.as_mut_slice(), buf_w, buf_h) else {
-                return;
+        let drawn = buffer.draw(|pixels| {
+            let Some(mut renderer) = Renderer::new(pixels, buf_w, buf_h) else {
+                return false;
             };
             draw_scene(&mut renderer, scene, &scale);
+            true
+        });
+        if !drawn {
+            return;
         }
 
         let mut region = Region::new();

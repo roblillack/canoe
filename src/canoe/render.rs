@@ -16,81 +16,114 @@ pub enum ColorGlyphs {
 /// toward the text color.
 const TINT_STRENGTH: f32 = 0.5;
 
+/// Draws into a buffer, or into one piece of it.
+///
+/// Coordinates are the whole buffer's, and [`width`](Self::width) and
+/// [`height`](Self::height) are its size, whichever piece is drawn into: a
+/// buffer kept in pieces is drawn by drawing the same things into each, and
+/// each piece takes what falls on it.
 pub struct Renderer<'a> {
+    /// The pixels drawn into.
     pixmap: tiny_skia::PixmapMut<'a>,
+    /// Where they are in the buffer.
+    piece: Clip,
+    /// The buffer's size.
+    width: i32,
+    height: i32,
 }
 
 impl<'a> Renderer<'a> {
     pub fn new(pixels: &'a mut [u8], width: i32, height: i32) -> Option<Self> {
+        Self::piece(pixels, (0, 0, width, height), (width, height))
+    }
+
+    /// Draw into the piece `(x, y, width, height)` of a buffer of `size`;
+    /// `pixels` are the piece's.
+    pub fn piece(
+        pixels: &'a mut [u8],
+        (x, y, width, height): (i32, i32, i32, i32),
+        size: (i32, i32),
+    ) -> Option<Self> {
         if width <= 0 || height <= 0 {
             return None;
         }
         let pixmap = tiny_skia::PixmapMut::from_bytes(pixels, width as u32, height as u32)?;
-        Some(Self { pixmap })
+        Some(Self {
+            pixmap,
+            piece: Clip {
+                x0: x,
+                y0: y,
+                x1: x + width,
+                y1: y + height,
+            },
+            width: size.0,
+            height: size.1,
+        })
     }
 
     pub fn width(&self) -> i32 {
-        self.pixmap.width() as i32
+        self.width
     }
 
     pub fn height(&self) -> i32 {
-        self.pixmap.height() as i32
+        self.height
     }
 
-    pub fn data_mut(&mut self) -> &mut [u8] {
-        self.pixmap.data_mut()
+    /// Make the pixels transparent.
+    pub fn clear(&mut self) {
+        self.pixmap.data_mut().fill(0);
+    }
+
+    /// The part of `(x, y, width, height)` this renderer draws into.
+    fn clip(&self, x: i32, y: i32, width: i32, height: i32) -> Option<Clip> {
+        let clip = Clip {
+            x0: x.max(self.piece.x0),
+            y0: y.max(self.piece.y0),
+            x1: x.saturating_add(width).min(self.piece.x1),
+            y1: y.saturating_add(height).min(self.piece.y1),
+        };
+        (clip.x0 < clip.x1 && clip.y0 < clip.y1).then_some(clip)
+    }
+
+    /// The byte offset of pixel (`x`, `y`), which must be in the piece.
+    fn offset(&self, x: i32, y: i32) -> usize {
+        let width = self.piece.x1 - self.piece.x0;
+        (((y - self.piece.y0) * width + x - self.piece.x0) * 4) as usize
     }
 
     pub fn fill_rect(&mut self, x: i32, y: i32, width: i32, height: i32, color_argb: u32) {
-        if width <= 0 || height <= 0 {
+        let Some(clip) = self.clip(x, y, width, height) else {
             return;
-        }
-
-        let buffer_width = self.width();
-        let buffer_height = self.height();
-        let x0 = x.max(0);
-        let y0 = y.max(0);
-        let x1 = (x + width).min(buffer_width);
-        let y1 = (y + height).min(buffer_height);
-        if x1 <= x0 || y1 <= y0 {
-            return;
-        }
-
+        };
         let color_bytes = color_argb.to_ne_bytes();
-        let pixels = self.data_mut();
-        for row in y0..y1 {
-            for col in x0..x1 {
-                let offset = ((row * buffer_width + col) * 4) as usize;
-                if offset + 4 <= pixels.len() {
-                    pixels[offset..offset + 4].copy_from_slice(&color_bytes);
-                }
+        for row in clip.y0..clip.y1 {
+            let start = self.offset(clip.x0, row);
+            let end = self.offset(clip.x1, row);
+            for pixel in self.pixmap.data_mut()[start..end].as_chunks_mut::<4>().0 {
+                pixel.copy_from_slice(&color_bytes);
             }
         }
     }
 
-    pub fn blit_pixmap(&mut self, icon: &tiny_skia::Pixmap, x: i32, y: i32) {
-        let buffer_width = self.width();
-        let buffer_height = self.height();
-        if buffer_width <= 0 || buffer_height <= 0 {
+    /// Copy premultiplied ARGB pixels into a row, starting at (`x`, `y`).
+    pub fn put_pixels(&mut self, x: i32, y: i32, pixels: &[u8]) {
+        let Some(clip) = self.clip(x, y, (pixels.len() / 4) as i32, 1) else {
             return;
-        }
+        };
+        let start = self.offset(clip.x0, y);
+        let end = self.offset(clip.x1, y);
+        let from = ((clip.x0 - x) * 4) as usize;
+        self.pixmap.data_mut()[start..end].copy_from_slice(&pixels[from..from + end - start]);
+    }
 
+    pub fn blit_pixmap(&mut self, icon: &tiny_skia::Pixmap, x: i32, y: i32) {
         let icon_w = icon.width() as i32;
         let icon_h = icon.height() as i32;
-        if icon_w <= 0 || icon_h <= 0 {
+        let Some(Clip { x0, y0, x1, y1 }) = self.clip(x, y, icon_w, icon_h) else {
             return;
-        }
-
-        let x0 = x.max(0);
-        let y0 = y.max(0);
-        let x1 = (x + icon_w).min(buffer_width);
-        let y1 = (y + icon_h).min(buffer_height);
-        if x1 <= x0 || y1 <= y0 {
-            return;
-        }
+        };
 
         let icon_data = icon.data();
-        let pixels = self.data_mut();
         for row in y0..y1 {
             let src_y = row - y;
             for col in x0..x1 {
@@ -104,7 +137,8 @@ impl<'a> Renderer<'a> {
                     if src_a == 0 {
                         continue;
                     }
-                    let dst_offset = ((row * buffer_width + col) * 4) as usize;
+                    let dst_offset = self.offset(col, row);
+                    let pixels = self.pixmap.data_mut();
                     if dst_offset + 4 <= pixels.len() {
                         blend_pixel_premul(
                             &mut pixels[dst_offset..dst_offset + 4],
@@ -120,31 +154,17 @@ impl<'a> Renderer<'a> {
     }
 
     pub fn blit_argb(&mut self, src: &[u8], src_width: i32, src_height: i32, x: i32, y: i32) {
-        if src_width <= 0 || src_height <= 0 {
+        let Some(Clip { x0, y0, x1, y1 }) = self.clip(x, y, src_width, src_height) else {
             return;
-        }
+        };
 
-        let dst_width = self.width();
-        let dst_height = self.height();
-        if dst_width <= 0 || dst_height <= 0 {
-            return;
-        }
-
-        let x0 = x.max(0);
-        let y0 = y.max(0);
-        let x1 = (x + src_width).min(dst_width);
-        let y1 = (y + src_height).min(dst_height);
-        if x1 <= x0 || y1 <= y0 {
-            return;
-        }
-
-        let dst = self.data_mut();
         for row in y0..y1 {
             let src_y = row - y;
             for col in x0..x1 {
                 let src_x = col - x;
                 let src_offset = ((src_y * src_width + src_x) * 4) as usize;
-                let dst_offset = ((row * dst_width + col) * 4) as usize;
+                let dst_offset = self.offset(col, row);
+                let dst = self.pixmap.data_mut();
                 if src_offset + 4 <= src.len() && dst_offset + 4 <= dst.len() {
                     dst[dst_offset..dst_offset + 4]
                         .copy_from_slice(&src[src_offset..src_offset + 4]);
@@ -173,12 +193,18 @@ impl<'a> Renderer<'a> {
         }
 
         let origin_y = origin_y + 1;
+        // Nothing to lay out where none of the text could show.
+        let Some(clip) = self.clip(origin_x, origin_y, area_width, area_height) else {
+            return;
+        };
         let size_px = (font_size * scale).round().max(1.0) as u32;
-        let buffer_width = self.width();
-        let buffer_height = self.height();
         let padding_x = padding_x.max(0);
 
-        let pixels = self.data_mut();
+        let target = Target {
+            origin: (self.piece.x0, self.piece.y0),
+            width: self.piece.x1 - self.piece.x0,
+        };
+        let pixels = self.pixmap.data_mut();
         let _ = font::with_face(font_name, size_px, |face| {
             let Some(metrics) = face.line_metrics() else {
                 return;
@@ -188,13 +214,6 @@ impl<'a> Renderer<'a> {
             let baseline_y = origin_y + (area_height - line_height) / 2 + metrics.ascender;
             let start_x = origin_x + padding_x;
             let available = area_width - 2 * padding_x;
-            let clip = Clip {
-                x0: origin_x.max(0),
-                y0: origin_y.max(0),
-                x1: (origin_x + area_width).min(buffer_width),
-                y1: (origin_y + area_height).min(buffer_height),
-            };
-
             let layout = face.layout(text);
             for placed in &layout.glyphs {
                 // Same rounding as `font::measure_text`, so text measured to
@@ -211,18 +230,27 @@ impl<'a> Renderer<'a> {
                     text_argb,
                     color_glyphs,
                 };
-                draw_glyph(pixels, buffer_width, &clip, &glyph, glyph_x, glyph_y, paint);
+                draw_glyph(pixels, target, &clip, &glyph, glyph_x, glyph_y, paint);
             }
         });
     }
 }
 
 /// Visible area of a text draw, in buffer pixels (end-exclusive).
+#[derive(Clone, Copy)]
 struct Clip {
     x0: i32,
     y0: i32,
     x1: i32,
     y1: i32,
+}
+
+/// Where pixels are drawn: a piece of a buffer, its top left corner at
+/// `origin` in the buffer, its rows `width` pixels long.
+#[derive(Clone, Copy)]
+struct Target {
+    origin: (i32, i32),
+    width: i32,
 }
 
 /// How to color the glyphs of a text draw.
@@ -260,7 +288,7 @@ impl Paint {
 /// by [`Paint::color_pixel`].
 fn draw_glyph(
     pixels: &mut [u8],
-    buffer_width: i32,
+    target: Target,
     clip: &Clip,
     glyph: &font::GlyphBitmap<'_>,
     x: i32,
@@ -284,7 +312,8 @@ fn draw_glyph(
             let Some(src) = glyph.buffer.get(idx..idx + bpp) else {
                 continue;
             };
-            let offset = ((py * buffer_width + x + col) * 4) as usize;
+            let offset =
+                (((py - target.origin.1) * target.width + x + col - target.origin.0) * 4) as usize;
             let Some(dst) = pixels.get_mut(offset..offset + 4) else {
                 continue;
             };
@@ -417,7 +446,11 @@ mod text_tests {
             text_argb,
             color_glyphs,
         };
-        draw_glyph(&mut px, 1, &clip, glyph, 0, 0, paint);
+        let target = Target {
+            origin: (0, 0),
+            width: 1,
+        };
+        draw_glyph(&mut px, target, &clip, glyph, 0, 0, paint);
         u32::from_ne_bytes(px)
     }
 

@@ -483,6 +483,7 @@ impl State {
             render_share_picker(self);
         }
         self.schedule_wm();
+        self.schedule_trim();
     }
 
     /// Send the configures the window manager's requests made necessary.

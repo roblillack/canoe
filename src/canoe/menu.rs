@@ -356,26 +356,26 @@ impl WindowMenu {
             return;
         };
 
-        let mut pixels = buffer.pixels_mut();
-        let pixels = pixels.as_mut_slice();
-        let cache_pixels = match self.cache.as_ref() {
-            Some(cache) => cache.pixels.as_slice(),
-            None => return,
-        };
-        if cache_pixels.len() != pixels.len() {
-            return;
-        }
-        pixels.copy_from_slice(cache_pixels);
+        buffer.draw(|pixels| {
+            let cache_pixels = match self.cache.as_ref() {
+                Some(cache) => cache.pixels.as_slice(),
+                None => return,
+            };
+            if cache_pixels.len() != pixels.len() {
+                return;
+            }
+            pixels.copy_from_slice(cache_pixels);
 
-        let mut renderer = match Renderer::new(pixels, self.buffer_width, self.buffer_height) {
-            Some(renderer) => renderer,
-            None => return,
-        };
+            let mut renderer = match Renderer::new(pixels, self.buffer_width, self.buffer_height) {
+                Some(renderer) => renderer,
+                None => return,
+            };
 
-        if let (Some(idx), Some(item)) = (hovered_idx, hovered_item.as_ref()) {
-            let row_top = header_h + idx as i32 * item_h;
-            draw_menu_row(&mut renderer, item, row_top, true, &row_ctx);
-        }
+            if let (Some(idx), Some(item)) = (hovered_idx, hovered_item.as_ref()) {
+                let row_top = header_h + idx as i32 * item_h;
+                draw_menu_row(&mut renderer, item, row_top, true, &row_ctx);
+            }
+        });
     }
 
     pub fn update_input_region(&self) {

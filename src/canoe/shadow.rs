@@ -4,6 +4,7 @@ use super::render::Renderer;
 use super::scale::{FractionalSurface, Origin, Scale};
 use super::surface::{Decoration, PixelPool, Region, Surface};
 use super::titlebar::Rect;
+use smithay::utils::{Buffer, Rectangle};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -149,67 +150,54 @@ impl WindowShadow {
 
         let buffer_width = self.buffer_width;
         let buffer_height = self.buffer_height;
-        let stride = match buffer_width.checked_mul(4) {
-            Some(s) => s,
-            None => return false,
-        };
+        let scale = self.scale;
+        let logical_size = shadow_size.max(0);
+        let shadow_size = scale.px(logical_size);
+        let corner_radius = scale.px(logical_size / 2);
+        // The shadow only paints a band around the rect; inside it, all but
+        // the corners stays transparent and is left out of the buffer.
+        let hole = shadow_hole(rect, corner_radius);
 
         #[cfg(feature = "debug-logging")]
         let prep_t0 = std::time::Instant::now();
         let allocated_before = self.shm_pool.allocate_fresh_count();
-        let slot_idx = match self.shm_pool.prepare(buffer_width, buffer_height, stride) {
-            Some(s) => s,
-            None => return false,
-        };
+        if !self
+            .shm_pool
+            .prepare(buffer_width, buffer_height, Some(hole))
+        {
+            return false;
+        }
         let allocated_fresh = self.shm_pool.allocate_fresh_count() != allocated_before;
         #[cfg(feature = "debug-logging")]
         let prep_us = prep_t0.elapsed().as_micros();
 
-        let mut pixels = match self.shm_pool.slot_bytes_mut(slot_idx) {
-            Some(p) => p,
-            None => return false,
-        };
-        let pixels = pixels.as_mut_slice();
-
-        #[cfg(feature = "debug-logging")]
-        let fill_t0 = std::time::Instant::now();
-        // The shadow only paints the perimeter band; the interior must stay
-        // transparent. Either the slot's bytes are stale from a previous frame
-        // (pool reused) or zero from a fresh allocation -- in both cases we
-        // need a clean slate before drawing.
-        pixels.fill(0);
-        #[cfg(feature = "debug-logging")]
-        let fill_us = fill_t0.elapsed().as_micros();
-
         #[cfg(feature = "debug-logging")]
         let draw_t0 = std::time::Instant::now();
-        if let Some(mut renderer) = Renderer::new(pixels, buffer_width, buffer_height) {
-            let scale = self.scale;
-            let shadow_size = shadow_size.max(0);
-            draw_shadow_soft(
-                &mut renderer,
-                rect,
-                scale.px(shadow_size),
-                scale.px(shadow_size / 2),
-                shadow_color,
-            );
-        }
-        #[cfg(feature = "debug-logging")]
-        let draw_us = draw_t0.elapsed().as_micros();
-
+        let drawn = self.shm_pool.paint(|renderer| {
+            // The buffer still holds the last shadow drawn, or is fresh and
+            // zeroed: start from zero either way.
+            renderer.clear();
+            draw_shadow_soft(renderer, rect, shadow_size, corner_radius, shadow_color);
+        });
         #[cfg(feature = "debug-logging")]
         eprintln!(
-            "[canoe shadow] {}x{} bytes={} alloc_fresh={} prepare={:.2}ms fill={:.2}ms draw={:.2}ms",
+            "[canoe shadow] {}x{} kept={}px alloc_fresh={} prepare={:.2}ms draw={:.2}ms",
             buffer_width,
             buffer_height,
-            buffer_width as i64 * buffer_height as i64 * 4,
+            self.shm_pool.current_buffer().map_or(0, |b| b
+                .pieces()
+                .iter()
+                .map(|p| p.rect.size.w as i64 * p.rect.size.h as i64)
+                .sum::<i64>()),
             allocated_fresh,
             prep_us as f64 / 1000.0,
-            fill_us as f64 / 1000.0,
-            draw_us as f64 / 1000.0,
+            draw_t0.elapsed().as_micros() as f64 / 1000.0,
         );
         #[cfg(not(feature = "debug-logging"))]
         let _ = allocated_fresh;
+        if !drawn {
+            return false;
+        }
 
         self.last_key = Some(key);
         true
@@ -328,23 +316,6 @@ fn build_shadow_parts(s_px: i32, r_px: i32, color: u32) -> ShadowParts {
     ShadowParts { cs, edge, corner }
 }
 
-/// Fill a byte buffer with a repeating 4-byte pattern using memcpy doubling,
-/// which is far faster than a per-pixel loop in unoptimized builds.
-fn fill_run(buf: &mut [u8], argb: [u8; 4]) {
-    let total = buf.len();
-    if total < 4 {
-        return;
-    }
-    buf[..4].copy_from_slice(&argb);
-    let mut filled = 4;
-    while filled < total {
-        let chunk = filled.min(total - filled);
-        let (head, tail) = buf.split_at_mut(filled);
-        tail[..chunk].copy_from_slice(&head[..chunk]);
-        filled += chunk;
-    }
-}
-
 /// `cast`, in device pixels from the output's origin, in the buffer of a
 /// shadow surface whose corner sits at logical `origin`.
 fn shadow_rect(scale: &Scale, origin: Origin, cast: Rect) -> SoftShadowRect {
@@ -363,6 +334,17 @@ pub(super) struct SoftShadowRect {
     pub y: i32,
     pub width: i32,
     pub height: i32,
+}
+
+/// What [`draw_shadow_soft`] leaves transparent of the buffer: `rect`
+/// between the rows of its rounded corners. Nothing is drawn inside `rect`
+/// but the corners, which reach `corner_radius` into it.
+pub(super) fn shadow_hole(rect: SoftShadowRect, corner_radius: i32) -> Rectangle<i32, Buffer> {
+    let r_px = corner_radius.clamp(0, (rect.width.min(rect.height) / 2).max(0));
+    Rectangle::new(
+        (rect.x, rect.y + r_px).into(),
+        (rect.width, rect.height - 2 * r_px).into(),
+    )
 }
 
 /// Draw a rounded soft shadow `shadow_size` device pixels deep around `rect`,
@@ -412,9 +394,6 @@ pub(super) fn draw_shadow_soft(
     let edge = &parts.edge;
     let corner = &parts.corner;
 
-    let stride = (w * 4) as usize;
-    let pixels = renderer.data_mut();
-
     // Corner anchors (buffer pixels), all relative to the rect.
     let right_x0 = inner_x1 - r_px; // BR / TR left column
     let bottom_y0 = inner_y1 - r_px; // BR / BL top row
@@ -434,8 +413,7 @@ pub(super) fn draw_shadow_soft(
                 (cl - tx, bottom_y0 + ty),       // bottom-left
                 (cl - tx, ct - ty),              // top-left
             ] {
-                let idx = by as usize * stride + bx as usize * 4;
-                pixels[idx..idx + 4].copy_from_slice(&argb);
+                renderer.put_pixels(bx, by, &argb);
             }
         }
     }
@@ -443,16 +421,14 @@ pub(super) fn draw_shadow_soft(
     // Top / bottom straight edges: one colour per row across the middle span.
     // Top row (my - s_px + i) and bottom row (inner_y1 + s_px - 1 - i) are
     // equidistant from the rect, so both use edge[i].
-    let span_lo = (mx + r_px) as usize * 4;
-    let span_hi = (inner_x1 - r_px) as usize * 4;
+    let span = (mx + r_px, inner_x1 - r_px);
     for i in 0..s_px {
         let argb = edge[i as usize];
         if argb[3] == 0 {
             continue;
         }
         for &row_y in &[my - s_px + i, inner_y1 + s_px - 1 - i] {
-            let row = row_y as usize * stride;
-            fill_run(&mut pixels[row + span_lo..row + span_hi], argb);
+            renderer.fill_rect(span.0, row_y, span.1 - span.0, 1, u32::from_ne_bytes(argb));
         }
     }
 
@@ -466,12 +442,9 @@ pub(super) fn draw_shadow_soft(
         let mirrored = s_px as usize - 1 - i;
         right_run[mirrored * 4..mirrored * 4 + 4].copy_from_slice(&edge[i]);
     }
-    let left_off = (mx - s_px) as usize * 4;
-    let right_off = inner_x1 as usize * 4;
     for y in (my + r_px)..(inner_y1 - r_px) {
-        let row = y as usize * stride;
-        pixels[row + left_off..row + left_off + run_bytes].copy_from_slice(&left_run);
-        pixels[row + right_off..row + right_off + run_bytes].copy_from_slice(&right_run);
+        renderer.put_pixels(mx - s_px, y, &left_run);
+        renderer.put_pixels(inner_x1, y, &right_run);
     }
 }
 
@@ -610,6 +583,44 @@ mod tests {
                         );
                     }
                 }
+            }
+        }
+    }
+
+    /// Painted piece by piece around its hole, a shadow comes out as it
+    /// does painted whole, and nothing of it falls into the hole.
+    #[test]
+    fn shadows_paint_the_same_in_pieces() {
+        for &(fw, fh, ss) in &[
+            (80, 40, 20),
+            (240, 180, 40),
+            (41, 37, 20),
+            (40, 40, 20),
+            (51, 47, 25),
+        ] {
+            for (cr, slack) in [(ss / 2, 0), (ss / 2, ss / 2), (0, 3), (ss, 0)] {
+                let (w, h) = (fw + ss * 2 + slack, fh + ss * 2 + slack);
+                let rect = SoftShadowRect {
+                    x: ss,
+                    y: ss,
+                    width: fw,
+                    height: fh,
+                };
+                let mut whole = vec![0u8; (w * h * 4) as usize];
+                let mut r = Renderer::new(&mut whole, w, h).unwrap();
+                draw_shadow_soft(&mut r, rect, ss, cr, 0x000000cc);
+
+                let buffer =
+                    crate::canoe::surface::Buffer::with_hole(w, h, Some(shadow_hole(rect, cr)))
+                        .unwrap();
+                // Corners as round as the rect is high leave no hole.
+                let r = cr.min(fw.min(fh) / 2);
+                assert_eq!(buffer.hole().is_some(), fh > 2 * r);
+                buffer.paint(|r| draw_shadow_soft(r, rect, ss, cr, 0x000000cc));
+                assert!(
+                    buffer.to_vec() == whole,
+                    "fw={fw} fh={fh} ss={ss} cr={cr} slack={slack}"
+                );
             }
         }
     }

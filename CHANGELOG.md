@@ -89,6 +89,8 @@ Xwayland. (#66)
   "Google Chrome — Page". The menu of one application's windows has that
   name as its header instead of the app id. Desktop entries are also found
   by lower-case app id and by `StartupWMClass`, for names and icons alike. (#73)
+- Optimize memory used for window frames and shadows, and more efficiently
+  return it to the system when windows close. (#90)
 
 ### Fixed
 

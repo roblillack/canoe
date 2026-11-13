@@ -11,7 +11,8 @@
 
 #![allow(dead_code)]
 
-use std::cell::{Ref, RefCell, RefMut};
+use std::cell::RefCell;
+use std::convert::Infallible;
 use std::rc::Rc;
 
 use smithay::backend::allocator::Fourcc;
@@ -19,22 +20,65 @@ use smithay::backend::renderer::element::memory::MemoryRenderBuffer;
 use smithay::backend::renderer::element::solid::SolidColorBuffer;
 use smithay::utils::{Buffer as BufferCoords, Rectangle, Transform};
 
+use super::render::Renderer;
 use super::OutputId;
 
 /// Pixels canoe drew: ARGB8888, premultiplied, little endian (the `wl_shm`
 /// format), with rows `width * 4` bytes apart.
+///
+/// They are kept in the [`MemoryRenderBuffer`]s the compositor draws them
+/// from, so canoe draws straight into what it shows, and committing a
+/// surface only tells the compositor which parts changed. Clones refer to the
+/// same pixels.
+///
+/// A buffer can leave out a hole that stays transparent: a window's frame
+/// and shadow span the whole window but only draw around it, so they keep
+/// just the pieces above, below, left and right of the window.
 #[derive(Clone)]
-pub struct Buffer(Rc<BufferData>);
-
-struct BufferData {
+pub struct Buffer {
     width: i32,
     height: i32,
-    pixels: RefCell<Vec<u8>>,
+    /// What is left out, within the buffer; never empty.
+    hole: Option<Rectangle<i32, BufferCoords>>,
+    pieces: Rc<[Piece]>,
+}
+
+/// Part of a [`Buffer`]'s pixels.
+#[derive(Clone)]
+pub struct Piece {
+    /// Where the piece is, in buffer pixels.
+    pub rect: Rectangle<i32, BufferCoords>,
+    pub memory: MemoryRenderBuffer,
+}
+
+impl Piece {
+    fn new(rect: Rectangle<i32, BufferCoords>) -> Self {
+        Self {
+            rect,
+            memory: MemoryRenderBuffer::new(
+                Fourcc::Argb8888,
+                rect.size,
+                1,
+                Transform::Normal,
+                None,
+            ),
+        }
+    }
 }
 
 impl Buffer {
     /// A transparent buffer; `None` for an empty or absurd size.
     pub fn new(width: i32, height: i32) -> Option<Self> {
+        Self::with_hole(width, height, None)
+    }
+
+    /// A transparent buffer that leaves out `hole`, as far as it is inside;
+    /// `None` for an empty or absurd size.
+    pub fn with_hole(
+        width: i32,
+        height: i32,
+        hole: Option<Rectangle<i32, BufferCoords>>,
+    ) -> Option<Self> {
         if width <= 0 || height <= 0 {
             return None;
         }
@@ -44,37 +88,126 @@ impl Buffer {
         if len > i32::MAX as usize {
             return None;
         }
-        Some(Self(Rc::new(BufferData {
+        let full = Rectangle::<i32, BufferCoords>::from_size((width, height).into());
+        let hole = hole
+            .and_then(|hole| hole.intersection(full))
+            .filter(|hole| !hole.is_empty());
+        let pieces: Rc<[Piece]> = match hole {
+            None => Rc::new([Piece::new(full)]),
+            Some(hole) => {
+                let (x0, y0) = (hole.loc.x, hole.loc.y);
+                let (x1, y1) = (x0 + hole.size.w, y0 + hole.size.h);
+                [
+                    (0, 0, width, y0),
+                    (0, y1, width, height - y1),
+                    (0, y0, x0, y1 - y0),
+                    (x1, y0, width - x1, y1 - y0),
+                ]
+                .into_iter()
+                .filter(|&(_, _, w, h)| w > 0 && h > 0)
+                .map(|(x, y, w, h)| Piece::new(Rectangle::new((x, y).into(), (w, h).into())))
+                .collect()
+            }
+        };
+        Some(Self {
             width,
             height,
-            pixels: RefCell::new(vec![0; len]),
-        })))
+            hole,
+            pieces,
+        })
     }
 
     pub fn width(&self) -> i32 {
-        self.0.width
+        self.width
     }
 
     pub fn height(&self) -> i32 {
-        self.0.height
+        self.height
     }
 
-    pub fn stride(&self) -> i32 {
-        self.0.width * 4
+    /// The part left out, if any.
+    pub fn hole(&self) -> Option<Rectangle<i32, BufferCoords>> {
+        self.hole
     }
 
-    pub fn pixels(&self) -> Ref<'_, Vec<u8>> {
-        self.0.pixels.borrow()
+    pub fn pieces(&self) -> &[Piece] {
+        &self.pieces
     }
 
-    pub fn pixels_mut(&self) -> RefMut<'_, Vec<u8>> {
-        self.0.pixels.borrow_mut()
+    /// Hand the pixels of a buffer without a hole to `f`. What it changes
+    /// shows once the parts it changed are committed as damage.
+    pub fn draw<T>(&self, f: impl FnOnce(&mut [u8]) -> T) -> T {
+        debug_assert!(self.hole.is_none(), "a buffer with a hole is painted");
+        let mut memory = self.pieces[0].memory.clone();
+        let mut context = memory.render();
+        let mut result = None;
+        let _ = context.draw(|pixels| {
+            result = Some(f(pixels));
+            Ok::<_, Infallible>(Vec::new())
+        });
+        result.expect("the closure is always called")
+    }
+
+    /// Paint the buffer: `f` draws into each piece in turn, in the whole
+    /// buffer's coordinates, and each piece takes what falls on it.
+    pub fn paint(&self, mut f: impl FnMut(&mut Renderer)) {
+        let size = (self.width, self.height);
+        for piece in self.pieces.iter() {
+            let rect = piece.rect;
+            let mut memory = piece.memory.clone();
+            let mut context = memory.render();
+            let _ = context.draw(|pixels| {
+                let at = (rect.loc.x, rect.loc.y, rect.size.w, rect.size.h);
+                if let Some(mut renderer) = Renderer::piece(pixels, at, size) {
+                    f(&mut renderer);
+                }
+                Ok::<_, Infallible>(Vec::new())
+            });
+        }
+    }
+
+    /// The pixels, put together, with the hole transparent.
+    #[cfg(test)]
+    pub fn to_vec(&self) -> Vec<u8> {
+        let stride = self.width as usize * 4;
+        let mut pixels = vec![0; stride * self.height as usize];
+        for piece in self.pieces.iter() {
+            let rect = piece.rect;
+            let mut memory = piece.memory.clone();
+            let _ = memory.render().draw(|src| {
+                let row_bytes = rect.size.w as usize * 4;
+                for (row, src_row) in src.chunks_exact(row_bytes).enumerate() {
+                    let at = (rect.loc.y as usize + row) * stride + rect.loc.x as usize * 4;
+                    pixels[at..at + row_bytes].copy_from_slice(src_row);
+                }
+                Ok::<_, Infallible>(Vec::new())
+            });
+        }
+        pixels
+    }
+
+    /// Tell the compositor these parts changed, for it to take them up.
+    fn damage(&self, damage: &[Rectangle<i32, BufferCoords>]) {
+        for piece in self.pieces.iter() {
+            let rect = piece.rect;
+            let damage: Vec<_> = damage
+                .iter()
+                .filter_map(|damage| damage.intersection(rect))
+                .map(|damage| Rectangle::new(damage.loc - rect.loc, damage.size))
+                .collect();
+            if damage.is_empty() {
+                continue;
+            }
+            let mut memory = piece.memory.clone();
+            let mut context = memory.render();
+            let _ = context.draw(|_| Ok::<_, Infallible>(damage));
+        }
     }
 }
 
 /// A buffer that is redrawn in place, sized on demand. Stands in for the
-/// double-buffered shm pools a Wayland client needs: canoe's compositor
-/// copies the pixels when a surface is committed, so one buffer suffices.
+/// double-buffered shm pools a Wayland client needs: canoe draws into the
+/// pixels the compositor shows, so one buffer suffices.
 #[derive(Default)]
 pub struct PixelPool {
     buffer: Option<Buffer>,
@@ -91,27 +224,33 @@ impl PixelPool {
         self.allocations
     }
 
-    /// Make the buffer `width`×`height`. Returns the slot to draw into.
-    pub fn prepare(&mut self, width: i32, height: i32, stride: i32) -> Option<usize> {
-        if stride != width * 4 {
-            return None;
-        }
+    /// Make the buffer `width`×`height`, leaving out `hole`. False if it
+    /// can't be.
+    pub fn prepare(
+        &mut self,
+        width: i32,
+        height: i32,
+        hole: Option<Rectangle<i32, BufferCoords>>,
+    ) -> bool {
+        let Some(wanted) = Buffer::with_hole(width, height, hole).map(|b| (b.hole, b)) else {
+            return false;
+        };
         let fits = self
             .buffer
             .as_ref()
-            .is_some_and(|b| b.width() == width && b.height() == height);
+            .is_some_and(|b| b.width() == width && b.height() == height && b.hole() == wanted.0);
         if !fits {
-            self.buffer = Some(Buffer::new(width, height)?);
+            self.buffer = Some(wanted.1);
             self.allocations += 1;
         }
-        Some(0)
+        true
     }
 
     pub fn mark_attached(&self) {}
 
-    /// The pixels of the prepared slot.
-    pub fn slot_bytes_mut(&mut self, _slot: usize) -> Option<RefMut<'_, Vec<u8>>> {
-        self.buffer.as_ref().map(|b| b.pixels_mut())
+    /// Paint the prepared buffer, if there is one; see [`Buffer::paint`].
+    pub fn paint(&self, f: impl FnMut(&mut Renderer)) -> bool {
+        self.buffer.as_ref().map(|b| b.paint(f)).is_some()
     }
 
     pub fn current_buffer(&self) -> Option<&Buffer> {
@@ -263,8 +402,7 @@ struct State {
     pending_destination: Option<(i32, i32)>,
 
     // Committed state, what the compositor shows.
-    texture: Option<MemoryRenderBuffer>,
-    texture_size: (i32, i32),
+    buffer: Option<Buffer>,
     /// A one-pixel buffer, kept as its color: it is drawn as a solid fill
     /// rather than stretched (which would blur its edges).
     solid: Option<SolidColorBuffer>,
@@ -301,7 +439,8 @@ impl Default for Surface {
 
 /// What the compositor needs to draw a committed surface.
 pub struct SurfaceContent {
-    pub buffer: MemoryRenderBuffer,
+    /// The pixels, in one piece unless the buffer has a hole.
+    pub pieces: Vec<Piece>,
     /// Set for a one-pixel buffer: its color, to fill the surface with.
     pub solid: Option<SolidColorBuffer>,
     /// Size in device pixels.
@@ -319,8 +458,7 @@ impl Surface {
             pending_input_region: None,
             pending_buffer_scale: 1,
             pending_destination: None,
-            texture: None,
-            texture_size: (0, 0),
+            buffer: None,
             solid: None,
             buffer_scale: 1,
             destination: None,
@@ -377,37 +515,15 @@ impl Surface {
         let damage = std::mem::take(&mut state.pending_damage);
         match state.pending_buffer.take() {
             Some(None) => {
-                state.texture = None;
-                state.texture_size = (0, 0);
+                state.buffer = None;
                 state.solid = None;
             }
             Some(Some(buffer)) => {
                 let size = (buffer.width(), buffer.height());
-                let fresh = state.texture.is_none() || state.texture_size != size;
-                if fresh {
-                    state.texture = Some(MemoryRenderBuffer::new(
-                        Fourcc::Argb8888,
-                        size,
-                        1,
-                        Transform::Normal,
-                        None,
-                    ));
-                    state.texture_size = size;
-                }
-                let full = Rectangle::from_size(size.into());
-                let damage: Vec<_> = if fresh || damage.is_empty() {
-                    vec![full]
-                } else {
-                    damage
-                        .into_iter()
-                        .filter_map(|rect| rect.intersection(full))
-                        .collect()
-                };
-                let stride = buffer.stride() as usize;
-                let pixels = buffer.pixels();
                 if size == (1, 1) {
                     // Premultiplied BGRA bytes.
-                    let [b, g, r, a] = [pixels[0], pixels[1], pixels[2], pixels[3]];
+                    let [b, g, r, a] =
+                        buffer.draw(|pixels| [pixels[0], pixels[1], pixels[2], pixels[3]]);
                     let color = [
                         r as f32 / 255.0,
                         g as f32 / 255.0,
@@ -421,21 +537,17 @@ impl Surface {
                 } else {
                     state.solid = None;
                 }
-                if let Some(texture) = state.texture.as_mut() {
-                    let mut context = texture.render();
-                    let _ = context.draw(|dst: &mut [u8]| {
-                        for rect in &damage {
-                            let x0 = rect.loc.x as usize * 4;
-                            let x1 = (rect.loc.x + rect.size.w) as usize * 4;
-                            for y in rect.loc.y..rect.loc.y + rect.size.h {
-                                let row = y as usize * stride;
-                                dst[row + x0..row + x1]
-                                    .copy_from_slice(&pixels[row + x0..row + x1]);
-                            }
-                        }
-                        Result::<_, std::convert::Infallible>::Ok(damage.clone())
-                    });
-                }
+                let full = Rectangle::from_size(size.into());
+                let damage: Vec<_> = if damage.is_empty() {
+                    vec![full]
+                } else {
+                    damage
+                        .into_iter()
+                        .filter_map(|rect| rect.intersection(full))
+                        .collect()
+                };
+                buffer.damage(&damage);
+                state.buffer = Some(buffer);
             }
             None => {}
         }
@@ -446,20 +558,20 @@ impl Surface {
     pub fn destroy(&self) {
         let mut state = self.0.borrow_mut();
         state.destroyed = true;
-        state.texture = None;
+        state.buffer = None;
     }
 
     /// The committed content, if the surface is mapped.
     pub fn content(&self) -> Option<SurfaceContent> {
         let state = self.0.borrow();
-        let buffer = state.texture.clone()?;
-        let (bw, bh) = state.texture_size;
+        let buffer = state.buffer.as_ref()?;
+        let (bw, bh) = (buffer.width(), buffer.height());
         let logical_size = state.destination.unwrap_or((
             bw / state.buffer_scale.max(1),
             bh / state.buffer_scale.max(1),
         ));
         Some(SurfaceContent {
-            buffer,
+            pieces: buffer.pieces().to_vec(),
             solid: state.solid.clone(),
             buffer_size: (bw, bh),
             logical_size,
@@ -468,7 +580,7 @@ impl Surface {
     }
 
     pub fn is_mapped(&self) -> bool {
-        self.0.borrow().texture.is_some()
+        self.0.borrow().buffer.is_some()
     }
 
     /// The committed size in logical pixels.
@@ -661,6 +773,50 @@ mod tests {
         p.size = (0, 0);
         p.margin = (0, 0, 0, 0);
         assert_eq!(p.geometry((800, 600)), (0, 0, 800, 600));
+    }
+
+    fn rect(x: i32, y: i32, w: i32, h: i32) -> Rectangle<i32, BufferCoords> {
+        Rectangle::new((x, y).into(), (w, h).into())
+    }
+
+    #[test]
+    fn a_buffer_keeps_the_pieces_around_its_hole() {
+        let pieces = |hole| {
+            let buffer = Buffer::with_hole(10, 8, Some(hole)).unwrap();
+            buffer.pieces().iter().map(|p| p.rect).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            pieces(rect(2, 3, 5, 2)),
+            [
+                rect(0, 0, 10, 3),
+                rect(0, 5, 10, 3),
+                rect(0, 3, 2, 2),
+                rect(7, 3, 3, 2)
+            ]
+        );
+        // A hole reaching past the edges is cut to the buffer.
+        assert_eq!(pieces(rect(-4, 2, 20, 10)), [rect(0, 0, 10, 2)]);
+        // One outside it leaves the buffer whole.
+        assert_eq!(pieces(rect(10, 0, 4, 4)), [rect(0, 0, 10, 8)]);
+        assert!(Buffer::with_hole(10, 8, Some(rect(10, 0, 4, 4)))
+            .unwrap()
+            .hole()
+            .is_none());
+    }
+
+    #[test]
+    fn painting_draws_into_every_piece() {
+        let buffer = Buffer::with_hole(6, 4, Some(rect(1, 1, 4, 2))).unwrap();
+        buffer.paint(|renderer| renderer.fill_rect(0, 0, 6, 4, 0xff112233));
+        let pixels = buffer.to_vec();
+        for y in 0..4 {
+            for x in 0..6 {
+                let at = (y * 6 + x) * 4;
+                let px = u32::from_ne_bytes(pixels[at..at + 4].try_into().unwrap());
+                let in_hole = (1..5).contains(&x) && (1..3).contains(&y);
+                assert_eq!(px, if in_hole { 0 } else { 0xff112233 }, "({x}, {y})");
+            }
+        }
     }
 
     #[test]
