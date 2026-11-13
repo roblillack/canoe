@@ -126,6 +126,7 @@ Send SIGHUP (e.g. `pkill -HUP canoe`) to re-read the configuration file.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackendKind {
+    #[cfg(target_os = "linux")]
     Udev,
     Winit,
     Headless,
@@ -145,15 +146,24 @@ struct CliArgs {
 fn parse_args(argv: impl IntoIterator<Item = String>) -> CliArgs {
     let nested =
         std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
+    // On non-Linux platforms the udev/DRM backend isn't built, so winit is
+    // the only sensible default — canoe can only run nested there for now.
+    #[cfg(target_os = "linux")]
+    let default_backend = if nested {
+        BackendKind::Winit
+    } else {
+        BackendKind::Udev
+    };
+    #[cfg(not(target_os = "linux"))]
+    let default_backend = {
+        let _ = nested;
+        BackendKind::Winit
+    };
     let mut args = CliArgs {
         skip_config: false,
         xwayland: true,
         startup: Vec::new(),
-        backend: if nested {
-            BackendKind::Winit
-        } else {
-            BackendKind::Udev
-        },
+        backend: default_backend,
     };
     let mut iter = argv.into_iter();
     while let Some(arg) = iter.next() {
@@ -177,7 +187,13 @@ fn parse_args(argv: impl IntoIterator<Item = String>) -> CliArgs {
             "--backend" => {
                 let value = inline.or_else(|| iter.next()).unwrap_or_default();
                 args.backend = match value.as_str() {
+                    #[cfg(target_os = "linux")]
                     "udev" | "drm" => BackendKind::Udev,
+                    #[cfg(not(target_os = "linux"))]
+                    "udev" | "drm" => {
+                        eprintln!("canoe: the udev/DRM backend is only available on Linux");
+                        std::process::exit(2);
+                    }
                     "winit" | "nested" => BackendKind::Winit,
                     "headless" => BackendKind::Headless,
                     other => {
@@ -300,6 +316,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         BackendKind::Winit => compositor::backend::winit::init(&mut state)?,
         #[cfg(not(feature = "winit"))]
         BackendKind::Winit => return Err("canoe was built without the winit feature".into()),
+        #[cfg(target_os = "linux")]
         BackendKind::Udev => compositor::backend::udev::init(&mut state)?,
     }
     std::env::set_var("WAYLAND_DISPLAY", &socket_name);
