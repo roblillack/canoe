@@ -5,6 +5,9 @@
 //! portal's offer to the running window manager, which shows this picker: every
 //! output is dimmed by an overlay, the window or screen under the pointer is
 //! highlighted, and a click shares it. Esc or a right click declines.
+//!
+//! The same picker chooses what to take a screenshot of, when a screenshot
+//! tool asks canoe's KWin screenshot emulation to let the user pick.
 
 use super::render::{ColorGlyphs, Renderer};
 use super::scale::{FractionalSurface, Origin, Scale};
@@ -13,6 +16,36 @@ use super::{font, OutputId, SeatId, WindowId};
 
 /// Identifies one pending `canoe --share-picker` request.
 pub type ShareRequestId = u64;
+
+/// Identifies one screenshot waiting for the user to pick what to capture.
+pub type ScreenshotRequestId = u64;
+
+/// Who opened the picker, and gets the answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PickRequest {
+    /// `canoe --share-picker`, for the screencast portal.
+    Share(ShareRequestId),
+    /// A screenshot tool.
+    Screenshot(ScreenshotRequestId),
+}
+
+impl PickRequest {
+    /// The share request, if this is one.
+    pub fn share(self) -> Option<ShareRequestId> {
+        match self {
+            PickRequest::Share(id) => Some(id),
+            PickRequest::Screenshot(_) => None,
+        }
+    }
+
+    /// What picking does, as the picker tells the user.
+    pub fn verb(self) -> &'static str {
+        match self {
+            PickRequest::Share(_) => "share",
+            PickRequest::Screenshot(_) => "capture",
+        }
+    }
+}
 
 /// How long after the user picked something a new request gets the same
 /// answer without asking again.
@@ -241,7 +274,7 @@ impl Drop for PickerSurface {
 
 /// An open picker: what the portal offered, and what the user points at.
 pub struct SharePicker {
-    pub request: ShareRequestId,
+    pub request: PickRequest,
     /// The seat whose binding mode was switched for the picker.
     pub seat_id: SeatId,
     /// Shareable targets: windows top to bottom, then outputs.
@@ -254,7 +287,7 @@ pub struct SharePicker {
 
 impl SharePicker {
     pub fn new(
-        request: ShareRequestId,
+        request: PickRequest,
         seat_id: SeatId,
         candidates: Vec<ShareCandidate>,
         theme: PickerTheme,
@@ -311,12 +344,14 @@ impl SharePicker {
     }
 
     /// The instructions shown at the top of every output.
-    pub fn banner(&self) -> &'static str {
-        match (self.offers_windows(), self.offers_outputs()) {
-            (true, true) => "Click a window or screen to share it \u{2022} Esc to cancel",
-            (true, false) => "Click a window to share it \u{2022} Esc to cancel",
-            _ => "Click a screen to share it \u{2022} Esc to cancel",
-        }
+    pub fn banner(&self) -> String {
+        let what = match (self.offers_windows(), self.offers_outputs()) {
+            (true, true) => "a window or screen",
+            (true, false) => "a window",
+            _ => "a screen",
+        };
+        let verb = self.request.verb();
+        format!("Click {what} to {verb} it \u{2022} Esc to cancel")
     }
 
     pub fn surface_mut(&mut self, output_id: OutputId) -> Option<&mut PickerSurface> {
@@ -624,7 +659,7 @@ mod tests {
     #[test]
     fn cycling_wraps() {
         let mut picker = SharePicker::new(
-            0,
+            PickRequest::Share(0),
             0,
             vec![
                 ShareCandidate {
@@ -642,6 +677,25 @@ mod tests {
         assert_eq!(picker.hovered, Some(1));
         picker.cycle(1);
         assert_eq!(picker.hovered, Some(0));
+    }
+
+    #[test]
+    fn banner_names_what_picking_does() {
+        let candidates = vec![ShareCandidate {
+            target: ShareTarget::Window(3),
+            reply: String::new(),
+        }];
+        let theme = PickerTheme::from_ui(&crate::config::UiConfig::default());
+        let share = SharePicker::new(PickRequest::Share(0), 0, candidates.clone(), theme.clone());
+        assert_eq!(
+            share.banner(),
+            "Click a window to share it \u{2022} Esc to cancel"
+        );
+        let shot = SharePicker::new(PickRequest::Screenshot(0), 0, candidates, theme);
+        assert_eq!(
+            shot.banner(),
+            "Click a window to capture it \u{2022} Esc to cancel"
+        );
     }
 
     #[test]

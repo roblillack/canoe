@@ -14,9 +14,11 @@ pub mod cursor;
 pub mod focus;
 pub mod handlers;
 pub mod input;
+pub mod kwin_screenshot;
 pub mod protocol_handlers;
 pub mod protocols;
 pub mod render;
+pub mod sway_ipc;
 pub mod taskbar;
 pub mod warp;
 pub mod wm_events;
@@ -417,6 +419,10 @@ pub struct State {
 
     /// Where `canoe --share-picker` requests arrive.
     pub share_server: Option<crate::ipc::ShareServer>,
+    /// KWin's screenshot interface, while emulated (`emulate_kwin`).
+    pub kwin_screenshot: Option<kwin_screenshot::KwinScreenshot>,
+    /// sway's IPC socket, while emulated (`emulate_sway`).
+    pub sway_ipc: Option<sway_ipc::SwayIpc>,
     pub share_timer: Option<smithay::reexports::calloop::RegistrationToken>,
     /// The startup commands are still to be launched.
     pub startup_pending: bool,
@@ -490,6 +496,7 @@ impl State {
         let virtual_pointer_state =
             protocols::virtual_pointer::VirtualPointerManagerState::new::<State, _>(&dh, |_| true);
         protocols::virtual_keyboard::VirtualKeyboardManagerState::new::<State>(&dh);
+        smithay::wayland::xdg_toplevel_tag::XdgToplevelTagManager::new::<State>(&dh);
         let xdg_foreign_state = protocols::xdg_foreign::XdgForeignState::new::<State>(&dh);
         let toplevel_icon_state =
             protocols::toplevel_icon::ToplevelIconManagerState::new::<State>(&dh);
@@ -613,6 +620,8 @@ impl State {
             locker: None,
             session_lock: None,
             share_server: None,
+            kwin_screenshot: None,
+            sway_ipc: None,
             share_timer: None,
             startup_pending: true,
             backdrop_ids: HashMap::new(),

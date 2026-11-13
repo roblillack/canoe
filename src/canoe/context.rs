@@ -539,20 +539,39 @@ impl Context {
 
     /// Focus a window
     pub fn focus(&mut self, window_id: WindowId) {
-        // Unfullscreen any fullscreen window when switching to a different window.
-        // We cannot rely on self.focused_window here because focus_preview (used
-        // during alt-tab) may have already changed it.
+        // Unfullscreen the fullscreen windows that would cover the window
+        // being focused: those fullscreen on its output. A fullscreen window on
+        // another output stays, so a program can fill every output at once (as
+        // Spectacle does to select a region). We cannot rely on
+        // self.focused_window here because focus_preview (used during alt-tab)
+        // may have already changed it.
+        let focus_output = self
+            .windows
+            .get(&window_id)
+            .and_then(|w| match &w.borrow().fullscreen {
+                super::window::FullscreenState::Output(output) => {
+                    output.upgrade().map(|output| output.borrow().id)
+                }
+                _ => None,
+            })
+            .or_else(|| self.output_for_window_id(window_id));
         let fullscreen_ids: Vec<WindowId> = self
             .windows
             .iter()
             .filter_map(|(&id, w)| {
-                if id != window_id
-                    && !matches!(w.borrow().fullscreen, super::window::FullscreenState::None)
-                {
-                    Some(id)
-                } else {
-                    None
-                }
+                let covers = match &w.borrow().fullscreen {
+                    super::window::FullscreenState::None => false,
+                    super::window::FullscreenState::Window => true,
+                    super::window::FullscreenState::Output(output) => {
+                        match (output.upgrade(), focus_output) {
+                            (Some(output), Some(focus_output)) => {
+                                output.borrow().id == focus_output
+                            }
+                            _ => true,
+                        }
+                    }
+                };
+                (id != window_id && covers).then_some(id)
             })
             .collect();
         if !fullscreen_ids.is_empty() {
@@ -2174,8 +2193,17 @@ impl Context {
                 continue;
             };
 
+            let new_window = events
+                .iter()
+                .any(|event| matches!(event, super::window::WindowEvent::Init));
             for event in events {
                 self.handle_window_event(window_id, event);
+            }
+            // A new window is focused once the requests it made before it
+            // was mapped (fullscreen on some output, say) are applied, so
+            // that focusing it accounts for where it really goes.
+            if new_window {
+                self.focus_new_window(window_id);
             }
         }
 
@@ -2230,6 +2258,18 @@ impl Context {
     }
 
     /// Handle a window event
+    /// Focus a window that was just mapped, unless it asked to start
+    /// minimized.
+    fn focus_new_window(&mut self, window_id: WindowId) {
+        let hidden = match self.windows.get(&window_id) {
+            Some(window) => window.borrow().hidden,
+            None => return,
+        };
+        if !hidden {
+            self.focus(window_id);
+        }
+    }
+
     fn handle_window_event(&mut self, window_id: WindowId, event: super::window::WindowEvent) {
         use super::window::WindowEvent;
 
@@ -2273,9 +2313,6 @@ impl Context {
                             .set_dimension_bounds(max_width.max(1), max_height.max(1));
                     }
                 }
-
-                // Focus the new window
-                self.focus(window_id);
             }
             WindowEvent::Close => {
                 if let Some(window) = self.windows.get(&window_id) {
@@ -2602,17 +2639,19 @@ impl Context {
                     .filter(|t| !t.is_empty())
                     .or_else(|| w.app_id.clone())
                     .unwrap_or_else(|| "this window".to_string());
+                let verb = capitalize(picker.request.verb());
                 Some((
                     w.frame_rect(&self.config.ui),
-                    format!("Share \u{201c}{name}\u{201d}"),
+                    format!("{verb} \u{201c}{name}\u{201d}"),
                 ))
             }
             ShareTarget::Output(id) => {
                 let o = self.outputs.get(&id)?.borrow();
                 let name = o.name.clone().unwrap_or_else(|| "this screen".to_string());
+                let verb = capitalize(picker.request.verb());
                 Some((
                     (o.x, o.y, o.width, o.height),
-                    format!("Share screen {name} ({}\u{d7}{})", o.width, o.height),
+                    format!("{verb} screen {name} ({}\u{d7}{})", o.width, o.height),
                 ))
             }
         }
@@ -4123,6 +4162,15 @@ fn refit_rect(
     let frame_x = frame.0.clamp(ax, (ax + aw - frame_w).max(ax));
     let frame_y = frame.1.clamp(ay, (ay + ah - frame_h).max(ay));
     Some((frame_x + left, frame_y + top, width, height))
+}
+
+/// `word` with its first letter in upper case.
+fn capitalize(word: &str) -> String {
+    let mut chars = word.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().chain(chars).collect(),
+        None => String::new(),
+    }
 }
 
 #[cfg(test)]

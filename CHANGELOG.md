@@ -44,6 +44,15 @@ Xwayland. (#66)
   (`Gdk/WindowScalingFactor`), as does their default cursor. Programs
   that can't scale come out small; `xwayland_hidpi = false` goes back to
   drawing them at scale 1, stretched and blurry. (#80)
+- Screenshot tools made for sway or KWin work with `emulate_sway` and
+  `emulate_kwin`. The first answers the questions sway's IPC answers about
+  outputs, windows and focus, for shotman and grimshot; the second offers
+  KWin's screenshot D-Bus interface, for Spectacle in all its modes, with
+  Canoe's picker for the window under the cursor. Both are off by default;
+  see Screenshots in the README. (#81)
+- `xdg-toplevel-tag-v1`: windows may tag themselves. The tags aren't used
+  yet, but KDE programs expect the protocol and Spectacle crashes without
+  it. (#81)
 
 ### Changed
 
@@ -80,6 +89,14 @@ Xwayland. (#66)
   on switching back, instead of staying dark until replugged. (#77)
 - Clients like kitty no longer crash when a monitor is unplugged or turned
   off. (#77)
+- Focusing a window only takes fullscreen from windows on its own output, so a
+  program can cover every output with a fullscreen window of its own (as
+  Spectacle does to select a region). A new window is focused once what it
+  asked for before showing up, like fullscreen on a given output, is done. (#81)
+- Windows that ask to be maximized or fullscreen before they first show up, as
+  Qt programs do, start out that way. Canoe answered such a request at once,
+  which kept it from choosing how they start, so they could start
+  windowed. (#81)
 
 ## [0.6.2] - 2026-11-07
 

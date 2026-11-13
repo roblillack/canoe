@@ -96,7 +96,7 @@ where
 }
 
 /// A surface tree plus its popups, topmost first.
-fn surface_with_popups<R>(
+pub(super) fn surface_with_popups<R>(
     renderer: &mut R,
     surface: &WlSurface,
     location: Point<f64, Physical>,
@@ -131,7 +131,7 @@ where
 }
 
 /// One of the window manager's surfaces at global `origin`.
-fn canoe_surface<R>(
+pub(super) fn canoe_surface<R>(
     renderer: &mut R,
     surface: &canoe::surface::Surface,
     origin: Point<f64, Logical>,

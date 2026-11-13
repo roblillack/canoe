@@ -255,6 +255,12 @@ pub struct Config {
     /// that can't scale come out small) instead of drawing them at scale 1
     /// and stretching them (blurry).
     pub xwayland_hidpi: bool,
+    /// Answer sway's IPC (`SWAYSOCK`) with what canoe shows, for tools that
+    /// ask sway where windows and outputs are (shotman, grimshot).
+    pub emulate_sway: bool,
+    /// Offer KWin's screenshot D-Bus API (org.kde.KWin.ScreenShot2), the
+    /// only way Spectacle takes screenshots on Wayland.
+    pub emulate_kwin: bool,
     pub main_modifier: MainModifier,
 
     pub repeat_rate: i32,
@@ -293,6 +299,8 @@ impl Default for Config {
             xcursor_theme: None,
             xcursor_size: None,
             xwayland_hidpi: true,
+            emulate_sway: false,
+            emulate_kwin: false,
             main_modifier: MainModifier::default(),
 
             repeat_rate: 50,
@@ -350,6 +358,8 @@ struct FileConfig {
     xcursor_theme: Option<String>,
     xcursor_size: Option<u32>,
     xwayland_hidpi: Option<bool>,
+    emulate_sway: Option<bool>,
+    emulate_kwin: Option<bool>,
     launcher_cmd: Option<StringOrVec>,
     terminal_cmd: Option<StringOrVec>,
     lock_cmd: Option<StringOrVec>,
@@ -832,6 +842,12 @@ impl Config {
         if let Some(hidpi) = file.xwayland_hidpi {
             self.xwayland_hidpi = hidpi;
         }
+        if let Some(emulate) = file.emulate_sway {
+            self.emulate_sway = emulate;
+        }
+        if let Some(emulate) = file.emulate_kwin {
+            self.emulate_kwin = emulate;
+        }
         if let Some(launcher_cmd) = string_or_vec(file.launcher_cmd) {
             let launcher_cmd = clean_cmd_args(launcher_cmd);
             if !launcher_cmd.is_empty() {
@@ -1098,6 +1114,8 @@ mod tests {
             config.update_activation_environment,
             defaults.update_activation_environment
         );
+        assert_eq!(config.emulate_sway, defaults.emulate_sway);
+        assert_eq!(config.emulate_kwin, defaults.emulate_kwin);
 
         // The sample spells out the values that UiConfig leaves as `None` and
         // derives at runtime.

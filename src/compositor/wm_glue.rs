@@ -892,7 +892,7 @@ pub(super) fn decline_share_request(
 /// overlay on every output that highlights the window or screen under the
 /// pointer.
 pub(super) fn start_share_picker(state: &mut State, request: ipc::ShareRequest) {
-    let (seat_id, candidates) = {
+    let candidates = {
         let context = state.context.borrow();
         // One question at a time; and nothing is shared from a locked screen.
         if context.share_picker.is_some() || context.session_locked {
@@ -900,12 +900,7 @@ pub(super) fn start_share_picker(state: &mut State, request: ipc::ShareRequest) 
             decline_share_request(state, request.id);
             return;
         }
-        let Some(seat_id) = context.current_seat else {
-            drop(context);
-            decline_share_request(state, request.id);
-            return;
-        };
-        (seat_id, context.share_candidates(&request.lines))
+        context.share_candidates(&request.lines)
     };
     // Chrome asks again right after the user picked something; give it the
     // same answer.
@@ -916,9 +911,47 @@ pub(super) fn start_share_picker(state: &mut State, request: ipc::ShareRequest) 
         }
         return;
     }
-    if candidates.is_empty() {
+    let pick = canoe::share_picker::PickRequest::Share(request.id);
+    if !open_picker(state, pick, candidates) {
         decline_share_request(state, request.id);
-        return;
+    }
+}
+
+/// Open the picker for a screenshot of a window (`windows`) or a screen.
+/// Returns false if it can't be opened now; otherwise the choice is handed to
+/// [`State::screenshot_picked`].
+pub(super) fn start_screenshot_picker(
+    state: &mut State,
+    request: canoe::share_picker::ScreenshotRequestId,
+    windows: bool,
+) -> bool {
+    let candidates = {
+        let context = state.context.borrow();
+        if context.share_picker.is_some() || context.session_locked {
+            return false;
+        }
+        context
+            .share_candidates(&[])
+            .into_iter()
+            .filter(|c| matches!(c.target, canoe::share_picker::ShareTarget::Window(_)) == windows)
+            .collect()
+    };
+    let pick = canoe::share_picker::PickRequest::Screenshot(request);
+    open_picker(state, pick, candidates)
+}
+
+/// Show the picker for `request`, offering `candidates`. Returns false if
+/// there is nothing to pick or no seat to pick with.
+fn open_picker(
+    state: &mut State,
+    request: canoe::share_picker::PickRequest,
+    candidates: Vec<canoe::share_picker::ShareCandidate>,
+) -> bool {
+    let Some(seat_id) = state.context.borrow().current_seat else {
+        return false;
+    };
+    if candidates.is_empty() {
+        return false;
     }
 
     let outputs: Vec<canoe::OutputId> = {
@@ -942,7 +975,7 @@ pub(super) fn start_share_picker(state: &mut State, request: ipc::ShareRequest) 
         let context = state.context.borrow();
         canoe::share_picker::PickerTheme::from_ui(&context.config.ui)
     };
-    let mut picker = canoe::share_picker::SharePicker::new(request.id, seat_id, candidates, theme);
+    let mut picker = canoe::share_picker::SharePicker::new(request, seat_id, candidates, theme);
     for output_id in outputs {
         let surface = Surface::new();
         let layer_surface = LayerSurface::new(
@@ -989,6 +1022,7 @@ pub(super) fn start_share_picker(state: &mut State, request: ipc::ShareRequest) 
         configure_canoe_layers(state, output_id);
     }
     state.schedule_wm();
+    true
 }
 
 /// Redraw the picker overlay on every output.
@@ -1018,7 +1052,7 @@ pub(super) fn render_share_picker(state: &mut State) {
                 .as_ref()
                 .map(|&((x, y, w, h), _)| (x - out.x, y - out.y, w, h)),
             label: highlight.as_ref().map(|(_, label)| label.as_str()),
-            banner,
+            banner: &banner,
             theme,
         };
         surface.render(&scene, scale);
@@ -1047,9 +1081,9 @@ pub(super) fn update_share_picker_hover(state: &mut State, seat: &Rc<RefCell<can
     }
 }
 
-/// Close the picker. With `confirm`, share the highlighted target, if any;
-/// otherwise tell the portal the user declined. `restore_mode` switches the
-/// seat back to the default binding mode.
+/// Close the picker. With `confirm`, pick the highlighted target, if any;
+/// otherwise tell whoever asked that the user declined. `restore_mode`
+/// switches the seat back to the default binding mode.
 pub(super) fn finish_share_picker(state: &mut State, confirm: bool, restore_mode: bool) {
     let picker = {
         let mut context = state.context.borrow_mut();
@@ -1068,17 +1102,29 @@ pub(super) fn finish_share_picker(state: &mut State, confirm: bool, restore_mode
         (picker, if confirm { choice } else { None })
     };
     let (picker, choice) = picker;
-    {
-        let mut context = state.context.borrow_mut();
-        match picker.hovered.and_then(|idx| picker.candidates.get(idx)) {
-            Some(candidate) if choice.is_some() => context.record_share_choice(candidate.target),
-            _ => context.share_last_choice = None,
+    let target = picker
+        .hovered
+        .and_then(|idx| picker.candidates.get(idx))
+        .filter(|_| choice.is_some())
+        .map(|candidate| candidate.target);
+    match picker.request {
+        canoe::share_picker::PickRequest::Share(request) => {
+            {
+                let mut context = state.context.borrow_mut();
+                match target {
+                    Some(target) => context.record_share_choice(target),
+                    None => context.share_last_choice = None,
+                }
+            }
+            if let Some(server) = state.share_server.as_mut() {
+                server.reply(request, choice.as_deref());
+            }
         }
-    }
-    if let Some(server) = state.share_server.as_mut() {
-        server.reply(picker.request, choice.as_deref());
+        // Taken once the overlay is gone.
+        canoe::share_picker::PickRequest::Screenshot(_) => {}
     }
     let seat_id = picker.seat_id;
+    let request = picker.request;
     // Destroys the overlay surfaces.
     drop(picker);
 
@@ -1097,6 +1143,11 @@ pub(super) fn finish_share_picker(state: &mut State, confirm: bool, restore_mode
         }
         drop(context);
         state.schedule_wm();
+    } else {
+        drop(context);
+    }
+    if let canoe::share_picker::PickRequest::Screenshot(request) = request {
+        state.screenshot_picked(request, target);
     }
 }
 impl State {
@@ -1586,7 +1637,7 @@ pub fn poll_share_server(state: &mut State) {
         .borrow()
         .share_picker
         .as_ref()
-        .map(|picker| picker.request);
+        .and_then(|picker| picker.request.share());
     if open_request.is_some_and(|id| gone.contains(&id)) {
         finish_share_picker(state, false, true);
     }

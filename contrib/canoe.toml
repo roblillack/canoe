@@ -45,6 +45,22 @@
 # if something else manages the session environment.
 #update_activation_environment = true
 
+# Pretend to be sway and KWin for screenshot tools that only work with them
+# (see Screenshots in the README). Changes apply on reload.
+#
+# emulate_sway answers sway's IPC on the socket SWAYSOCK names (set for
+# programs Canoe launches): where outputs and windows are, which is focused.
+# shotman needs it to capture the active window, grimshot for its active,
+# window and output targets. Commands and events are not supported, so
+# tools that drive sway or follow its events (e.g. waybar's sway modules)
+# still won't work.
+#emulate_sway = false
+#
+# emulate_kwin takes the name org.kde.KWin on the session bus and offers
+# KWin's screenshot interface, which Spectacle needs. KDE programs may then
+# take Canoe for KWin and try other KWin interfaces, which fail.
+#emulate_kwin = false
+
 # Environment variables for every program Canoe launches. Values must be
 # strings: MOZ_ENABLE_WAYLAND = 1 (without quotes) is an error.
 [env]
