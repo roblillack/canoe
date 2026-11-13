@@ -201,29 +201,36 @@ fn pick_frames(images: &[Image], target: u32) -> Vec<CursorFrame> {
         .collect()
 }
 
+/// The classic left-pointing arrow, as a closed polygon whose tip is the
+/// hotspot, in a grid [`ARROW_GRID`] units tall. Drawn when no cursor theme
+/// at all can be loaded, so that even then the pointer looks like a pointer.
+const ARROW: &[(f64, f64)] = &[
+    (0.0, 0.0),
+    (0.0, 17.1),
+    (4.2, 13.2),
+    (6.5, 20.1),
+    (10.1, 18.4),
+    (7.3, 12.4),
+    (12.3, 11.9),
+];
+
+/// The height of the grid [`ARROW`] is given in, a little taller than the
+/// arrow itself so it keeps a margin to the bottom of the image.
+const ARROW_GRID: f64 = 20.8;
+
+/// Width of the arrow's outline, in grid units.
+const ARROW_OUTLINE: f64 = 0.9;
+
 /// A black arrow with a white outline, for systems without cursor themes.
 fn builtin_arrow(size: i32) -> CursorFrame {
     let size = size.max(8);
+    let pixels = arrow_pixels(size);
     let mut buffer =
         MemoryRenderBuffer::new(Fourcc::Argb8888, (size, size), 1, Transform::Normal, None);
     let _ = buffer.render().draw(|dst: &mut [u8]| {
-        for y in 0..size {
-            for x in 0..size {
-                // A triangle: x <= y/1.5, cut off at 3/4 of the height.
-                let inside = (x as f64) <= (y as f64) / 1.5 && y < size * 3 / 4;
-                let edge = inside
-                    && ((x as f64) > (y as f64) / 1.5 - 1.5 || x == 0 || y == size * 3 / 4 - 1);
-                let i = ((y * size + x) * 4) as usize;
-                let (v, a) = if edge {
-                    (255, 255)
-                } else if inside {
-                    (0, 255)
-                } else {
-                    (0, 0)
-                };
-                dst[i..i + 4].copy_from_slice(&[v, v, v, a]);
-            }
-        }
+        // The buffer is tightly packed, like the one `pick_frames` fills.
+        let n = dst.len().min(pixels.len());
+        dst[..n].copy_from_slice(&pixels[..n]);
         Result::<_, std::convert::Infallible>::Ok(vec![smithay::utils::Rectangle::from_size(
             (size, size).into(),
         )])
@@ -233,5 +240,157 @@ fn builtin_arrow(size: i32) -> CursorFrame {
         hotspot: (0, 0),
         size: (size, size),
         delay: Duration::ZERO,
+    }
+}
+
+/// [`ARROW`] rasterized into `size`×`size` premultiplied ARGB8888 pixels,
+/// antialiased by sampling [`ARROW_SUBSAMPLES`] times per pixel and axis.
+fn arrow_pixels(size: i32) -> Vec<u8> {
+    const ARROW_SUBSAMPLES: i32 = 4;
+    let scale = size as f64 / ARROW_GRID;
+    let arrow: Vec<(f64, f64)> = ARROW.iter().map(|&(x, y)| (x * scale, y * scale)).collect();
+    let outline = ARROW_OUTLINE * scale;
+    let samples = (ARROW_SUBSAMPLES * ARROW_SUBSAMPLES) as u32;
+    let mut pixels = vec![0u8; (size * size * 4) as usize];
+    for y in 0..size {
+        for x in 0..size {
+            // How much of this pixel the arrow's fill and its outline cover.
+            let (mut fill, mut edge) = (0u32, 0u32);
+            for sy in 0..ARROW_SUBSAMPLES {
+                for sx in 0..ARROW_SUBSAMPLES {
+                    let point = (
+                        x as f64 + (sx as f64 + 0.5) / ARROW_SUBSAMPLES as f64,
+                        y as f64 + (sy as f64 + 0.5) / ARROW_SUBSAMPLES as f64,
+                    );
+                    if !inside_polygon(&arrow, point) {
+                        continue;
+                    }
+                    // The outline is drawn inside the shape, so the arrow
+                    // keeps the polygon's silhouette.
+                    if distance_to_polygon(&arrow, point) < outline {
+                        edge += 1;
+                    } else {
+                        fill += 1;
+                    }
+                }
+            }
+            // Premultiplied: the white outline is scaled by its own coverage
+            // and the black fill only adds opacity. Gray, so the channel order
+            // does not matter.
+            let value = (255 * edge / samples) as u8;
+            let alpha = (255 * (fill + edge) / samples) as u8;
+            let i = ((y * size + x) * 4) as usize;
+            pixels[i..i + 4].copy_from_slice(&[value, value, value, alpha]);
+        }
+    }
+    pixels
+}
+
+/// Whether `point` is inside the closed polygon `points` (even-odd rule).
+fn inside_polygon(points: &[(f64, f64)], point: (f64, f64)) -> bool {
+    let (px, py) = point;
+    let mut inside = false;
+    let mut j = points.len() - 1;
+    for i in 0..points.len() {
+        let (xi, yi) = points[i];
+        let (xj, yj) = points[j];
+        if (yi > py) != (yj > py) && px < (xj - xi) * (py - yi) / (yj - yi) + xi {
+            inside = !inside;
+        }
+        j = i;
+    }
+    inside
+}
+
+/// The distance from `point` to the closest edge of the closed polygon.
+fn distance_to_polygon(points: &[(f64, f64)], point: (f64, f64)) -> f64 {
+    let mut j = points.len() - 1;
+    let mut best = f64::MAX;
+    for i in 0..points.len() {
+        best = best.min(distance_to_segment(points[j], points[i], point));
+        j = i;
+    }
+    best
+}
+
+/// The distance from `point` to the segment from `a` to `b`.
+fn distance_to_segment(a: (f64, f64), b: (f64, f64), point: (f64, f64)) -> f64 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let length = dx * dx + dy * dy;
+    let t = if length == 0.0 {
+        0.0
+    } else {
+        (((point.0 - a.0) * dx + (point.1 - a.1) * dy) / length).clamp(0.0, 1.0)
+    };
+    let (cx, cy) = (a.0 + t * dx, a.1 + t * dy);
+    ((point.0 - cx).powi(2) + (point.1 - cy).powi(2)).sqrt()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pixels of the built-in arrow as (value, alpha) pairs: the value is
+    /// premultiplied, so an opaque outline pixel is (255, 255), an opaque fill
+    /// pixel (0, 255) and an uncovered one (0, 0).
+    fn arrow(size: i32) -> Vec<(u8, u8)> {
+        arrow_pixels(size)
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|&[value, _, _, alpha]| (value, alpha))
+            .collect()
+    }
+
+    #[test]
+    fn test_builtin_arrow_is_an_arrow() {
+        let size = 32;
+        let pixels = arrow(size);
+        let at = |x: i32, y: i32| pixels[(y * size + x) as usize];
+
+        // The tip is the hotspot, drawn in the outline's white ...
+        let (value, alpha) = at(0, 0);
+        assert!(alpha > 0 && value == alpha, "no tip at the hotspot");
+        // ... with black fill behind it ...
+        assert_eq!(at(4, 12), (0, 255));
+        // ... and nothing in the corners the arrow does not reach.
+        assert_eq!(at(size - 1, 0), (0, 0));
+        assert_eq!(at(size - 1, size - 1), (0, 0));
+        assert_eq!(at(0, size - 1), (0, 0));
+
+        // The outline encloses the fill: no filled pixel borders on an
+        // uncovered one.
+        for y in 0..size {
+            for x in 0..size {
+                if at(x, y) != (0, 255) {
+                    continue;
+                }
+                assert!(x > 0 && y > 0 && x < size - 1 && y < size - 1);
+                for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    assert!(at(x + dx, y + dy).1 > 0, "fill leaks at {x},{y}");
+                }
+            }
+        }
+
+        // Antialiased: the slanted edges are partly covered.
+        assert!(pixels.iter().any(|&(_, alpha)| alpha > 0 && alpha < 255));
+    }
+
+    #[test]
+    fn test_builtin_arrow_scales() {
+        for size in [8, 16, 24, 32, 48, 96] {
+            let pixels = arrow(size);
+            assert_eq!(pixels.len(), (size * size) as usize);
+            let area = (size * size) as u32;
+            let covered: u32 = pixels.iter().map(|&(_, alpha)| alpha as u32).sum::<u32>() / 255;
+            let outline: u32 = pixels.iter().map(|&(value, _)| value as u32).sum::<u32>() / 255;
+            // The arrow covers about a quarter of the image at every size ...
+            assert!(
+                covered * 5 > area && covered * 3 < area,
+                "size {size}: {covered} covered of {area}"
+            );
+            // ... and is mostly fill, with the outline around it.
+            assert!(outline * 2 < covered, "size {size}: {outline} of {covered}");
+        }
     }
 }
