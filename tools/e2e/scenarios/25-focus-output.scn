@@ -15,8 +15,9 @@ key super+shift+Left
 shot 01-left-output
 key super+shift+Right
 shot 02-right-output
-# Past the last output, back to the first one.
+# Nothing past the last output: the focus stays.
 key super+shift+Right
-shot 03-wrapped-around
+shot 03-no-wrap-around
+key super+shift+Left
 spawn sleep 0.7; grim -c $OUT/04-switcher-left-output.png
 keydown super ; key Tab ; sleep 1200 ; key Escape ; keyup super

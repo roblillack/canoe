@@ -135,9 +135,7 @@ Sending a window to another output with `Super+Alt+Arrow` works the same way.
 `Super+Shift+Arrow` moves to the output in that direction: the window you last
 used there gets the focus, or none if it shows no windows, and the pointer jumps
 to the middle of the output. `Super+Alt+Arrow` sends the focused window to the
-output in that direction. Past the last output, both wrap around to the first
-one on the other side, so with two monitors side by side either arrow goes to
-the other one.
+output in that direction. Neither wraps around past the last output.
 
 `Super+Tab`, ``Super+` `` and the window menu of the desktop list the windows
 on the output they open on. To list the windows on every output instead, set:

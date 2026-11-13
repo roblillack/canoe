@@ -4011,9 +4011,8 @@ fn output_rect(output: &Rc<RefCell<Output>>) -> OutputRect {
 ///
 /// An output lies in a direction when its center is past that edge of
 /// `from`. Of those, the one closest along the direction wins, preferring
-/// outputs that line up with `from` across it. With none there, it wraps
-/// around to the farthest output on the other side, so with two outputs
-/// side by side either arrow goes to the other one.
+/// outputs that line up with `from` across it. Past the last output there
+/// is none: it doesn't wrap around.
 fn output_toward(
     from: OutputRect,
     others: &[(OutputId, OutputRect)],
@@ -4033,27 +4032,20 @@ fn output_toward(
         (along, across)
     };
     let center = |(start, end): (i64, i64)| (start + end) / 2;
-    let ((from_start, from_end), from_across) = frame(from);
-    let candidates = others.iter().map(|&(id, rect)| {
-        let (along, across) = frame(rect);
-        let overlaps = across.0 < from_across.1 && from_across.0 < across.1;
-        let skew = (center(across) - center(from_across)).abs();
-        (id, along, overlaps, skew)
-    });
-
-    let ahead = candidates
-        .clone()
+    let ((_, from_end), from_across) = frame(from);
+    others
+        .iter()
+        .map(|&(id, rect)| {
+            let (along, across) = frame(rect);
+            let overlaps = across.0 < from_across.1 && from_across.0 < across.1;
+            let skew = (center(across) - center(from_across)).abs();
+            (id, along, overlaps, skew)
+        })
         .filter(|&(_, along, ..)| center(along) > from_end)
         .min_by_key(|&(id, along, overlaps, skew)| {
             (!overlaps, (along.0 - from_end).max(0), skew, id)
-        });
-    let behind = || {
-        candidates
-            .clone()
-            .filter(|&(_, along, ..)| center(along) < from_start)
-            .min_by_key(|&(id, along, overlaps, skew)| (!overlaps, center(along), skew, id))
-    };
-    ahead.or_else(behind).map(|(id, ..)| id)
+        })
+        .map(|(id, ..)| id)
 }
 
 fn cursor_shape_for_edges(edges: u32) -> Option<CursorShape> {
@@ -5091,7 +5083,7 @@ mod tests {
     }
 
     #[test]
-    fn output_toward_goes_to_the_neighbor_and_wraps_around() {
+    fn output_toward_goes_to_the_neighbor_without_wrapping_around() {
         // Three outputs in a row, the middle one taller.
         let outputs = [
             (1, 0, 0, 1920, 1080),
@@ -5101,9 +5093,9 @@ mod tests {
         assert_eq!(toward(&outputs, 1, OutputDirection::Right), Some(2));
         assert_eq!(toward(&outputs, 2, OutputDirection::Right), Some(3));
         assert_eq!(toward(&outputs, 2, OutputDirection::Left), Some(1));
-        // Past the last one, back to the first one on the other side.
-        assert_eq!(toward(&outputs, 3, OutputDirection::Right), Some(1));
-        assert_eq!(toward(&outputs, 1, OutputDirection::Left), Some(3));
+        // Nothing past the last one.
+        assert_eq!(toward(&outputs, 3, OutputDirection::Right), None);
+        assert_eq!(toward(&outputs, 1, OutputDirection::Left), None);
         // Nothing above or below.
         assert_eq!(toward(&outputs, 2, OutputDirection::Up), None);
         assert_eq!(toward(&outputs, 2, OutputDirection::Down), None);
@@ -5195,8 +5187,11 @@ mod tests {
         ctx.send_to_output(OutputDirection::Right);
         assert_eq!(output_of(&ctx, 10), (Some(2), 2020));
 
-        // Past the last output, back to the first one.
+        // Nothing past the last output.
         ctx.send_to_output(OutputDirection::Right);
+        assert_eq!(output_of(&ctx, 10), (Some(2), 2020));
+
+        ctx.send_to_output(OutputDirection::Left);
         assert_eq!(output_of(&ctx, 10), (Some(1), 100));
     }
 
