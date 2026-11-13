@@ -89,11 +89,8 @@ Xwayland. (#66)
   "Google Chrome — Page". The menu of one application's windows has that
   name as its header instead of the app id. Desktop entries are also found
   by lower-case app id and by `StartupWMClass`, for names and icons alike. (#73)
-- Window frames and shadows take a fraction of the memory they did. They
-  used to be drawn into buffers the size of the window, twice over, though
-  all but their edges is transparent: some 33 MB for a 1920×1080 window.
-  Canoe now keeps only the edges, once, in the memory they are shown from;
-  menus and the desktop are no longer kept twice either.
+- Optimize memory used for window frames and shadows, and more efficiently
+  return it to the system when windows close. (#90)
 
 ### Fixed
 

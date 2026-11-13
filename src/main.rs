@@ -258,6 +258,7 @@ fn handle_signals(state: &mut State, fd: &OwnedFd) {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = parse_args();
+    compositor::memory::init();
 
     let mut event_loop: EventLoop<'static, State> = EventLoop::try_new()?;
     let display: Display<State> = Display::new()?;
