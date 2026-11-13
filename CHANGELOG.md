@@ -73,16 +73,16 @@ Xwayland. (#66)
   panel and whether the lid is closed over them. (#82)
 - Super+Shift+Arrow focuses the output in that direction: the window last
   focused there, or none if it shows no windows, with the pointer in the
-  middle of the output.
+  middle of the output. (#92)
 
 ### Changed
 
 - Super+Tab, Super+` and the window menu of the desktop list only the
   windows on their output. `window_list_scope = "all"` lists the windows on
-  every output again.
+  every output again. (#92)
 - Super+Alt+Arrow sends the focused window to the output in that direction,
   like Super+Shift+Arrow, instead of to the "next" or "previous" output in
-  no particular order.
+  no particular order. (#92)
 
 - Window titles are centered in the titlebar, moving aside where the
   buttons are in the way. `titlebar_text_align = "left"` under `[ui]` puts
