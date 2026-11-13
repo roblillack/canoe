@@ -95,6 +95,10 @@ Xwayland. (#66)
 - Windows are no longer minimized when the last output goes away, e.g.
   while the only monitor wakes up and reconnects; they come back on the
   first output that appears. (#82)
+- Cursors keep their shapes where no `default` XCursor theme is installed, as
+  on NixOS: Canoe falls back to a theme that is, and tells clients about it.
+  With no theme at all, the built-in cursor is now a proper arrow instead of
+  a triangle. (#88)
 - X11 programs take clicks and notice the pointer on outputs placed above or
   left of others (at negative positions, e.g. by kanshi). Such a layout is
   moved so it starts at 0,0, as Xwayland's screen does. (#66)

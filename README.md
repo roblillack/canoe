@@ -384,6 +384,15 @@ then Canoe's own environment. If none of them sets a value, Canoe uses the
 `default` theme at size 24, and launched programs get no `XCURSOR_*` variable,
 so they pick their own default.
 
+Where that lookup names a theme that is not installed, Canoe falls back to one
+that is — `Adwaita` and a few other common themes first, then whatever else it
+finds — and uses that name everywhere, including for launched programs. This is
+what happens on systems that ship no `default` theme, such as NixOS: without it,
+every cursor would come out as Canoe's built-in arrow. With no cursor theme
+installed at all, that built-in arrow is all Canoe can draw; install a theme
+(or name one with `xcursor_theme`) to get the shapes for resizing, text and
+links.
+
 A `SIGHUP` reload changes the cursors Canoe draws right away. Programs that are
 already running keep the theme they started with.
 

@@ -367,6 +367,140 @@ impl Config {
                 .filter(|&size| size > 0),
         }
     }
+
+    /// Point `xcursor_theme` at a theme that is really installed, when the
+    /// resolved name (config file, `[env]`, `XCURSOR_THEME`, or the `default`
+    /// theme) names one that cannot be loaded at all. Systems that ship no
+    /// `default` theme — NixOS, minimal installs, containers — would otherwise
+    /// end up with Canoe's built-in arrow for every cursor shape.
+    ///
+    /// The name is written back into the config so everything follows it: the
+    /// cursors Canoe draws, `XCURSOR_THEME` for the programs it launches and
+    /// for the session bus, and the XSETTINGS Xwayland hands to X11 programs.
+    /// A theme that does load is never second-guessed.
+    pub fn resolve_installed_xcursor_theme(&mut self) {
+        let wanted = self.xcursor_theme_resolved().name_or_default().to_string();
+        if xcursor_theme_loads(&wanted) {
+            return;
+        }
+        let installed = installed_xcursor_themes(&xcursor_search_paths());
+        // Well-known themes first, then whatever else is installed.
+        let preferred: Vec<String> = FALLBACK_XCURSOR_THEMES
+            .iter()
+            .filter(|name| installed.iter().any(|found| found == *name))
+            .map(|name| name.to_string())
+            .collect();
+        let rest = installed
+            .into_iter()
+            .filter(|name| !preferred.iter().any(|preferred| preferred == name));
+        match preferred
+            .iter()
+            .cloned()
+            .chain(rest)
+            .find(|name| xcursor_theme_loads(name))
+        {
+            Some(name) => {
+                eprintln!("canoe: cursor theme {wanted:?} is not installed, using {name:?}");
+                self.xcursor_theme = Some(name);
+            }
+            None => eprintln!(
+                "canoe: no cursor theme installed (looked for {wanted:?}), \
+                 drawing the built-in arrow"
+            ),
+        }
+    }
+}
+
+/// Cursor themes to fall back to, in order of preference, when nothing names
+/// one that is installed.
+const FALLBACK_XCURSOR_THEMES: &[&str] = &[
+    "Adwaita",
+    "breeze_cursors",
+    "Bibata-Modern-Classic",
+    "capitaine-cursors",
+    "DMZ-White",
+    "Vanilla-DMZ",
+];
+
+/// Whether `name` resolves to a theme an arrow can be loaded from, following
+/// the theme's `Inherits` like every XCursor loader does: a bare `default`
+/// theme that only inherits another one counts as loadable.
+fn xcursor_theme_loads(name: &str) -> bool {
+    let theme = xcursor::CursorTheme::load(name);
+    ["default", "left_ptr"]
+        .iter()
+        .any(|icon| theme.load_icon(icon).is_some())
+}
+
+/// The names of the themes with cursors in them under `paths`, in search path
+/// order and sorted within each directory (`read_dir` order is arbitrary).
+fn installed_xcursor_themes(paths: &[PathBuf]) -> Vec<String> {
+    let mut themes: Vec<String> = Vec::new();
+    for path in paths {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            continue;
+        };
+        let mut here: Vec<String> = entries
+            .flatten()
+            .filter(|entry| entry.path().join("cursors").is_dir())
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .filter(|name| !themes.contains(name))
+            .collect();
+        here.sort();
+        themes.extend(here);
+    }
+    themes
+}
+
+/// The directories XCursor themes are looked up in, the way libXcursor,
+/// libwayland-cursor and the `xcursor` crate do it: `XCURSOR_PATH`, or else
+/// the XDG data directories.
+fn xcursor_search_paths() -> Vec<PathBuf> {
+    let env = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+    xcursor_search_paths_from(
+        env("HOME").map(PathBuf::from),
+        env("XCURSOR_PATH"),
+        env("XDG_DATA_HOME"),
+        env("XDG_DATA_DIRS"),
+    )
+}
+
+/// [`xcursor_search_paths`] with the environment passed in, for tests.
+fn xcursor_search_paths_from(
+    home: Option<PathBuf>,
+    xcursor_path: Option<String>,
+    xdg_data_home: Option<String>,
+    xdg_data_dirs: Option<String>,
+) -> Vec<PathBuf> {
+    let entries = |list: &str| -> Vec<PathBuf> {
+        list.split(':')
+            .filter(|entry| !entry.is_empty())
+            .map(PathBuf::from)
+            .collect()
+    };
+    // XCURSOR_PATH, where set, replaces the whole search path.
+    if let Some(ref path) = xcursor_path {
+        return entries(path);
+    }
+
+    let mut paths = Vec::new();
+    match xdg_data_home {
+        Some(ref dir) => paths.push(PathBuf::from(dir).join("icons")),
+        None => paths.extend(home.as_ref().map(|home| home.join(".local/share/icons"))),
+    }
+    paths.extend(home.as_ref().map(|home| home.join(".icons")));
+    match xdg_data_dirs {
+        Some(ref dirs) => paths.extend(entries(dirs).into_iter().map(|dir| dir.join("icons"))),
+        None => paths.extend(
+            ["/usr/local/share/icons", "/usr/share/icons"]
+                .iter()
+                .map(PathBuf::from),
+        ),
+    }
+    paths.push(PathBuf::from("/usr/share/pixmaps"));
+    paths.extend(home.as_ref().map(|home| home.join(".cursors")));
+    paths.push(PathBuf::from("/usr/share/cursors/xorg-x11"));
+    paths
 }
 
 #[derive(Debug, Deserialize)]
@@ -827,19 +961,21 @@ fn rules_from_file(rules: Vec<RuleFile>) -> Vec<Rule> {
 /// Load config from ~/.config/canoe/canoe.toml and apply overrides to defaults.
 ///
 /// When `skip_config` is true the file is never read and the built-in defaults
-/// are returned unchanged (see the `--no-config` command-line flag).
+/// are used (see the `--no-config` command-line flag). Either way the cursor
+/// theme is checked against the ones installed, which may fill in a name.
 pub fn load_config(skip_config: bool) -> Config {
     let mut config = Config::default();
-    if skip_config {
-        return config;
-    }
-    if let Some(path) = config_path() {
-        if let Ok(contents) = std::fs::read_to_string(&path) {
-            if let Ok(file_config) = toml::from_str::<FileConfig>(&contents) {
-                config.apply(file_config);
+    if !skip_config {
+        if let Some(path) = config_path() {
+            if let Ok(contents) = std::fs::read_to_string(&path) {
+                if let Ok(file_config) = toml::from_str::<FileConfig>(&contents) {
+                    config.apply(file_config);
+                }
             }
         }
     }
+    // Only now that the file and `[env]` had their say: both feed the name.
+    config.resolve_installed_xcursor_theme();
 
     config
 }
@@ -1361,6 +1497,75 @@ mod tests {
         assert_eq!(ui.menu_text, Some(0x112233FF));
         assert_eq!(ui.titlebar_bg_active, Some(0x11223344));
         assert_eq!(ui.desktop_background, Some(0x00000000));
+    }
+
+    #[test]
+    fn test_xcursor_search_paths() {
+        let home = Some(PathBuf::from("/home/me"));
+        let paths =
+            |xcursor_path: Option<&str>, data_home: Option<&str>, data_dirs: Option<&str>| {
+                xcursor_search_paths_from(
+                    home.clone(),
+                    xcursor_path.map(str::to_string),
+                    data_home.map(str::to_string),
+                    data_dirs.map(str::to_string),
+                )
+            };
+
+        // XCURSOR_PATH replaces the whole search path, empty entries aside.
+        assert_eq!(
+            paths(Some("/a::/b"), Some("/ignored"), Some("/ignored")),
+            [PathBuf::from("/a"), PathBuf::from("/b")]
+        );
+
+        // Otherwise the XDG data directories, with the home ones first.
+        let found = paths(None, Some("/home/me/.data"), Some("/pkg/share:/share"));
+        assert_eq!(
+            found[..4],
+            [
+                PathBuf::from("/home/me/.data/icons"),
+                PathBuf::from("/home/me/.icons"),
+                PathBuf::from("/pkg/share/icons"),
+                PathBuf::from("/share/icons"),
+            ]
+        );
+
+        // Without XDG_DATA_HOME/XDG_DATA_DIRS, their defaults.
+        let found = paths(None, None, None);
+        assert_eq!(
+            found[..4],
+            [
+                PathBuf::from("/home/me/.local/share/icons"),
+                PathBuf::from("/home/me/.icons"),
+                PathBuf::from("/usr/local/share/icons"),
+                PathBuf::from("/usr/share/icons"),
+            ]
+        );
+        assert!(found.contains(&PathBuf::from("/home/me/.cursors")));
+    }
+
+    #[test]
+    fn test_installed_xcursor_themes() {
+        let root = std::env::temp_dir().join(format!("canoe-cursor-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let (first, second) = (root.join("first"), root.join("second"));
+        for (dir, theme) in [
+            (&first, "Zebra"),
+            (&first, "Adwaita"),
+            (&second, "Adwaita"),
+            (&second, "breeze_cursors"),
+        ] {
+            std::fs::create_dir_all(dir.join(theme).join("cursors")).expect("make theme");
+        }
+        // Icon themes without cursors, and a stray file, are not themes.
+        std::fs::create_dir_all(first.join("hicolor").join("16x16")).expect("make icons");
+        std::fs::write(first.join("index.theme"), "").expect("write file");
+
+        let found = installed_xcursor_themes(&[first.clone(), second.clone(), root.join("gone")]);
+        // Search path order, sorted within each directory, without repeats.
+        assert_eq!(found, ["Adwaita", "Zebra", "breeze_cursors"]);
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 

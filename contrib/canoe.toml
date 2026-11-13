@@ -28,7 +28,9 @@
 # Cursor theme and size (in logical pixels) for cursors Canoe draws, also set
 # as XCURSOR_THEME and XCURSOR_SIZE for programs Canoe launches. Unset by
 # default: Canoe then uses XCURSOR_THEME/XCURSOR_SIZE from [env] or from its
-# own environment, falling back to the "default" theme at size 24.
+# own environment, falling back to the "default" theme at size 24. A theme
+# that is not installed (there is no "default" one on NixOS, for instance) is
+# replaced by one that is, Adwaita for choice.
 #xcursor_theme = "Adwaita"
 #xcursor_size = 24
 
