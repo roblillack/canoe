@@ -1373,14 +1373,8 @@ impl Context {
             if let Some(window) = self.windows.get(&window_id) {
                 if let Some(seat) = self.seats.get(&seat_id) {
                     let mut w = window.borrow_mut();
-                    let (px, py) = {
-                        let seat_ref = seat.borrow();
-                        (seat_ref.pointer_x, seat_ref.pointer_y)
-                    };
-                    self.unmaximize_for_move(&mut w, px, py, true);
-                    w.snap_state = None;
                     w.floating = true; // Make floating if not already
-                    w.start_move(Rc::downgrade(seat));
+                    w.start_move(Rc::downgrade(seat), super::window::RestoreAnchor::Pointer);
                     seat.borrow().start_pointer_op();
                 }
             }
@@ -1534,11 +1528,18 @@ impl Context {
         }
     }
 
-    /// Restore a window moved by its titlebar from maximized or snapped,
+    /// Restore a window being moved from maximized or snapped by `anchor`,
     /// now that the pointer has left `(press_x, press_y)`, where the move
     /// started. The move goes on from where the restored window is.
-    pub(crate) fn restore_for_move(&self, w: &mut Window, press_x: i32, press_y: i32) {
-        self.unmaximize_for_move(w, press_x, press_y, false);
+    pub(crate) fn restore_for_move(
+        &self,
+        w: &mut Window,
+        anchor: super::window::RestoreAnchor,
+        press_x: i32,
+        press_y: i32,
+    ) {
+        let adjust_y = anchor == super::window::RestoreAnchor::Pointer;
+        self.unmaximize_for_move(w, press_x, press_y, adjust_y);
         let (x, y) = (w.x, w.y);
         if let super::window::Operator::Move {
             start_x, start_y, ..
@@ -4123,7 +4124,7 @@ fn press_titlebar(seat: &Rc<RefCell<Seat>>, window: &Rc<RefCell<Window>>, button
         seat_mut.last_titlebar_click = Some((w.id, now));
     }
     w.floating = true;
-    w.start_titlebar_move(Rc::downgrade(seat));
+    w.start_move(Rc::downgrade(seat), super::window::RestoreAnchor::Top);
     seat.borrow().start_pointer_op();
 }
 
@@ -4620,9 +4621,10 @@ mod tests {
     fn output_shift_skips_window_under_pointer_operation() {
         let mut ctx = context_with_outputs(&[(1, 1920, 0, 1920, 1080)]);
         add_window(&mut ctx, 10, 1, (2000, 100, 800, 600));
-        ctx.windows[&10]
-            .borrow_mut()
-            .start_move(std::rc::Weak::new());
+        ctx.windows[&10].borrow_mut().start_move(
+            std::rc::Weak::new(),
+            crate::canoe::window::RestoreAnchor::Top,
+        );
 
         ctx.pending_output_shifts.push((1, -1920, 0));
         ctx.handle_manage_start();

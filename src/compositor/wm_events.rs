@@ -1006,8 +1006,15 @@ impl State {
             if let Some(wid) = context.focused_window {
                 if let Some(window) = context.windows.get(&wid) {
                     let mut w = window.borrow_mut();
-                    if (dx, dy) != (0, 0) && w.take_move_restore() {
-                        context.restore_for_move(&mut w, pointer.0 - dx, pointer.1 - dy);
+                    if (dx, dy) != (0, 0) {
+                        if let Some(anchor) = w.take_move_restore() {
+                            context.restore_for_move(
+                                &mut w,
+                                anchor,
+                                pointer.0 - dx,
+                                pointer.1 - dy,
+                            );
+                        }
                     }
                     w.apply_op_delta(dx, dy);
                 }
