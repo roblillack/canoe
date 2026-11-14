@@ -69,6 +69,10 @@ pub enum Operator {
         start_x: i32,
         start_y: i32,
         seat: Option<Weak<RefCell<super::Seat>>>,
+        /// The window is maximized or snapped and gets restored once the
+        /// pointer moves, not on the press, so that a double-click on the
+        /// titlebar can unmaximize it instead.
+        restore: bool,
     },
     Resize {
         start_x: i32,
@@ -676,7 +680,28 @@ impl Window {
             start_x: self.x,
             start_y: self.y,
             seat: Some(seat),
+            restore: false,
         };
+    }
+
+    /// Start a move operation by the titlebar, which restores a maximized or
+    /// snapped window once the pointer moves.
+    pub fn start_titlebar_move(&mut self, seat: Weak<RefCell<super::Seat>>) {
+        self.operator = Operator::Move {
+            start_x: self.x,
+            start_y: self.y,
+            seat: Some(seat),
+            restore: self.maximized || self.snap_state.is_some(),
+        };
+    }
+
+    /// Whether a move still has to restore the window from maximized or
+    /// snapped; clears it.
+    pub fn take_move_restore(&mut self) -> bool {
+        match &mut self.operator {
+            Operator::Move { restore, .. } => std::mem::take(restore),
+            _ => false,
+        }
     }
 
     /// Start a resize operation

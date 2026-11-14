@@ -8,9 +8,12 @@ use crate::wm::{CursorShape, SeatHandle};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Weak;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use super::{OutputId, WindowId};
+
+/// How soon a second click has to follow the first to make a double-click.
+pub const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// Seat identifier
 pub type SeatId = usize;
@@ -51,6 +54,9 @@ pub struct Seat {
     /// Last desktop icon click for double-click detection
     pub last_icon_click: Option<(WindowId, Instant)>,
 
+    /// Last titlebar click for double-click detection
+    pub last_titlebar_click: Option<(WindowId, Instant)>,
+
     /// Pending actions to execute during manage phase
     pub unhandled_actions: VecDeque<Action>,
 
@@ -81,6 +87,7 @@ impl Seat {
             menu_click_button: None,
             last_close_click: None,
             last_icon_click: None,
+            last_titlebar_click: None,
             unhandled_actions: VecDeque::new(),
             xkb_bindings: Vec::new(),
             pointer_bindings: Vec::new(),

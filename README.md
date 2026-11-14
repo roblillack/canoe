@@ -109,6 +109,7 @@ cargo build --release
 |--------|--------|
 | Click on window | Focus window |
 | Drag titlebar | Move window |
+| Double-click titlebar | Maximize/restore window |
 | Drag window edges | Resize window |
 | `Super+Left Drag` | Move window (anywhere) |
 | `Super+Right Drag` | Resize window (anywhere) |

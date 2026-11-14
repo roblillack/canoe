@@ -1436,7 +1436,8 @@ impl Context {
     }
 
     /// Start move/resize based on pointer location within the window frame
-    pub fn handle_window_interaction(&mut self, seat_id: SeatId, window_id: WindowId) {
+    /// when `button` is pressed on it
+    pub fn handle_window_interaction(&mut self, seat_id: SeatId, window_id: WindowId, button: u32) {
         let seat = match self.seats.get(&seat_id) {
             Some(seat) => seat.clone(),
             None => return,
@@ -1523,21 +1524,27 @@ impl Context {
                     return;
                 }
 
-                let mut w = window.borrow_mut();
-                self.unmaximize_for_move(&mut w, px, py, false);
-                w.floating = true;
-                w.start_move(Rc::downgrade(&seat));
-                seat.borrow().start_pointer_op();
+                press_titlebar(&seat, &window, button);
                 return;
             }
         }
 
         if has_titlebar && point_in_titlebar(x, y + swallow_top, width, titlebar_height, px, py) {
-            let mut w = window.borrow_mut();
-            self.unmaximize_for_move(&mut w, px, py, false);
-            w.floating = true;
-            w.start_move(Rc::downgrade(&seat));
-            seat.borrow().start_pointer_op();
+            press_titlebar(&seat, &window, button);
+        }
+    }
+
+    /// Restore a window moved by its titlebar from maximized or snapped,
+    /// now that the pointer has left `(press_x, press_y)`, where the move
+    /// started. The move goes on from where the restored window is.
+    pub(crate) fn restore_for_move(&self, w: &mut Window, press_x: i32, press_y: i32) {
+        self.unmaximize_for_move(w, press_x, press_y, false);
+        let (x, y) = (w.x, w.y);
+        if let super::window::Operator::Move {
+            start_x, start_y, ..
+        } = &mut w.operator
+        {
+            (*start_x, *start_y) = (x, y);
         }
     }
 
@@ -4087,6 +4094,37 @@ fn cursor_shape_for_edges(edges: u32) -> Option<CursorShape> {
     }
 
     None
+}
+
+/// `button` went down on a window's titlebar, away from its buttons: a
+/// double-click (un)maximizes the window, anything else starts moving it.
+fn press_titlebar(seat: &Rc<RefCell<Seat>>, window: &Rc<RefCell<Window>>, button: u32) {
+    let mut w = window.borrow_mut();
+    if button == crate::config::button::LEFT {
+        let now = std::time::Instant::now();
+        let mut seat_mut = seat.borrow_mut();
+        let double = seat_mut
+            .last_titlebar_click
+            .take()
+            .is_some_and(|(id, when)| {
+                id == w.id && now.duration_since(when) <= super::DOUBLE_CLICK
+            });
+        if double {
+            if w.has_maximize_button() {
+                let event = if w.maximized {
+                    super::window::WindowEvent::Unmaximize
+                } else {
+                    super::window::WindowEvent::Maximize
+                };
+                w.queue_event(event);
+            }
+            return;
+        }
+        seat_mut.last_titlebar_click = Some((w.id, now));
+    }
+    w.floating = true;
+    w.start_titlebar_move(Rc::downgrade(seat));
+    seat.borrow().start_pointer_op();
 }
 
 fn point_in_titlebar(x: i32, y: i32, width: i32, titlebar_height: i32, px: i32, py: i32) -> bool {

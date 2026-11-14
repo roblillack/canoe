@@ -967,7 +967,7 @@ impl State {
     }
 
     /// river_seat_v1.window_interaction: a click on a window or its frame.
-    pub fn wm_window_interaction(&mut self, window_id: canoe::WindowId) {
+    pub fn wm_window_interaction(&mut self, window_id: canoe::WindowId, button: u32) {
         let Some(seat) = self.wm_seat() else {
             return;
         };
@@ -982,7 +982,7 @@ impl State {
                 context.exit_icon_focus(seat_id);
             }
             context.focus(window_id);
-            context.handle_window_interaction(seat_id, window_id);
+            context.handle_window_interaction(seat_id, window_id, button);
         }
         // A click elsewhere takes the keyboard from an on-demand layer
         // surface.
@@ -994,11 +994,22 @@ impl State {
 
     /// river_seat_v1.op_delta
     pub fn wm_op_delta(&mut self, dx: i32, dy: i32) {
+        let pointer = self
+            .wm_seat()
+            .map(|seat| {
+                let seat = seat.borrow();
+                (seat.pointer_x, seat.pointer_y)
+            })
+            .unwrap_or_default();
         {
             let context = self.context.borrow();
             if let Some(wid) = context.focused_window {
                 if let Some(window) = context.windows.get(&wid) {
-                    window.borrow_mut().apply_op_delta(dx, dy);
+                    let mut w = window.borrow_mut();
+                    if (dx, dy) != (0, 0) && w.take_move_restore() {
+                        context.restore_for_move(&mut w, pointer.0 - dx, pointer.1 - dy);
+                    }
+                    w.apply_op_delta(dx, dy);
                 }
             }
         }
@@ -1413,7 +1424,7 @@ impl State {
                                         .last_icon_click
                                         .map(|(last_wid, when)| {
                                             last_wid == icon_window_id
-                                                && now.duration_since(when) <= CLOSE_DOUBLE_CLICK
+                                                && now.duration_since(when) <= canoe::DOUBLE_CLICK
                                         })
                                         .unwrap_or(false)
                                 };
@@ -1575,7 +1586,7 @@ impl State {
                                         .last_close_click
                                         .map(|(last_window, when)| {
                                             last_window == window_id
-                                                && now.duration_since(when) <= CLOSE_DOUBLE_CLICK
+                                                && now.duration_since(when) <= canoe::DOUBLE_CLICK
                                         })
                                         .unwrap_or(false);
                                     seat_ref.last_close_click = Some((window_id, now));

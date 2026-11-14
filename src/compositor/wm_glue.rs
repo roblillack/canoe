@@ -19,8 +19,6 @@ use crate::ipc;
 
 use super::State;
 
-pub(super) const CLOSE_DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(400);
-
 /// Where a window's content sits on the output it's drawn on, in logical
 /// pixels from the output's corner: what the compositor rounds the window's
 /// and its decorations' edges from. A window spanning outputs lines up on

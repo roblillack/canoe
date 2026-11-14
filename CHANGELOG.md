@@ -74,6 +74,7 @@ Xwayland. (#66)
 - Super+Shift+Arrow focuses the output in that direction: the window last
   focused there, or none if it shows no windows, with the pointer in the
   middle of the output. (#92)
+- Double-clicking a titlebar maximizes the window, or restores it.
 
 ### Changed
 
