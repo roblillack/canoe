@@ -24,7 +24,7 @@ pub use desktop::{
 };
 pub use menu::{MenuItem, MenuTheme, WindowMenu};
 pub use output::{Output, OutputId};
-pub use seat::{PointerTarget, Seat, SeatId};
+pub use seat::{PointerTarget, Seat, SeatId, DOUBLE_CLICK};
 pub use shadow::WindowShadow;
 pub use shield::ShieldSurface;
 pub use titlebar::Titlebar;

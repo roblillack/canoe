@@ -1373,14 +1373,8 @@ impl Context {
             if let Some(window) = self.windows.get(&window_id) {
                 if let Some(seat) = self.seats.get(&seat_id) {
                     let mut w = window.borrow_mut();
-                    let (px, py) = {
-                        let seat_ref = seat.borrow();
-                        (seat_ref.pointer_x, seat_ref.pointer_y)
-                    };
-                    self.unmaximize_for_move(&mut w, px, py, true);
-                    w.snap_state = None;
                     w.floating = true; // Make floating if not already
-                    w.start_move(Rc::downgrade(seat));
+                    w.start_move(Rc::downgrade(seat), super::window::RestoreAnchor::Pointer);
                     seat.borrow().start_pointer_op();
                 }
             }
@@ -1436,7 +1430,8 @@ impl Context {
     }
 
     /// Start move/resize based on pointer location within the window frame
-    pub fn handle_window_interaction(&mut self, seat_id: SeatId, window_id: WindowId) {
+    /// when `button` is pressed on it
+    pub fn handle_window_interaction(&mut self, seat_id: SeatId, window_id: WindowId, button: u32) {
         let seat = match self.seats.get(&seat_id) {
             Some(seat) => seat.clone(),
             None => return,
@@ -1523,21 +1518,34 @@ impl Context {
                     return;
                 }
 
-                let mut w = window.borrow_mut();
-                self.unmaximize_for_move(&mut w, px, py, false);
-                w.floating = true;
-                w.start_move(Rc::downgrade(&seat));
-                seat.borrow().start_pointer_op();
+                press_titlebar(&seat, &window, button);
                 return;
             }
         }
 
         if has_titlebar && point_in_titlebar(x, y + swallow_top, width, titlebar_height, px, py) {
-            let mut w = window.borrow_mut();
-            self.unmaximize_for_move(&mut w, px, py, false);
-            w.floating = true;
-            w.start_move(Rc::downgrade(&seat));
-            seat.borrow().start_pointer_op();
+            press_titlebar(&seat, &window, button);
+        }
+    }
+
+    /// Restore a window being moved from maximized or snapped by `anchor`,
+    /// now that the pointer has left `(press_x, press_y)`, where the move
+    /// started. The move goes on from where the restored window is.
+    pub(crate) fn restore_for_move(
+        &self,
+        w: &mut Window,
+        anchor: super::window::RestoreAnchor,
+        press_x: i32,
+        press_y: i32,
+    ) {
+        let adjust_y = anchor == super::window::RestoreAnchor::Pointer;
+        self.unmaximize_for_move(w, press_x, press_y, adjust_y);
+        let (x, y) = (w.x, w.y);
+        if let super::window::Operator::Move {
+            start_x, start_y, ..
+        } = &mut w.operator
+        {
+            (*start_x, *start_y) = (x, y);
         }
     }
 
@@ -4089,6 +4097,37 @@ fn cursor_shape_for_edges(edges: u32) -> Option<CursorShape> {
     None
 }
 
+/// `button` went down on a window's titlebar, away from its buttons: a
+/// double-click (un)maximizes the window, anything else starts moving it.
+fn press_titlebar(seat: &Rc<RefCell<Seat>>, window: &Rc<RefCell<Window>>, button: u32) {
+    let mut w = window.borrow_mut();
+    if button == crate::config::button::LEFT {
+        let now = std::time::Instant::now();
+        let mut seat_mut = seat.borrow_mut();
+        let double = seat_mut
+            .last_titlebar_click
+            .take()
+            .is_some_and(|(id, when)| {
+                id == w.id && now.duration_since(when) <= super::DOUBLE_CLICK
+            });
+        if double {
+            if w.has_maximize_button() {
+                let event = if w.maximized {
+                    super::window::WindowEvent::Unmaximize
+                } else {
+                    super::window::WindowEvent::Maximize
+                };
+                w.queue_event(event);
+            }
+            return;
+        }
+        seat_mut.last_titlebar_click = Some((w.id, now));
+    }
+    w.floating = true;
+    w.start_move(Rc::downgrade(seat), super::window::RestoreAnchor::Top);
+    seat.borrow().start_pointer_op();
+}
+
 fn point_in_titlebar(x: i32, y: i32, width: i32, titlebar_height: i32, px: i32, py: i32) -> bool {
     if width <= 0 || titlebar_height <= 0 {
         return false;
@@ -4582,9 +4621,10 @@ mod tests {
     fn output_shift_skips_window_under_pointer_operation() {
         let mut ctx = context_with_outputs(&[(1, 1920, 0, 1920, 1080)]);
         add_window(&mut ctx, 10, 1, (2000, 100, 800, 600));
-        ctx.windows[&10]
-            .borrow_mut()
-            .start_move(std::rc::Weak::new());
+        ctx.windows[&10].borrow_mut().start_move(
+            std::rc::Weak::new(),
+            crate::canoe::window::RestoreAnchor::Top,
+        );
 
         ctx.pending_output_shifts.push((1, -1920, 0));
         ctx.handle_manage_start();

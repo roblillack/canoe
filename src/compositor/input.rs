@@ -551,7 +551,7 @@ impl State {
             };
             if !pointer.is_grabbed() {
                 if let Some(window) = hit.window() {
-                    self.wm_window_interaction(window);
+                    self.wm_window_interaction(window, button);
                 }
             }
             match hit {

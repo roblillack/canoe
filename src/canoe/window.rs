@@ -60,6 +60,17 @@ pub struct SavedGeometry {
     pub height: i32,
 }
 
+/// Where a maximized or snapped window that is being moved ends up when the
+/// move restores it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestoreAnchor {
+    /// The window keeps its top edge: moves by the titlebar
+    Top,
+    /// The pointer stays at the same spot in the window, vertically too:
+    /// moves by Super+drag
+    Pointer,
+}
+
 /// Operator state for move/resize operations
 #[derive(Debug, Clone, Default)]
 pub enum Operator {
@@ -69,6 +80,10 @@ pub enum Operator {
         start_x: i32,
         start_y: i32,
         seat: Option<Weak<RefCell<super::Seat>>>,
+        /// The window is maximized or snapped and gets restored once the
+        /// pointer moves, not on the press, so that a click alone leaves it
+        /// be and a double-click on the titlebar can unmaximize it.
+        restore: Option<RestoreAnchor>,
     },
     Resize {
         start_x: i32,
@@ -670,13 +685,24 @@ impl Window {
         self.unhandled_events.drain(..).collect()
     }
 
-    /// Start a move operation
-    pub fn start_move(&mut self, seat: Weak<RefCell<super::Seat>>) {
+    /// Start a move operation, which restores a maximized or snapped window
+    /// by `anchor` once the pointer moves.
+    pub fn start_move(&mut self, seat: Weak<RefCell<super::Seat>>, anchor: RestoreAnchor) {
         self.operator = Operator::Move {
             start_x: self.x,
             start_y: self.y,
             seat: Some(seat),
+            restore: (self.maximized || self.snap_state.is_some()).then_some(anchor),
         };
+    }
+
+    /// How a move still has to restore the window from maximized or
+    /// snapped, if it has to; clears it.
+    pub fn take_move_restore(&mut self) -> Option<RestoreAnchor> {
+        match &mut self.operator {
+            Operator::Move { restore, .. } => restore.take(),
+            _ => None,
+        }
     }
 
     /// Start a resize operation
