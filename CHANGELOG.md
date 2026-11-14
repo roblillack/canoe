@@ -75,6 +75,12 @@ Xwayland. (#66)
   focused there, or none if it shows no windows, with the pointer in the
   middle of the output. (#92)
 - Double-clicking a titlebar maximizes the window, or restores it. (#93)
+- OpenBSD builds via `libudev-openbsd`, `libinput-openbsd` and seatd.
+  `--backend winit` runs nested on an X session; the DRM session
+  (`--backend udev`) reaches modeset and the Wayland socket, but hasn't
+  been driven end-to-end on hardware yet. Run
+  `tools/vendor-smithay-openbsd.sh` once to apply the two smithay
+  compatibility patches in `contrib/openbsd/` before `cargo build`. (#94)
 
 ### Changed
 
