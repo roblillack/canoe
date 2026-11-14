@@ -68,7 +68,7 @@ const FILE_HEADER: &str = "\
 struct SerialNumber(Option<String>);
 
 /// Record the serial number of the monitor behind `output`.
-#[cfg(target_os = "linux")]
+#[cfg(drm_backend)]
 pub fn set_serial_number(output: &Output, serial: Option<String>) {
     let serial = serial.filter(|s| !s.is_empty());
     output
@@ -140,7 +140,7 @@ pub fn is_internal(output: &Output) -> bool {
 
 /// Whether a connector of this kind (`eDP`, `LVDS`, `DSI`) is a laptop's
 /// own panel.
-#[cfg(target_os = "linux")]
+#[cfg(drm_backend)]
 pub fn is_internal_connector(interface: &str) -> bool {
     matches!(interface, "eDP" | "LVDS" | "DSI")
 }

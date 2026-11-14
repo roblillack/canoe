@@ -1,22 +1,22 @@
 //! Where outputs and input come from: a DRM/KMS session (udev), a window
 //! in another compositor (winit), or nowhere (headless, for tests).
 
-#[cfg(target_os = "linux")]
+#[cfg(drm_backend)]
 mod edid;
 pub mod headless;
-#[cfg(target_os = "linux")]
+#[cfg(drm_backend)]
 pub mod udev;
 #[cfg(feature = "winit")]
 pub mod winit;
 
 use smithay::backend::allocator::dmabuf::Dmabuf;
-#[cfg(target_os = "linux")]
+#[cfg(drm_backend)]
 use smithay::backend::drm::{DrmNode, NodeType};
 use smithay::backend::egl::EGLDevice;
 use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::ImportDma;
 use smithay::output::{Mode, Output};
-#[cfg(target_os = "linux")]
+#[cfg(drm_backend)]
 use smithay::wayland::dmabuf::DmabufFeedbackBuilder;
 use smithay::wayland::dmabuf::DmabufState;
 
@@ -29,7 +29,7 @@ use super::State;
 /// feedback's main device; without it (and without wl_drm) it gives up on
 /// hardware rendering ("failed to get driver name for fd -1"). So name the
 /// renderer's render node, or `fallback` when EGL doesn't know it.
-#[cfg(target_os = "linux")]
+#[cfg(drm_backend)]
 fn init_dmabuf(state: &mut State, renderer: &mut GlesRenderer, fallback: Option<DrmNode>) {
     let formats = renderer.dmabuf_formats();
     let node = EGLDevice::device_for_display(renderer.egl_context().display())
@@ -66,7 +66,7 @@ fn init_dmabuf(state: &mut State, renderer: &mut GlesRenderer, fallback: Option<
 /// can't derive a render node from the EGL device. Expose the dmabuf
 /// global without a default-feedback hint; clients that need one may
 /// fall back to software rendering, which is fine for development.
-#[cfg(not(target_os = "linux"))]
+#[cfg(not(drm_backend))]
 fn init_dmabuf(state: &mut State, renderer: &mut GlesRenderer) {
     // Touch EGLDevice just to keep the import honest on all cfgs.
     let _ = EGLDevice::device_for_display(renderer.egl_context().display());
@@ -85,7 +85,7 @@ pub enum Backend {
     Headless(headless::HeadlessData),
     #[cfg(feature = "winit")]
     Winit(winit::WinitData),
-    #[cfg(target_os = "linux")]
+    #[cfg(drm_backend)]
     Udev(udev::UdevData),
 }
 
@@ -97,7 +97,7 @@ impl Backend {
             Backend::Headless(_) => headless::schedule_redraws(state),
             #[cfg(feature = "winit")]
             Backend::Winit(_) => winit::schedule_redraws(state),
-            #[cfg(target_os = "linux")]
+            #[cfg(drm_backend)]
             Backend::Udev(_) => udev::schedule_redraws(state),
         }
     }
@@ -106,18 +106,18 @@ impl Backend {
         match state.backend {
             #[cfg(feature = "winit")]
             Backend::Winit(ref mut data) => data.import_dmabuf(dmabuf),
-            #[cfg(target_os = "linux")]
+            #[cfg(drm_backend)]
             Backend::Udev(ref mut data) => data.import_dmabuf(dmabuf),
             _ => false,
         }
     }
 
     pub fn switch_vt(state: &mut State, vt: i32) {
-        #[cfg(target_os = "linux")]
+        #[cfg(drm_backend)]
         if let Backend::Udev(ref mut data) = state.backend {
             data.switch_vt(vt);
         }
-        #[cfg(not(target_os = "linux"))]
+        #[cfg(not(drm_backend))]
         {
             let _ = (state, vt);
         }
@@ -126,7 +126,7 @@ impl Backend {
     pub fn can_set_mode(state: &State, output: &Output, mode: Mode) -> bool {
         match state.backend {
             Backend::Headless(_) => true,
-            #[cfg(target_os = "linux")]
+            #[cfg(drm_backend)]
             Backend::Udev(ref data) => data.can_set_mode(output, mode),
             // The window's size decides.
             _ => output.current_mode() == Some(mode),
@@ -140,7 +140,7 @@ impl Backend {
                 headless::output_resized(state, output);
                 true
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(drm_backend)]
             Backend::Udev(_) => udev::set_mode(state, output, mode),
             _ => output.current_mode() == Some(mode),
         }
@@ -150,7 +150,7 @@ impl Backend {
     /// turn the monitor off (see `ManagedOutput::displayed`).
     pub fn update_output_power(state: &mut State, output: &Output) {
         match state.backend {
-            #[cfg(target_os = "linux")]
+            #[cfg(drm_backend)]
             Backend::Udev(_) => udev::update_output_power(state, output),
             // Nothing to switch: such outputs are just not drawn.
             _ => state.queue_redraw_all(),
@@ -163,7 +163,7 @@ impl Backend {
     /// canoe's back.
     pub fn restart_output(state: &mut State, output: &Output) {
         match state.backend {
-            #[cfg(target_os = "linux")]
+            #[cfg(drm_backend)]
             Backend::Udev(_) => udev::restart_output(state, output),
             _ => state.queue_redraw_all(),
         }
@@ -176,7 +176,7 @@ impl Backend {
         let _ = output;
         match state.backend {
             Backend::Headless(_) => Some(headless::GAMMA_SIZE),
-            #[cfg(target_os = "linux")]
+            #[cfg(drm_backend)]
             Backend::Udev(ref data) => data.gamma_size(output),
             // The host compositor owns the monitor.
             _ => None,
@@ -193,7 +193,7 @@ impl Backend {
             Backend::Headless(_) => {
                 ramps.is_none_or(|r| r.len() == 3 * headless::GAMMA_SIZE as usize)
             }
-            #[cfg(target_os = "linux")]
+            #[cfg(drm_backend)]
             Backend::Udev(ref mut data) => data.set_gamma(output, ramps),
             _ => false,
         }

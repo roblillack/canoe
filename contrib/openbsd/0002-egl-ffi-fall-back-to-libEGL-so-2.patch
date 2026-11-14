@@ -1,0 +1,34 @@
+Subject: backend/egl: probe libEGL.so.2 as a fallback
+
+smithay hardcodes `dlopen("libEGL.so.1")`. On an OpenBSD install whose
+mesa has been updated past the latest major (libEGL.so.2.0) while the
+old libEGL.so.1.1 still lingers on disk, the old library is picked up
+first and fails to resolve against the current libc (it references the
+removed `__sF` stdio handle).
+
+Try libEGL.so.1 first — the Linux/BSD canonical name — and fall back to
+libEGL.so.2 before giving up.
+
+--- a/src/backend/egl/ffi.rs
++++ b/src/backend/egl/ffi.rs
+@@ -144,8 +144,18 @@ pub mod egl {
+     use libloading::Library;
+     use std::sync::{LazyLock, Once};
+
+-    pub static LIB: LazyLock<Library> =
+-        LazyLock::new(|| unsafe { Library::new("libEGL.so.1") }.expect("Failed to load LibEGL"));
++    pub static LIB: LazyLock<Library> = LazyLock::new(|| {
++        // libEGL.so.1 is the canonical Mesa name on Linux/BSD, but on some
++        // systems (OpenBSD with an updated mesa) only libEGL.so.2 is usable;
++        // the shipped libEGL.so.1 may reference removed libc internals and
++        // fail to load. Try both.
++        for name in ["libEGL.so.1", "libEGL.so.2"] {
++            if let Ok(lib) = unsafe { Library::new(name) } {
++                return lib;
++            }
++        }
++        panic!("Failed to load LibEGL (tried libEGL.so.1, libEGL.so.2)");
++    });
+
+     pub static LOAD: Once = Once::new();
+     pub static DEBUG: Once = Once::new();
