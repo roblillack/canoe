@@ -84,6 +84,16 @@ Xwayland. (#66)
 - Super+Alt+Arrow sends the focused window to the output in that direction,
   like Super+Shift+Arrow, instead of to the "next" or "previous" output in
   no particular order. (#92)
+- Minimizing the focused window with Super+Down, Super+H or Super+M
+  selects its desktop icon until Super is released, and only then focuses
+  the next window. Meanwhile Super+Up brings the window right back, rather
+  than maximizing the next one, and Super+Alt+Arrow sends the icon to
+  another output, as it does with windows. While a clicked icon is
+  selected, the arrow keys, Tab and Shift+Tab select the icon next to it,
+  Super+Up and Return restore it, Super+Alt+Arrow sends it to another
+  output and Escape returns to the windows. Super+Tab and the other
+  shortcuts keep working meanwhile; before, they did nothing while an icon
+  was selected.
 
 - Window titles are centered in the titlebar, moving aside where the
   buttons are in the way. `titlebar_text_align = "left"` under `[ui]` puts

@@ -111,18 +111,47 @@ impl Seat {
             return;
         }
 
-        let old_mode = self.mode;
         self.mode = mode;
+        self.enable_bindings_for_mode();
+    }
 
-        // The compositor matches key and button presses against the
-        // enabled bindings of the seat's current mode.
+    /// Enable the bindings of the seat's current mode and disable the rest.
+    /// The compositor matches key and button presses against the enabled
+    /// bindings.
+    ///
+    /// While a desktop icon is selected, the default mode's bindings stay
+    /// active too (Super+Tab, Super+Space, Super+drag, ...), except for the
+    /// chords the icon mode binds itself, such as Super+Up restoring the
+    /// selected icon instead of maximizing.
+    pub fn enable_bindings_for_mode(&mut self) {
+        let mode = self.mode;
+        let falls_back = mode == Mode::DesktopIcons;
+
+        let xkb_own: Vec<_> = self
+            .xkb_bindings
+            .iter()
+            .filter(|b| b.mode == mode)
+            .map(|b| (b.keysym, b.modifiers, b.event))
+            .collect();
         for binding in &mut self.xkb_bindings {
-            binding.enabled = binding.mode == mode;
+            binding.enabled = binding.mode == mode
+                || (falls_back
+                    && binding.mode == Mode::Default
+                    && !xkb_own.contains(&(binding.keysym, binding.modifiers, binding.event)));
         }
+
+        let pointer_own: Vec<_> = self
+            .pointer_bindings
+            .iter()
+            .filter(|b| b.mode == mode)
+            .map(|b| (b.button, b.modifiers, b.event))
+            .collect();
         for binding in &mut self.pointer_bindings {
-            binding.enabled = binding.mode == mode;
+            binding.enabled = binding.mode == mode
+                || (falls_back
+                    && binding.mode == Mode::Default
+                    && !pointer_own.contains(&(binding.button, binding.modifiers, binding.event)));
         }
-        let _ = old_mode;
     }
 
     /// Update pointer position
@@ -208,17 +237,7 @@ impl Seat {
 
     /// Initialize all bindings (call after seat is fully set up)
     pub fn initialize_bindings(&mut self) {
-        // Enable bindings for current mode
-        for binding in &mut self.xkb_bindings {
-            if binding.mode == self.mode {
-                binding.enabled = true;
-            }
-        }
-        for binding in &mut self.pointer_bindings {
-            if binding.mode == self.mode {
-                binding.enabled = true;
-            }
-        }
+        self.enable_bindings_for_mode();
     }
 }
 

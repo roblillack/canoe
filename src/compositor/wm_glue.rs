@@ -70,7 +70,11 @@ pub(super) fn open_window_menu_with_items(
 ) {
     let (output_info, focused_window, menu_theme) = {
         let context = state.context.borrow();
-        let focused = context.focused_window;
+        // A selected desktop icon stands in for the focused window, so
+        // Super+Tab right after minimizing goes on to the next window.
+        let focused = context
+            .focused_window
+            .or_else(|| context.selected_icon_window());
         let menu_theme = canoe::MenuTheme::from_ui(&context.config.ui);
         let info = context.outputs.get(&output_id).map(|output| {
             let out = output.borrow();

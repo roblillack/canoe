@@ -101,7 +101,22 @@ cargo build --release
 | `Super+Left` | Snap focused window to left half; restore if snapped right |
 | `Super+Right` | Snap focused window to right half; restore if snapped left |
 | `Super+Shift+Arrow` | Focus the output in that direction |
-| `Super+Alt+Arrow` | Send focused window to the output in that direction |
+| `Super+Alt+Arrow` | Send focused window (or selected icon) to the output in that direction |
+
+Minimizing the focused window with `Super+Down`, `Super+h` or `Super+m`
+selects its desktop icon for as long as `Super` stays pressed, so
+`Super+Up` brings the window right back and `Super+Alt+Arrow` sends the icon
+to another output. Releasing `Super` focuses the next window. A clicked
+desktop icon stays selected and has the keyboard:
+
+| Shortcut | Action |
+|----------|--------|
+| `Arrow`, `Tab`, `Shift+Tab` | Select the icon next to it |
+| `Super+Up`, `Return` | Bring the selected icon's window back |
+| `Super+Alt+Arrow` | Send the selected icon to the output in that direction |
+| `Escape` | Deselect the icon and focus the last window again |
+
+The other shortcuts keep working while an icon is selected.
 
 ## Mouse Actions
 
