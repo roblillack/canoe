@@ -93,7 +93,7 @@ Xwayland. (#66)
   Super+Up and Return restore it, Super+Alt+Arrow sends it to another
   output and Escape returns to the windows. Super+Tab and the other
   shortcuts keep working meanwhile; before, they did nothing while an icon
-  was selected.
+  was selected. (#95)
 
 - Window titles are centered in the titlebar, moving aside where the
   buttons are in the way. `titlebar_text_align = "left"` under `[ui]` puts
