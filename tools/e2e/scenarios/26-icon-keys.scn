@@ -1,0 +1,34 @@
+#! outputs 1280x720,1280x720
+# Minimizing a window with Super+H or Super+Down selects its desktop icon
+# while Super is held: Super+Up brings the window back, Super+Alt+Arrow sends
+# the icon to another output. Releasing Super focuses the next window.
+# A clicked icon stays selected: arrows pick another, Return restores.
+spawn $WLTEST --app-id one --title One --size 300x200 --color d03030
+wait-toplevel one 4000
+spawn $WLTEST --app-id two --title Two --size 300x200 --color 30a040
+wait-toplevel two 4000
+spawn $WLTEST --app-id three --title Three --size 300x200 --color 3060d0
+wait-toplevel three 4000
+spawn sleep 0.9; grim -c $OUT/01-three-selected-while-super-held.png
+keydown super ; key h ; sleep 1200 ; key Up ; sleep 300 ; keyup super
+shot 02-three-restored
+# Released right away: Two gets the focus, so the next Super+H takes it.
+key super+h
+shot 03-three-icon-not-selected
+key super+h
+shot 04-two-minimized-too
+# Click Three's icon, then select Two's and send it to the right.
+move 53 665 ; btn click left
+shot 05-three-clicked
+key Right
+key super+alt+Right
+shot 06-two-sent-to-the-right
+key Return
+shot 07-two-restored-on-the-right
+# Held: sent back to the left output, then One there gets the focus.
+spawn sleep 1.2; grim -c $OUT/08-two-sent-back-while-super-held.png
+keydown super ; key h ; sleep 300 ; key alt+Left ; sleep 1200 ; keyup super
+shot 09-super-released
+# One got the focus: Super+H minimizes it.
+key super+h
+shot 10-one-minimized

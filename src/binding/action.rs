@@ -79,7 +79,8 @@ pub enum Action {
     /// with the pointer in its middle
     FocusOutput { direction: OutputDirection },
 
-    /// Send the focused window to the output next to its own
+    /// Send the focused window, or the selected desktop icon, to the output
+    /// next to its own
     SendToOutput { direction: OutputDirection },
     /// Start pointer move operation
     PointerMove,
@@ -109,7 +110,8 @@ pub enum Action {
     WindowMenuCycle { direction: Direction },
     /// Cycle window menu entries for the focused application
     WindowMenuCycleApp,
-    /// Activate selected window menu item
+    /// Main modifier released: activate the selected window switcher item,
+    /// and end a desktop icon selection made by minimizing a window
     WindowMenuCommit,
     /// Cancel the window switcher menu, restoring the previously focused window
     WindowMenuCancel,
@@ -432,6 +434,15 @@ pub fn default_xkb_bindings(
             Mode::DesktopIcons,
             Keysym::Return.raw(),
             NONE,
+            Action::IconActivate,
+            super::BindingEvent::Pressed,
+        ),
+        // Main+Up brings the selected icon's window back, where it would
+        // maximize the focused window otherwise.
+        (
+            Mode::DesktopIcons,
+            Keysym::Up.raw(),
+            main,
             Action::IconActivate,
             super::BindingEvent::Pressed,
         ),

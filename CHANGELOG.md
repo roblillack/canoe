@@ -84,6 +84,10 @@ Xwayland. (#66)
 - Super+Alt+Arrow sends the focused window to the output in that direction,
   like Super+Shift+Arrow, instead of to the "next" or "previous" output in
   no particular order. (#92)
+- Better keyboard handling of minimized windows: a selected desktop icon
+  is restored with Super+Up, the arrow keys move the selection and
+  Super+Alt+Arrow sends the icon to another output. Minimizing with Super
+  keeps the icon selected until Super is released. (#95)
 
 - Window titles are centered in the titlebar, moving aside where the
   buttons are in the way. `titlebar_text_align = "left"` under `[ui]` puts

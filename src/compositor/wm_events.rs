@@ -1148,14 +1148,10 @@ impl State {
                     self.context.borrow_mut().execute_action(action, seat_id);
                     render_all_desktop_surfaces(self);
                 }
-                binding::Action::IconActivate => {
+                binding::Action::IconActivate | binding::Action::IconCancel => {
                     self.context.borrow_mut().execute_action(action, seat_id);
                     render_all_desktop_surfaces(self);
                     self.schedule_wm();
-                }
-                binding::Action::IconCancel => {
-                    self.context.borrow_mut().execute_action(action, seat_id);
-                    render_all_desktop_surfaces(self);
                 }
                 binding::Action::SharePickerConfirm => {
                     finish_share_picker(self, true, true);

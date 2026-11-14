@@ -92,6 +92,9 @@ pub struct Context {
 
     /// Output with active icon keyboard focus
     pub icon_focus_output: Option<OutputId>,
+    /// The icon selection came from minimizing with a key binding and lasts
+    /// only until the main modifier is released.
+    icon_focus_until_release: bool,
 
     /// Cache for desktop icon images found by app id, keyed by (where they
     /// were looked up, app_id, size_px). `None` value means "looked up but
@@ -169,6 +172,7 @@ impl Context {
             startup_unminimize_done: false,
 
             icon_focus_output: None,
+            icon_focus_until_release: false,
 
             icon_cache: HashMap::new(),
 
@@ -471,10 +475,7 @@ impl Context {
     pub fn rebuild_xkb_bindings(&self, seat: &mut Seat) {
         seat.xkb_bindings.clear();
         self.populate_xkb_bindings(seat);
-        let mode = seat.mode;
-        for binding in &mut seat.xkb_bindings {
-            binding.enabled = binding.mode == mode;
-        }
+        seat.enable_bindings_for_mode();
     }
 
     /// Take (and clear) the pending-XKB-rebind flag set by a config reload.
@@ -544,6 +545,15 @@ impl Context {
 
     /// Focus a window
     pub fn focus(&mut self, window_id: WindowId) {
+        // A focused window takes the keyboard from a selected desktop icon.
+        if self.icon_focus_output.is_some() {
+            if let Some(seat_id) = self.current_seat {
+                self.exit_icon_focus(seat_id);
+            } else {
+                self.deselect_icon();
+            }
+        }
+
         // Unfullscreen the fullscreen windows that would cover the window
         // being focused: those fullscreen on its output. A fullscreen window on
         // another output stays, so a program can fill every output at once (as
@@ -737,7 +747,7 @@ impl Context {
             }
             Action::HideFocused => {
                 if let Some(window_id) = self.focused_window {
-                    self.hide_window(window_id);
+                    self.minimize_window(window_id, true);
                 }
             }
             Action::ToggleShowDesktop => {
@@ -770,7 +780,7 @@ impl Context {
                 } else if is_maximized {
                     self.unmaximize_window(window_id);
                 } else {
-                    self.hide_window(window_id);
+                    self.minimize_window(window_id, true);
                 }
             }
             Action::SmartSnapHalf { side } => {
@@ -810,6 +820,9 @@ impl Context {
                         self.close_window_menu();
                     }
                 }
+                // The same key release ends an icon selection made by
+                // minimizing a window.
+                self.end_icon_focus_on_release(seat_id);
             }
             Action::WindowMenuCancel => {
                 if self.window_menu_mode == Some(WindowMenuMode::AltTab) {
@@ -839,6 +852,10 @@ impl Context {
             }
             Action::IconCancel => {
                 self.exit_icon_focus(seat_id);
+                // Back to the windows, e.g. after minimizing one by mistake.
+                if self.focused_window.is_none() {
+                    self.restore_focus_from_stack();
+                }
             }
             // The picker answers over IPC and redraws its overlay, both of
             // which happen in the dispatch layer as soon as the key is pressed.
@@ -976,12 +993,31 @@ impl Context {
 
     /// Send focused window to next/previous output
     fn send_to_output(&mut self, direction: OutputDirection) {
-        let window_id = match self.focused_window {
-            Some(id) => id,
-            None => return,
-        };
+        if let Some(window_id) = self.focused_window {
+            self.send_window_to_output(window_id, direction);
+        } else if let Some(window_id) = self.selected_icon_window() {
+            // A selected desktop icon goes along with its window, and stays
+            // selected on the other output.
+            if let Some(target) = self.send_window_to_output(window_id, direction) {
+                self.current_output = Some(target);
+                self.last_focused_output = Some(target);
+                if !self.select_icon_of_hidden_window(window_id) {
+                    if let Some(seat_id) = self.current_seat {
+                        self.exit_icon_focus(seat_id);
+                    }
+                }
+            }
+        }
+    }
 
-        let Some(current_output_id) = self
+    /// Move a window to the output next to its own in `direction`, keeping
+    /// its place relative to the output. Returns that output.
+    fn send_window_to_output(
+        &mut self,
+        window_id: WindowId,
+        direction: OutputDirection,
+    ) -> Option<OutputId> {
+        let current_output_id = self
             .windows
             .get(&window_id)
             .and_then(|window| {
@@ -992,27 +1028,14 @@ impl Context {
                     .and_then(|output| output.upgrade())
             })
             .map(|output| output.borrow().id)
-            .or(self.current_output)
-        else {
-            return;
-        };
-        let Some(target_output_id) = self.output_next_to(current_output_id, direction) else {
-            return;
-        };
+            .or(self.current_output)?;
+        let target_output_id = self.output_next_to(current_output_id, direction)?;
 
         let (old_area, new_area, window_rect, fullscreen) = {
-            let Some(window) = self.windows.get(&window_id) else {
-                return;
-            };
+            let window = self.windows.get(&window_id)?;
             let w = window.borrow();
-            let old_area = match self.outputs.get(&current_output_id) {
-                Some(output) => output.borrow().usable_area(),
-                None => return,
-            };
-            let new_area = match self.outputs.get(&target_output_id) {
-                Some(output) => output.borrow().usable_area(),
-                None => return,
-            };
+            let old_area = self.outputs.get(&current_output_id)?.borrow().usable_area();
+            let new_area = self.outputs.get(&target_output_id)?.borrow().usable_area();
             (
                 old_area,
                 new_area,
@@ -1044,12 +1067,12 @@ impl Context {
                 self.arrange_output(current_id);
             }
             self.arrange_output(target_output_id);
-            return;
+            return Some(target_output_id);
         }
 
         if old_area.2 <= 0 || old_area.3 <= 0 || new_area.2 <= 0 || new_area.3 <= 0 {
             self.set_window_output(window_id, target_output_id);
-            return;
+            return Some(target_output_id);
         }
 
         self.relocate_window(window_id, window_rect, old_area, target_output_id, false);
@@ -1059,6 +1082,7 @@ impl Context {
             self.arrange_output(current_id);
         }
         self.arrange_output(target_output_id);
+        Some(target_output_id)
     }
 
     pub(crate) fn update_window_output_from_position(&mut self, window_id: WindowId) {
@@ -1549,7 +1573,17 @@ impl Context {
         }
     }
 
+    /// Minimize a window. If it had focus, the most recently focused window
+    /// still shown on the output gets it.
     pub(crate) fn hide_window(&mut self, window_id: WindowId) {
+        self.minimize_window(window_id, false);
+    }
+
+    /// Minimize a window. With `select_icon`, for key bindings, a window that
+    /// had focus hands it to its desktop icon until the main modifier is
+    /// released, so Super+Up brings it right back; the next window gets the
+    /// focus only then.
+    fn minimize_window(&mut self, window_id: WindowId, select_icon: bool) {
         let was_focused = self.focused_window == Some(window_id);
         if let Some(window) = self.windows.get(&window_id) {
             let mut w = window.borrow_mut();
@@ -1565,6 +1599,11 @@ impl Context {
             return;
         }
 
+        if select_icon && self.select_icon_of_hidden_window(window_id) {
+            self.icon_focus_until_release = true;
+            return;
+        }
+
         let output = self
             .current_output
             .and_then(|id| self.outputs.get(&id).cloned())
@@ -1573,24 +1612,37 @@ impl Context {
                     .get(&window_id)
                     .and_then(|w| w.borrow().output.as_ref().and_then(|o| o.upgrade()))
             });
+        self.focus_next_visible_on(output);
+    }
 
-        let Some(output) = output else {
-            self.focused_window = None;
-            if let Some(seat_id) = self.current_seat {
-                if let Some(seat) = self.seats.get(&seat_id) {
-                    seat.borrow().clear_focus();
-                }
-            }
+    /// End an icon selection made by minimizing with a key binding, now that
+    /// the main modifier is released, and focus the most recently focused
+    /// window shown on the icon's output.
+    fn end_icon_focus_on_release(&mut self, seat_id: SeatId) {
+        if !std::mem::take(&mut self.icon_focus_until_release) {
+            return;
+        }
+        let Some(output_id) = self.icon_focus_output else {
             return;
         };
+        self.exit_icon_focus(seat_id);
+        let output = self.outputs.get(&output_id).cloned();
+        self.focus_next_visible_on(output);
+    }
 
-        let output_ref = output.borrow();
-        let visible: Vec<WindowId> = self
-            .windows
-            .iter()
-            .filter(|(_, w)| w.borrow().is_visible_on(&output_ref))
-            .map(|(&id, _)| id)
-            .collect();
+    /// Focus the most recently focused window shown on `output`, or nothing.
+    fn focus_next_visible_on(&mut self, output: Option<Rc<RefCell<Output>>>) {
+        let visible: Vec<WindowId> = match &output {
+            Some(output) => {
+                let output_ref = output.borrow();
+                self.windows
+                    .iter()
+                    .filter(|(_, w)| w.borrow().is_visible_on(&output_ref))
+                    .map(|(&id, _)| id)
+                    .collect()
+            }
+            None => Vec::new(),
+        };
 
         if visible.is_empty() {
             self.focused_window = None;
@@ -3255,10 +3307,14 @@ impl Context {
             self.restore_stack_order(order);
         }
 
-        if let Some(window_id) = self.window_menu_alt_tab_focused {
-            if self.windows.contains_key(&window_id) {
+        match self.window_menu_alt_tab_focused {
+            Some(window_id) if self.windows.contains_key(&window_id) => {
                 self.focus_preview(window_id);
             }
+            // Nothing had focus, e.g. while a desktop icon was selected:
+            // the window last previewed doesn't keep it.
+            None => self.focused_window = None,
+            Some(_) => {}
         }
 
         self.clear_alt_tab_state();
@@ -3297,6 +3353,8 @@ impl Context {
             }
         }
         self.icon_focus_output = Some(output_id);
+        // A clicked icon stays selected until something else is.
+        self.icon_focus_until_release = false;
         if let Some(seat) = self.seats.get(&seat_id) {
             let mut seat_ref = seat.borrow_mut();
             seat_ref.queue_action(Action::ClearFocus);
@@ -3306,22 +3364,75 @@ impl Context {
         }
     }
 
-    /// Exit desktop icon keyboard focus mode.
-    pub fn exit_icon_focus(&mut self, seat_id: SeatId) {
-        if let Some(output_id) = self.icon_focus_output.take() {
-            if let Some(output) = self.outputs.get(&output_id) {
-                if let Some(desktop) = output.borrow_mut().desktop_surface.as_mut() {
-                    desktop.selected_icon = None;
-                    desktop.dirty = true;
-                }
+    /// Give the keyboard to the desktop icon of `window_id`, which was just
+    /// minimized, right away. For use inside a manage sequence, where focus
+    /// and the seat's mode may change. Returns false, leaving everything as
+    /// it was, when the window's output has no desktop to show the icon on.
+    fn select_icon_of_hidden_window(&mut self, window_id: WindowId) -> bool {
+        let Some(output) = self
+            .windows
+            .get(&window_id)
+            .and_then(|w| w.borrow().output.as_ref().and_then(|o| o.upgrade()))
+        else {
+            return false;
+        };
+        let output_id = {
+            let mut out = output.borrow_mut();
+            let output_id = out.id;
+            let Some(desktop) = out.desktop_surface.as_mut() else {
+                return false;
+            };
+            desktop.selected_icon = Some(window_id);
+            desktop.dirty = true;
+            output_id
+        };
+        if let Some(previous) = self.icon_focus_output.replace(output_id) {
+            if previous != output_id {
+                self.deselect_icon_on(previous);
             }
         }
+        self.clear_keyboard_focus();
+        if let Some(seat) = self.current_seat.and_then(|id| self.seats.get(&id)) {
+            seat.borrow_mut()
+                .switch_mode(crate::config::Mode::DesktopIcons);
+        }
+        true
+    }
+
+    /// The window whose desktop icon has the keyboard, if any.
+    pub fn selected_icon_window(&self) -> Option<WindowId> {
+        let output = self.outputs.get(&self.icon_focus_output?)?;
+        let output = output.borrow();
+        output.desktop_surface.as_ref()?.selected_icon
+    }
+
+    /// Exit desktop icon keyboard focus mode.
+    pub fn exit_icon_focus(&mut self, seat_id: SeatId) {
+        self.deselect_icon();
         if let Some(seat) = self.seats.get(&seat_id) {
             seat.borrow_mut().switch_mode(crate::config::Mode::Default);
         }
     }
 
-    /// Navigate icon selection by (dx, dy) in the icon grid.
+    /// Clear the desktop icon selection, leaving the seat's mode alone.
+    fn deselect_icon(&mut self) {
+        self.icon_focus_until_release = false;
+        if let Some(output_id) = self.icon_focus_output.take() {
+            self.deselect_icon_on(output_id);
+        }
+    }
+
+    fn deselect_icon_on(&self, output_id: OutputId) {
+        if let Some(output) = self.outputs.get(&output_id) {
+            if let Some(desktop) = output.borrow_mut().desktop_surface.as_mut() {
+                desktop.selected_icon = None;
+                desktop.dirty = true;
+            }
+        }
+    }
+
+    /// Navigate icon selection by (dx, dy) in the icon grid, negative dy
+    /// being up.
     pub fn icon_navigate(&mut self, dx: i32, dy: i32) {
         let Some(output_id) = self.icon_focus_output else {
             return;
@@ -3333,32 +3444,14 @@ impl Context {
         let Some(desktop) = out.desktop_surface.as_mut() else {
             return;
         };
-        let count = desktop.icon_count() as i32;
+        let count = desktop.icon_count();
         if count == 0 {
             return;
         }
-        let cols = desktop.icon_cols.max(1);
-        let current_idx = desktop.selected_icon_index().unwrap_or(0) as i32;
-        let col = current_idx % cols;
-        let row = current_idx / cols;
+        let current = desktop.selected_icon_index().unwrap_or(0);
+        let new_idx = icon_grid_step(current, count, desktop.icon_cols, dx, dy);
 
-        let new_idx = if dy != 0 {
-            // Move up/down by row
-            let new_row = row + dy;
-            let candidate = new_row * cols + col;
-            if candidate < 0 || candidate >= count {
-                // Stay at current position if out of bounds
-                current_idx
-            } else {
-                candidate
-            }
-        } else {
-            // Move left/right linearly with wrapping
-            let candidate = current_idx + dx;
-            ((candidate % count) + count) % count
-        };
-
-        if let Some(window_id) = desktop.icon_window_at_index(new_idx as usize) {
+        if let Some(window_id) = desktop.icon_window_at_index(new_idx) {
             desktop.selected_icon = Some(window_id);
             desktop.dirty = true;
         }
@@ -3366,16 +3459,10 @@ impl Context {
 
     /// Activate (restore) the selected desktop icon window.
     pub fn icon_activate(&mut self, seat_id: SeatId) {
-        let Some(output_id) = self.icon_focus_output else {
+        if self.icon_focus_output.is_none() {
             return;
-        };
-        let selected = self.outputs.get(&output_id).and_then(|o| {
-            o.borrow()
-                .desktop_surface
-                .as_ref()
-                .and_then(|d| d.selected_icon)
-        });
-        let Some(window_id) = selected else {
+        }
+        let Some(window_id) = self.selected_icon_window() else {
             self.exit_icon_focus(seat_id);
             return;
         };
@@ -4298,9 +4385,123 @@ fn capitalize(word: &str) -> String {
     }
 }
 
+/// The index of the desktop icon (dx, dy) away from `current` among `count`
+/// icons laid out `cols` to a row, negative dy being up. The first row is at
+/// the bottom of the desktop and rows fill from left to right.
+///
+/// Up onto a row that ends before the current column goes to its last icon;
+/// steps off the grid's top or bottom stay put. Sideways steps run on into
+/// the next row and wrap around at the ends.
+fn icon_grid_step(current: usize, count: usize, cols: i32, dx: i32, dy: i32) -> usize {
+    if count == 0 {
+        return current;
+    }
+    let (current, count, cols) = (current as i32, count as i32, cols.max(1));
+    let next = if dy != 0 {
+        let row = current / cols - dy;
+        if row < 0 || row * cols >= count {
+            current
+        } else {
+            (row * cols + current % cols).min(count - 1)
+        }
+    } else {
+        (current + dx).rem_euclid(count)
+    };
+    next as usize
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn icon_grid_steps_up_into_the_rows_above() {
+        // 7 icons, 3 to a row: 0 1 2 at the bottom, then 3 4 5, then 6.
+        assert_eq!(icon_grid_step(1, 7, 3, 0, -1), 4);
+        assert_eq!(icon_grid_step(4, 7, 3, 0, 1), 1);
+        // Above 5 there is no icon in its column: the top row's last one.
+        assert_eq!(icon_grid_step(5, 7, 3, 0, -1), 6);
+        // Off the top and the bottom.
+        assert_eq!(icon_grid_step(6, 7, 3, 0, -1), 6);
+        assert_eq!(icon_grid_step(2, 7, 3, 0, 1), 2);
+    }
+
+    #[test]
+    fn icon_grid_steps_sideways_wrap_around() {
+        assert_eq!(icon_grid_step(2, 7, 3, 1, 0), 3);
+        assert_eq!(icon_grid_step(6, 7, 3, 1, 0), 0);
+        assert_eq!(icon_grid_step(0, 7, 3, -1, 0), 6);
+    }
+
+    #[test]
+    fn minimizing_the_focused_window_without_a_desktop_focuses_the_next() {
+        let mut ctx = context_with_output_ids(&[1]);
+        add_stacked_window(&mut ctx, 10, 1, false);
+        add_stacked_window(&mut ctx, 11, 1, false);
+        add_stacked_window(&mut ctx, 12, 1, false);
+        ctx.focus(10);
+
+        // From a key binding: no desktop to select the icon on.
+        ctx.execute_action(Action::HideFocused, 1);
+        assert_eq!(ctx.focused_window, Some(11));
+        assert_eq!(ctx.icon_focus_output, None);
+
+        // From the minimize button.
+        ctx.hide_window(11);
+        assert_eq!(ctx.focused_window, Some(12));
+        assert!(!ctx.icon_focus_until_release);
+    }
+
+    #[test]
+    fn focusing_a_window_leaves_the_icon_selection() {
+        let mut ctx = context_with_output_ids(&[1]);
+        add_stacked_window(&mut ctx, 10, 1, false);
+        ctx.icon_focus_output = Some(1);
+
+        ctx.focus(10);
+
+        assert_eq!(ctx.icon_focus_output, None);
+        assert_eq!(ctx.focused_window, Some(10));
+    }
+
+    #[test]
+    fn default_bindings_stay_active_beside_the_icon_bindings() {
+        use crate::binding::BindingEvent;
+        use crate::config::{modifiers::SUPER, Mode};
+        use xkbcommon::xkb::Keysym;
+
+        let ctx = Context::new(true);
+        let mut seat = Seat::new(1);
+        ctx.setup_seat_bindings(&mut seat);
+        seat.switch_mode(Mode::DesktopIcons);
+
+        let enabled = |seat: &Seat, keysym: Keysym, mods: u32| -> Vec<Action> {
+            seat.xkb_bindings
+                .iter()
+                .filter(|b| {
+                    b.enabled
+                        && b.keysym == keysym.raw()
+                        && b.modifiers == mods
+                        && b.event == BindingEvent::Pressed
+                })
+                .map(|b| b.action.clone())
+                .collect()
+        };
+        assert!(matches!(
+            enabled(&seat, Keysym::Up, SUPER).as_slice(),
+            [Action::IconActivate]
+        ));
+        assert!(matches!(
+            enabled(&seat, Keysym::Tab, SUPER).as_slice(),
+            [Action::WindowMenuCycle { .. }]
+        ));
+
+        seat.switch_mode(Mode::Default);
+        assert!(matches!(
+            enabled(&seat, Keysym::Up, SUPER).as_slice(),
+            [Action::MaximizeFocused]
+        ));
+    }
 
     /// A context with outputs `(id, x, y, width, height)`, no Wayland objects.
     fn context_with_outputs(outputs: &[(OutputId, i32, i32, i32, i32)]) -> Context {
