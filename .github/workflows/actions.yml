@@ -49,6 +49,9 @@ jobs:
           path: ~/.cargo/git
           key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Vendor smithay with the OpenBSD compatibility patches
+        run: tools/vendor-smithay-openbsd.sh
+
       - name: Run Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
 
@@ -95,6 +98,9 @@ jobs:
         with:
           path: ~/.cargo/git
           key: ${{ runner.os }}-cargo-index-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Vendor smithay with the OpenBSD compatibility patches
+        run: tools/vendor-smithay-openbsd.sh
 
       - name: Run Tests
         run: cargo test --all-targets --all-features
@@ -162,6 +168,9 @@ jobs:
         with:
           path: target
           key: ${{ runner.os }}-${{ matrix.platform.target }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Vendor smithay with the OpenBSD compatibility patches
+        run: tools/vendor-smithay-openbsd.sh
 
       - name: Build binary
         run: cargo build --target ${{ matrix.platform.target }} --bin canoe
