@@ -78,9 +78,9 @@ Xwayland. (#66)
 - OpenBSD builds via `libudev-openbsd`, `libinput-openbsd` and seatd.
   `--backend winit` runs nested on an X session; the DRM session
   (`--backend udev`) reaches modeset and the Wayland socket, but hasn't
-  been driven end-to-end on hardware yet. Run
-  `tools/vendor-smithay-openbsd.sh` once to apply the two smithay
-  compatibility patches in `contrib/openbsd/` before `cargo build`. (#94)
+  been driven end-to-end on hardware yet. It is opt-in with the
+  `openbsd-drm` feature and needs the two smithay patches in
+  `contrib/openbsd/`; see "Building From Source" in the README. (#94)
 
 ### Changed
 

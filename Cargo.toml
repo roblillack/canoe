@@ -81,10 +81,10 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 
-# DRM/KMS session backends. The full stack (drm + gbm + libinput + libseat
-# + udev enumeration) is available on Linux and on OpenBSD via the
-# libudev-openbsd shim + libinput-openbsd + seatd.
-[target.'cfg(any(target_os = "linux", target_os = "openbsd"))'.dependencies]
+# DRM/KMS session backends (drm + gbm + libinput + libseat + udev
+# enumeration). Always on for Linux; on OpenBSD opt in with the
+# `openbsd-drm` feature below.
+[target.'cfg(target_os = "linux")'.dependencies]
 smithay = { version = "0.7", features = [
     "backend_drm",
     "backend_gbm",
@@ -100,6 +100,18 @@ default = ["winit"]
 winit = ["smithay/backend_winit"]
 # Compile in verbose debug logging / render timing (to stderr). Off by default.
 debug-logging = []
+# The DRM/KMS session backend (canoe --backend udev) on OpenBSD, via the
+# libudev-openbsd shim + libinput-openbsd + seatd. Needs smithay with the
+# patches in contrib/openbsd/, which no smithay release has yet; see
+# tools/vendor-smithay-openbsd.sh. A no-op on Linux, where the backend is
+# always built.
+openbsd-drm = [
+    "smithay/backend_drm",
+    "smithay/backend_gbm",
+    "smithay/backend_libinput",
+    "smithay/backend_udev",
+    "smithay/backend_session_libseat",
+]
 
 [[bin]]
 name = "canoe"
@@ -108,10 +120,3 @@ path = "src/main.rs"
 [profile.release]
 opt-level = 3
 lto = true
-
-# Vendored smithay with the OpenBSD compatibility patches in
-# contrib/openbsd/. Run tools/vendor-smithay-openbsd.sh once to populate
-# vendor/smithay/ before `cargo build`. Drop this [patch] stanza once
-# the changes land upstream.
-[patch.crates-io]
-smithay = { path = "vendor/smithay" }

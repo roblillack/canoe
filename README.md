@@ -80,6 +80,20 @@ sudo ln -s ~/.cargo/bin/canoe /usr/local/bin/
 cargo build --release
 ```
 
+### OpenBSD
+
+A plain `cargo build` gives the nested (`--backend winit`) and headless
+backends. The DRM session backend (`--backend udev`, via `libudev-openbsd`,
+`libinput-openbsd` and seatd) needs two smithay fixes that aren't in a
+smithay release yet. Apply them to a vendored copy and build with the
+`openbsd-drm` feature:
+
+```sh
+tools/vendor-smithay-openbsd.sh
+cargo build --release --features openbsd-drm \
+    --config 'patch.crates-io.smithay.path="vendor/smithay"'
+```
+
 
 ## Keyboard Shortcuts
 

@@ -1,8 +1,10 @@
 #!/bin/sh
-# Set up vendor/smithay/ with the OpenBSD patches applied. The vendored
-# tree is pointed at from Cargo.toml's `[patch.crates-io]`, so it must
-# exist before `cargo build`. Re-running this script is safe — it
-# recreates vendor/smithay/ from scratch.
+# Set up vendor/smithay/ with the OpenBSD patches applied, for building
+# the DRM session backend on OpenBSD (the `openbsd-drm` feature). Point
+# cargo at it with --config, as printed at the end. Re-running this
+# script is safe — it recreates vendor/smithay/ from scratch. Drop it,
+# together with contrib/openbsd/, once canoe moves to a smithay release
+# that has the upstream fixes (Smithay #2256, #2261).
 #
 # Prefers the local cargo registry cache (populated on first `cargo
 # fetch`); falls back to downloading the crate from crates.io.
@@ -44,3 +46,6 @@ done
 find "$VENDOR_DIR" -name '*.orig' -delete
 
 echo "done — vendor/smithay/ is ready at $VENDOR_DIR"
+echo "build with:"
+echo "  cargo build --release --features openbsd-drm \\"
+echo "    --config 'patch.crates-io.smithay.path=\"vendor/smithay\"'"
