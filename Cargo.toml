@@ -24,14 +24,13 @@ pre-release-replacements = [
 ]
 
 [dependencies]
-# The compositor itself
+# The compositor itself. Backends that bind to Linux kernel interfaces
+# (DRM/KMS, GBM, udev, libinput, libseat) are only pulled in on Linux; see
+# the target-specific section at the bottom. The rest is cross-platform
+# enough to let canoe build a winit-nested session on other Unixes
+# (OpenBSD).
 smithay = { version = "0.7", default-features = false, features = [
-    "backend_drm",
-    "backend_gbm",
     "backend_egl",
-    "backend_libinput",
-    "backend_udev",
-    "backend_session_libseat",
     "desktop",
     "renderer_gl",
     "renderer_pixman",
@@ -82,6 +81,18 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 
+# DRM/KMS session backends (drm + gbm + libinput + libseat + udev
+# enumeration). Always on for Linux; on OpenBSD opt in with the
+# `openbsd-drm` feature below.
+[target.'cfg(target_os = "linux")'.dependencies]
+smithay = { version = "0.7", features = [
+    "backend_drm",
+    "backend_gbm",
+    "backend_libinput",
+    "backend_udev",
+    "backend_session_libseat",
+] }
+
 [features]
 default = ["winit"]
 # Running nested in a window of another session (canoe --backend winit),
@@ -89,6 +100,18 @@ default = ["winit"]
 winit = ["smithay/backend_winit"]
 # Compile in verbose debug logging / render timing (to stderr). Off by default.
 debug-logging = []
+# The DRM/KMS session backend (canoe --backend udev) on OpenBSD, via the
+# libudev-openbsd shim + libinput-openbsd + seatd. Needs smithay with the
+# patches in contrib/openbsd/, which no smithay release has yet; see
+# tools/vendor-smithay-openbsd.sh. A no-op on Linux, where the backend is
+# always built.
+openbsd-drm = [
+    "smithay/backend_drm",
+    "smithay/backend_gbm",
+    "smithay/backend_libinput",
+    "smithay/backend_udev",
+    "smithay/backend_session_libseat",
+]
 
 [[bin]]
 name = "canoe"
