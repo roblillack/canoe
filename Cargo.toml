@@ -81,10 +81,10 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 
-# Linux-only smithay backends. Features are additive across target
-# sections, so this pulls the DRM/KMS/udev/libinput/libseat stack in only
-# on Linux.
-[target.'cfg(target_os = "linux")'.dependencies]
+# DRM/KMS session backends. The full stack (drm + gbm + libinput + libseat
+# + udev enumeration) is available on Linux and on OpenBSD via the
+# libudev-openbsd shim + libinput-openbsd + seatd.
+[target.'cfg(any(target_os = "linux", target_os = "openbsd"))'.dependencies]
 smithay = { version = "0.7", features = [
     "backend_drm",
     "backend_gbm",
@@ -108,3 +108,10 @@ path = "src/main.rs"
 [profile.release]
 opt-level = 3
 lto = true
+
+# Vendored smithay with the OpenBSD compatibility patches in
+# contrib/openbsd/. Run tools/vendor-smithay-openbsd.sh once to populate
+# vendor/smithay/ before `cargo build`. Drop this [patch] stanza once
+# the changes land upstream.
+[patch.crates-io]
+smithay = { path = "vendor/smithay" }
