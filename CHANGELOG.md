@@ -74,6 +74,63 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
 - A manpage, `man canoe`, and a Makefile: `make && sudo make install` installs
   Canoe, its manpage, the session file and the portal configuration under
   `/usr/local`. (#102)
+- `xdg-toplevel-icon-v1`: a minimized window's desktop icon is the icon its
+  program sets, unless one is put in `~/.config/canoe/icons/`. (#67)
+- KDE's `org_kde_plasma_shell` protocol, of which only `set_skip_switcher`
+  is honored: windows that ask for it are left out of the window menu,
+  Super+Tab and focus cycling, while their desktop icon still shows when
+  minimized. Other requests are accepted and ignored. (#70)
+- Super+D minimizes all windows on all screens, like on Windows. Pressing it
+  again while no window is shown brings them back, in their old stacking
+  order and with the focus they had. (#72)
+- Cursor sessions of `ext-image-copy-capture-v1` report where the pointer is
+  on the output or window they capture, so programs like eyes following the
+  pointer work. Their cursor image stays empty. (#75)
+- Windows glide and stretch into place when they are maximized, snapped to
+  a half of the screen or restored, instead of jumping there. The frame,
+  titlebar and shadow keep their proportions while the content stretches.
+  Minimized windows shrink into their desktop icons and fade out, and grow
+  back out of them when brought back. `animations_enabled` and
+  `animations_duration` (in milliseconds, 150 by default) under `[ui]` turn
+  the animations off or change their speed. (#76)
+- X11 programs are crisp on scaled outputs: they draw at the outputs'
+  scale, rounded up, and learn it through `Xft.dpi` and XSETTINGS
+  (`Gdk/WindowScalingFactor`), as does their default cursor. Programs
+  that can't scale come out small; `xwayland_hidpi = false` goes back to
+  drawing them at scale 1, stretched and blurry. (#80)
+- Screenshot tools made for sway or KWin work with `emulate_sway` and
+  `emulate_kwin`. The first answers the questions sway's IPC answers about
+  outputs, windows and focus, for shotman and grimshot; the second offers
+  KWin's screenshot D-Bus interface, for Spectacle in all its modes, with
+  Canoe's picker for the window under the cursor. Both are off by default;
+  see Screenshots in the README. (#81)
+- `xdg-toplevel-tag-v1`: windows may tag themselves. The tags aren't used
+  yet, but KDE programs expect the protocol and Spectacle crashes without
+  it. (#81)
+- Canoe remembers the output layout for each combination of connected
+  monitors and restores it when the combination comes back, so kanshi is no
+  longer needed: whatever an output tool like `wdisplays` or `wlr-randr`
+  applies is saved, in `~/.local/state/canoe/outputs.toml`.
+  `remember_outputs = false` turns this off. (#82)
+- A primary output per combination of monitors, where new windows open
+  after monitors come or go and where layer surfaces without an output go.
+  The pointer starts in its middle.
+  It is chosen with an experimental protocol of canoe's own,
+  `xx-primary-output-v1`. (#82)
+- Monitors report their make, model and serial number from their EDID, so
+  output tools can tell them apart. (#82)
+- Closing a laptop's lid turns its panel off, and opening it turns the
+  panel back on, unless the remembered layout says otherwise: the lid
+  open and the lid closed each have a layout of their own. Until one of
+  them is set up, the other one is used.
+  `xx-primary-output-v1` tells output tools which outputs are a laptop's
+  panel and whether the lid is closed over them. (#82)
+- OpenBSD builds via `libudev-openbsd`, `libinput-openbsd` and seatd.
+  `--backend winit` runs nested on an X session; the DRM session
+  (`--backend udev`) reaches modeset and the Wayland socket, but hasn't
+  been driven end-to-end on hardware yet. Run
+  `tools/vendor-smithay-openbsd.sh` once to apply the two smithay
+  compatibility patches in `contrib/openbsd/` before `cargo build`. (#94)
 
 ### Changed
 
