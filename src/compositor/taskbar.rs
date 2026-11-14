@@ -21,10 +21,21 @@ impl State {
             .active_outputs()
             .filter_map(|o| Some((o.output.clone(), self.output_geometry(&o.output)?)))
             .collect();
+        // Iconlets aren't windows to switch to, so taskbars don't list them.
+        for i in 0..self.windows.len() {
+            if super::protocols::iconlet::is_iconlet(self.windows[i].wl_surface()) {
+                if let Some(toplevel) = self.windows[i].wlr_toplevel.take() {
+                    self.foreign_toplevel_manager_state.close(&toplevel);
+                }
+            }
+        }
         // Windows taskbars may know about: those announced on the
         // ext-foreign-toplevel list, i.e. mapped.
         let mut pending: Vec<usize> = (0..self.windows.len())
-            .filter(|&i| self.windows[i].foreign.is_some())
+            .filter(|&i| {
+                self.windows[i].foreign.is_some()
+                    && !super::protocols::iconlet::is_iconlet(self.windows[i].wl_surface())
+            })
             .collect();
         let mapped: HashSet<canoe::WindowId> =
             pending.iter().map(|&i| self.windows[i].id).collect();

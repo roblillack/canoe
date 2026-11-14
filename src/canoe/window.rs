@@ -133,6 +133,11 @@ pub struct Window {
     /// The client asked for the window to be left out of the window menu,
     /// Super+Tab and focus cycling (org_kde_plasma_surface.set_skip_switcher)
     pub skip_switcher: bool,
+    /// The client declared the window an iconlet (xx-iconlet-v1): it stays
+    /// minimized, its icon is all there is to it
+    pub iconlet: bool,
+    /// The client draws the window's desktop icon itself (xx-iconlet-v1)
+    pub icon_surface: bool,
     /// Compositor-assigned identifier, shared with ext-foreign-toplevel-list-v1
     /// (river_window_v1 version 4 and later)
     pub identifier: Option<String>,
@@ -226,6 +231,8 @@ impl Window {
             client_icon: None,
             client_icon_pixmap: None,
             skip_switcher: false,
+            iconlet: false,
+            icon_surface: false,
             identifier: None,
             parent: None,
             swallow_top: 0,
@@ -472,9 +479,15 @@ impl Window {
         }
     }
 
-    /// Show the window
+    /// Whether the window stays out of the window menu, Super+Tab and focus
+    /// cycling.
+    pub fn skips_switcher(&self) -> bool {
+        self.skip_switcher || self.iconlet
+    }
+
+    /// Show the window, unless it is an iconlet, which stays minimized
     pub fn show(&mut self) {
-        if self.hidden {
+        if self.hidden && !self.iconlet {
             self.hidden = false;
             if let Some(ref rwm_window) = self.rwm_window {
                 rwm_window.show();

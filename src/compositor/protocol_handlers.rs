@@ -5,6 +5,7 @@ use smithay::backend::input::ButtonState;
 use super::protocols::gamma_control::{
     delegate_gamma_control, GammaControlHandler, GammaControlManagerState,
 };
+use super::protocols::iconlet::{delegate_iconlet, IconletHandler};
 use super::protocols::output_management::{
     delegate_output_management, HeadConfiguration, OutputManagementHandler, OutputManagementState,
 };
@@ -225,5 +226,17 @@ delegate_plasma_shell!(State);
 impl PlasmaShellHandler for State {
     fn skip_switcher_changed(&mut self, surface: &WlSurface, skip: bool) {
         self.toplevel_skip_switcher_changed(surface, skip);
+    }
+}
+
+delegate_iconlet!(State);
+
+impl IconletHandler for State {
+    fn iconlet_changed(&mut self, surface: &WlSurface, iconlet: bool) {
+        self.toplevel_iconlet_changed(surface, iconlet);
+    }
+
+    fn icon_surface_changed(&mut self, surface: &WlSurface) {
+        self.toplevel_icon_surface_changed(surface);
     }
 }

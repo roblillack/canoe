@@ -3,6 +3,7 @@
 pub mod capture_render;
 pub mod foreign_toplevel;
 pub mod gamma_control;
+pub mod iconlet;
 pub mod image_capture;
 pub mod output_management;
 pub mod output_power;

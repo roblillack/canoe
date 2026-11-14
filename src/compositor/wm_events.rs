@@ -209,6 +209,8 @@ impl State {
             w.title = title;
             w.pid = pid;
             w.skip_switcher = super::protocols::plasma_shell::skip_switcher(&surface);
+            w.iconlet = super::protocols::iconlet::is_iconlet(&surface);
+            w.icon_surface = super::protocols::iconlet::icon_surface(&surface).is_some();
             w.decoration_hint = Some(match &shell {
                 // What River reports for a client without a decoration
                 // object, unless it asked through KDE's protocol already.
@@ -410,6 +412,57 @@ impl State {
         }
     }
 
+    /// The client declared its toplevel `surface` an iconlet (`iconlet`),
+    /// which minimizes it, or stopped doing so, which leaves it minimized.
+    pub fn toplevel_iconlet_changed(&mut self, surface: &WlSurface, iconlet: bool) {
+        let Some(id) = self.window_for_surface(surface).map(|w| w.id) else {
+            // Not a window (yet); `add_window` reads the flag.
+            return;
+        };
+        let context = self.context.borrow();
+        let Some(window) = context.windows.get(&id) else {
+            return;
+        };
+        let hidden = {
+            let mut w = window.borrow_mut();
+            w.iconlet = iconlet;
+            w.hidden
+        };
+        if iconlet && !hidden {
+            window
+                .borrow_mut()
+                .queue_event(canoe::WindowEvent::Minimize);
+        }
+        // Iconlets' icons come first.
+        context.mark_all_desktops_dirty();
+        drop(context);
+        self.schedule_wm();
+    }
+
+    /// Toplevel `surface` got or lost an icon surface to show, or it
+    /// committed.
+    pub fn toplevel_icon_surface_changed(&mut self, surface: &WlSurface) {
+        let Some(id) = self.window_for_surface(surface).map(|w| w.id) else {
+            return;
+        };
+        let has = super::protocols::iconlet::icon_surface(surface).is_some();
+        let context = self.context.borrow();
+        let Some(window) = context.windows.get(&id) else {
+            return;
+        };
+        let (changed, hidden) = {
+            let mut w = window.borrow_mut();
+            let changed = std::mem::replace(&mut w.icon_surface, has) != has;
+            (changed, w.hidden)
+        };
+        // The desktop draws an icon only where the client doesn't.
+        if changed && hidden {
+            context.mark_all_desktops_dirty();
+            drop(context);
+            self.schedule_wm();
+        }
+    }
+
     /// Where each minimized window's desktop icon is: its output and its
     /// image's rectangle there, in logical pixels.
     pub fn desktop_icon_rects(&self) -> Vec<(canoe::WindowId, Output, Rectangle<i32, Logical>)> {
@@ -438,9 +491,28 @@ impl State {
         rects
     }
 
-    /// Remember where windows' desktop icons are now.
+    /// Tell clients where their windows' desktop icons are now, and put icon
+    /// surfaces on their outputs.
     pub fn update_icon_geometry(&mut self) {
         let rects = self.desktop_icon_rects();
+        for window in &self.windows {
+            let surface = window.wl_surface();
+            let geometry = rects
+                .iter()
+                .find(|(id, _, _)| *id == window.id)
+                .map(|(_, output, rect)| (output.clone(), *rect));
+            if let Some(icon) = super::protocols::iconlet::icon_surface(surface) {
+                for output in self.outputs.iter().map(|o| &o.output) {
+                    let on = geometry.as_ref().filter(|(o, _)| o == output);
+                    let overlap = on.map(|(_, rect)| Rectangle::from_size(rect.size));
+                    smithay::desktop::utils::output_update(output, overlap, &icon);
+                    if on.is_some() {
+                        send_scale(&icon, output);
+                    }
+                }
+            }
+            super::protocols::iconlet::set_icon_geometry(surface, geometry);
+        }
         // Where minimized windows fly to and come back from. A window keeps
         // its icon's last place, since it is shown again before canoe lays
         // out the desktop without the icon.
@@ -455,6 +527,20 @@ impl State {
             if let Some((_, rect)) = icons.iter().find(|(id, _)| *id == window.id) {
                 window.icon = Some(*rect);
             }
+        }
+    }
+
+    /// Tell iconlets' clients that the user activated their icons, with a
+    /// token to focus a window they open.
+    pub fn send_iconlet_activations(&mut self) {
+        let activations = std::mem::take(&mut self.context.borrow_mut().iconlet_activations);
+        for id in activations {
+            let Some(surface) = self.window_by_id(id).map(|w| w.wl_surface().clone()) else {
+                continue;
+            };
+            let (token, _) = self.xdg_activation_state.create_external_token(None);
+            let token = token.to_string();
+            super::protocols::iconlet::send_activate(&surface, &token);
         }
     }
 

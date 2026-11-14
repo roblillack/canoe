@@ -29,6 +29,13 @@ Xwayland. (#66)
 - Super+D minimizes all windows on all screens, like on Windows. Pressing it
   again while no window is shown brings them back, in their old stacking
   order and with the focus they had. (#72)
+- An experimental protocol of canoe's own, `xx-iconlet-v1`: programs can
+  draw a minimized window's desktop icon themselves with a surface they
+  update at will, learn where on the screen the icon is, and declare
+  themselves iconlets, programs living only as their icon. An iconlet's
+  window starts out minimized and never comes up: double-clicking its icon
+  tells the program instead. It is left out of the window menu, Super+Tab
+  and taskbars, and its icon comes first on the desktop. (#78)
 - Cursor sessions of `ext-image-copy-capture-v1` report where the pointer is
   on the output or window they capture, so programs like eyes following the
   pointer work. Their cursor image stays empty. (#75)
@@ -60,7 +67,8 @@ Xwayland. (#66)
   `remember_outputs = false` turns this off. (#82)
 - A primary output per combination of monitors, where new windows open
   after monitors come or go and where layer surfaces without an output go.
-  The pointer starts in its middle.
+  The pointer starts in its middle, and iconlets always start there and
+  move along when the primary output changes.
   It is chosen with an experimental protocol of canoe's own,
   `xx-primary-output-v1`. (#82)
 - Monitors report their make, model and serial number from their EDID, so
