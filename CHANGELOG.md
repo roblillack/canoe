@@ -115,6 +115,12 @@ Xwayland. (#66)
 - Windows are no longer minimized when the last output goes away, e.g.
   while the only monitor wakes up and reconnects; they come back on the
   first output that appears. (#82)
+- Windows stay where they were when a monitor turns off or reconnects while
+  the screen is locked, e.g. a monitor going to sleep or a laptop
+  resuming from suspend. Windows from a monitor that went away wait for the
+  unlock and go back to it if it came back, fullscreen if they were, instead
+  of all ending up on the remaining screen. A monitor that comes back while
+  the screen is locked doesn't take focus from where it was.
 - Cursors keep their shapes where no `default` XCursor theme is installed, as
   on NixOS: Canoe falls back to a theme that is, and tells clients about it.
   With no theme at all, the built-in cursor is now a proper arrow instead of

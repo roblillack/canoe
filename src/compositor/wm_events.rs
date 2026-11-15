@@ -761,6 +761,7 @@ impl State {
         {
             let mut out = canoe_output.borrow_mut();
             out.name = Some(output.name());
+            out.monitor = Some(super::output_profiles::identity(output));
             out.scale = scale.ceil().max(1.0) as i32;
             out.preferred_scale =
                 Some((scale * canoe::scale::FRACTIONAL_DENOMINATOR as f64).round() as u32);
@@ -902,7 +903,7 @@ impl State {
                     )
                 });
             }
-            self.context.borrow_mut().session_locked = true;
+            self.context.borrow_mut().handle_session_locked();
             if let Some(seat_id) = self.context.borrow().current_seat {
                 if let Some(seat) = self.context.borrow().seats.get(&seat_id) {
                     seat.borrow_mut().switch_mode(config::Mode::Lock);
