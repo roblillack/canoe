@@ -120,7 +120,7 @@ Xwayland. (#66)
   resuming from suspend. Windows from a monitor that went away wait for the
   unlock and go back to it if it came back, fullscreen if they were, instead
   of all ending up on the remaining screen. A monitor that comes back while
-  the screen is locked doesn't take focus from where it was.
+  the screen is locked doesn't take focus from where it was. (#96)
 - Cursors keep their shapes where no `default` XCursor theme is installed, as
   on NixOS: Canoe falls back to a theme that is, and tells clients about it.
   With no theme at all, the built-in cursor is now a proper arrow instead of
