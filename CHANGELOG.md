@@ -121,6 +121,9 @@ Xwayland. (#66)
   unlock and go back to it if it came back, fullscreen if they were, instead
   of all ending up on the remaining screen. A monitor that comes back while
   the screen is locked doesn't take focus from where it was. (#96)
+- Clients like kitty no longer crash on showing up on an output that was
+  turned off and on again, e.g. the laptop's panel after closing and
+  opening the lid. (#96)
 - Cursors keep their shapes where no `default` XCursor theme is installed, as
   on NixOS: Canoe falls back to a theme that is, and tells clients about it.
   With no theme at all, the built-in cursor is now a proper arrow instead of

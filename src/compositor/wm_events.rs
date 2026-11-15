@@ -670,6 +670,7 @@ impl State {
             reported_usable: None,
             lock_surface: None,
             global: Some(global),
+            bound: Vec::new(),
             powered: true,
             redraw_needed: true,
             frame_pending: false,

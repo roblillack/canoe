@@ -267,6 +267,13 @@ pub struct ManagedOutput {
     pub lock_surface: Option<LockSurface>,
     /// The wl_output global, while the output is enabled.
     pub global: Option<smithay::reexports::wayland_server::backend::GlobalId>,
+    /// The `wl_output`s clients bound for it, see
+    /// [`State::forget_retired_wl_outputs`].
+    pub bound: Vec<
+        smithay::reexports::wayland_server::Weak<
+            smithay::reexports::wayland_server::protocol::wl_output::WlOutput,
+        >,
+    >,
     /// Not turned off through output power management. Only meaningful
     /// while enabled; a disabled output is powered on again when enabled.
     pub powered: bool,
