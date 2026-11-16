@@ -12,7 +12,9 @@ jobs:
   # parse-changelog. A tag whose version has no changelog section fails the job
   # rather than publishing an empty release. The pre-release-replacements in
   # Cargo.toml are what fill that section in, so a failure here means the
-  # [Unreleased] rollover did not happen.
+  # [Unreleased] rollover did not happen. Pre-releases (`v0.7.0-beta.1`) are
+  # the exception: cargo-release leaves CHANGELOG.md alone for them, so their
+  # notes are the [Unreleased] section, and GitHub marks them as pre-releases.
   release:
     name: Publish release notes
     runs-on: ubuntu-latest
@@ -25,6 +27,17 @@ jobs:
           # The whole history with tags, to find the previous release and
           # the commits since then.
           fetch-depth: 0
+
+      # A pre-release's notes are everything [Unreleased] so far: name that
+      # section after the tag in the runner's copy, as the rollover would.
+      - name: Name the Unreleased section after a pre-release
+        if: contains(github.ref_name, '-')
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=${TAG#v}
+          sed -i "s/^## \[Unreleased\] - ReleaseDate\$/## [$version] - $(date -u +%F)/" CHANGELOG.md
+          grep -qF "## [$version] - " CHANGELOG.md
 
       # CHANGELOG.md is wrapped at 80 columns, but GitHub renders each newline
       # of a release body as a hard line break. Unwrap paragraphs and list

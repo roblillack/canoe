@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # Prints a "**Contributors:** @a, @b, …" line for the release at the given tag:
 # everyone who authored or co-authored a commit since the previous release tag,
-# most commits first. GitHub resolves commit authors and Co-authored-by
+# most commits first. Pre-release tags (v0.7.0-beta.1) don't count as previous
+# releases, as their notes and those of the final release cover the whole
+# cycle since the last final release. GitHub resolves commit authors and Co-authored-by
 # trailers to accounts by their email address; a contributor whose email isn't
 # linked to an account is listed by name instead. Merge commits and the
 # release commit cargo-release makes are not counted.
@@ -14,7 +16,7 @@ repo=${GITHUB_REPOSITORY:-$(gh repo view --json nameWithOwner -q .nameWithOwner)
 owner=${repo%/*}
 name=${repo#*/}
 
-if prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*' "$tag^" 2>/dev/null); then
+if prev=$(git describe --tags --abbrev=0 --match 'v[0-9]*' --exclude 'v*-*' "$tag^" 2>/dev/null); then
     range="$prev..$tag"
 else
     range=$tag
