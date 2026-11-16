@@ -56,7 +56,10 @@ pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // Hardware-accelerated clients.
+    #[cfg(drm_backend)]
     super::init_dmabuf(state, backend.renderer(), None);
+    #[cfg(not(drm_backend))]
+    super::init_dmabuf(state, backend.renderer());
 
     let damage_tracker = OutputDamageTracker::from_output(&output);
     state.backend = Backend::Winit(WinitData {
