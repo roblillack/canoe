@@ -448,6 +448,39 @@ their old size, while canoe keeps their windows' size on screen. If
 `XCURSOR_SIZE` is set for launched programs (see above), it takes precedence
 over `Xcursor.size`, so their X11 cursors come out small on scaled outputs.
 
+### Keyboard
+
+The `[keyboard]` table sets the keyboard's XKB keymap and key repeat. Layouts,
+variants and options are comma-separated lists, as in
+`/usr/share/X11/xkb/rules/base.lst`:
+
+```toml
+[keyboard]
+layout = "us,de"
+variant = ",nodeadkeys"
+options = "grp:alt_shift_toggle,caps:escape"
+repeat_rate = 50   # keys per second
+repeat_delay = 300 # milliseconds
+```
+
+`rules` and `model` can be set too. Whatever is left out comes from
+`XKB_DEFAULT_RULES`, `XKB_DEFAULT_MODEL`, `XKB_DEFAULT_LAYOUT`,
+`XKB_DEFAULT_VARIANT` and `XKB_DEFAULT_OPTIONS` in the environment Canoe was
+started in (not `[env]`, which is for the programs it launches), and then from
+libxkbcommon's defaults (`us`). A variant only counts together with a layout,
+and `options = ""` turns off any from `XKB_DEFAULT_OPTIONS`.
+
+With more than one layout, switch between them with an XKB option such as
+`grp:alt_shift_toggle` or `grp:win_space_toggle` (see `grp:` in `base.lst`), or
+with [hotkeys](#hotkeys) that switch to the next, previous or a given layout.
+Shortcuts and hotkeys name Latin keys and keep working while a layout without
+them (Cyrillic, Greek, ...) is active: they then match the key's symbol in the
+first layout that has a Latin one.
+
+A `SIGHUP` reload applies changes. A changed keymap starts out on its first
+layout; one that can't be loaded (a misspelled layout, say) is reported and the
+keyboard keeps the keymap it had.
+
 ### Hotkeys
 
 Bind arbitrary key chords to commands under the `[hotkeys]` table. Each key is a
@@ -466,6 +499,17 @@ taken verbatim as the argv (no splitting):
 
 ```toml
 "Super+E" = ["sh", "-c", "notify-send 'hi there' && foot"]
+```
+
+Instead of a command, a hotkey can switch the keyboard layout (see
+[Keyboard](#keyboard)): to the next or previous one, or to one by its place in
+the `layout` list, counting from 1:
+
+```toml
+"Ctrl+Alt+space"       = { switch_layout = "next" }
+"Ctrl+Alt+Shift+space" = { switch_layout = "previous" }
+"Super+F1"             = { switch_layout = 1 }
+"Super+F2"             = { switch_layout = 2 }
 ```
 
 Recognized modifiers are `super` (aliases `logo`/`win`/`mod4`), `alt` (`mod1`),

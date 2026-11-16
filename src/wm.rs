@@ -150,6 +150,7 @@ pub enum Request {
     SetCursorShape(SeatKey, Option<CursorShape>),
     /// Move the pointer to this point in the global space.
     WarpPointer(SeatKey, i32, i32),
+    SwitchLayout(SeatKey, crate::config::LayoutSwitch),
 
     /// Layer surfaces created without an output open on this one.
     SetDefaultLayerOutput(OutputKey),
@@ -472,6 +473,11 @@ impl SeatHandle {
     /// moved it there. Ignored during a pointer operation or a drag.
     pub fn warp_pointer(&self, x: i32, y: i32) {
         self.requests.push(Request::WarpPointer(self.key, x, y));
+    }
+
+    /// Switch the keyboard to another of its layouts.
+    pub fn switch_layout(&self, to: crate::config::LayoutSwitch) {
+        self.requests.push(Request::SwitchLayout(self.key, to));
     }
 }
 

@@ -227,6 +227,7 @@ fn handle_signals(state: &mut State, fd: &OwnedFd) {
                         }
                         Ok(Signal::SIGHUP) => {
                             state.context.borrow_mut().reload_config();
+                            state.apply_keyboard_config();
                             state.apply_sway_emulation();
                             state.apply_kwin_emulation();
                             state.update_x11_settings();

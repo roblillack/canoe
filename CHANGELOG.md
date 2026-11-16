@@ -75,6 +75,10 @@ Xwayland. (#66)
   focused there, or none if it shows no windows, with the pointer in the
   middle of the output. (#92)
 - Double-clicking a titlebar maximizes the window, or restores it. (#93)
+- A `[keyboard]` table sets the XKB layouts, variants, options, model and
+  rules, and the key repeat, and a `SIGHUP` reload applies changes to them.
+  Unset names still come from `XKB_DEFAULT_*`. Hotkeys can switch to the
+  next, previous or a given layout: `{ switch_layout = "next" }`. (#97)
 
 ### Changed
 
@@ -154,6 +158,8 @@ Xwayland. (#66)
   Qt programs do, start out that way. Canoe answered such a request at once,
   which kept it from choosing how they start, so they could start
   windowed. (#81)
+- Shortcuts and hotkeys work while a layout without Latin letters, like a
+  Cyrillic or Greek one, is active. (#97)
 
 ## [0.6.2] - 2026-11-07
 

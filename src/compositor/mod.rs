@@ -417,6 +417,8 @@ pub struct State {
     pub x11_resources: Option<xwayland::ResourceWriter>,
 
     pub seat: Seat<State>,
+    /// The `[keyboard]` settings the keyboard was last set up with.
+    pub keyboard_config: crate::config::KeyboardConfig,
 
     /// The window manager.
     pub context: Rc<RefCell<Context>>,
@@ -562,13 +564,25 @@ impl State {
         context.borrow_mut().rwm = Some(wm::WindowManager::new(requests.clone()));
 
         let mut seat: Seat<State> = seat_state.new_wl_seat(&dh, "seat0");
+        let keyboard_config = context.borrow().config.keyboard.clone();
         {
-            let config = &context.borrow().config;
-            seat.add_keyboard(
-                XkbConfig::default(),
+            let config = &keyboard_config;
+            let added = seat.add_keyboard(
+                input::xkb_config(config),
                 config.repeat_delay,
                 config.repeat_rate,
-            )?;
+            );
+            if let Err(err) = added {
+                eprintln!(
+                    "canoe: using the default keymap, {} can't be loaded: {err}",
+                    input::describe_keymap(config)
+                );
+                seat.add_keyboard(
+                    XkbConfig::default(),
+                    config.repeat_delay,
+                    config.repeat_rate,
+                )?;
+            }
         }
         seat.add_pointer();
 
@@ -649,6 +663,7 @@ impl State {
             x11_settings: None,
             x11_resources: None,
             seat,
+            keyboard_config,
             context,
             requests,
             next_key: 1,
