@@ -255,6 +255,7 @@ impl State {
                 self.queue_redraw_all();
             }
             Request::WarpPointer(_, x, y) => self.warp_pointer((x as f64, y as f64).into()),
+            Request::SwitchLayout(_, to) => self.switch_layout(to),
             Request::SetDefaultLayerOutput(output_key) => {
                 self.default_layer_output = Some(output_key);
             }

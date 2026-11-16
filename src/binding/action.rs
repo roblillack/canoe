@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-use crate::config::Mode;
+use crate::config::{LayoutSwitch, Mode};
 
 /// Direction for iteration/movement
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,6 +89,9 @@ pub enum Action {
 
     /// Switch input mode
     SwitchMode { mode: Mode },
+
+    /// Switch the keyboard layout
+    SwitchLayout { to: LayoutSwitch },
 
     /// Toggle fullscreen
     ToggleFullscreen { in_window: bool },

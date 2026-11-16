@@ -7,7 +7,9 @@ use smithay::backend::input::{
     SwitchState, SwitchToggleEvent,
 };
 use smithay::desktop::{layer_map_for_output, WindowSurfaceType};
-use smithay::input::keyboard::{FilterResult, KeyboardTarget, Keycode, ModifiersState};
+use smithay::input::keyboard::{
+    FilterResult, KeyboardTarget, Keycode, Layout, ModifiersState, XkbConfig,
+};
 use smithay::input::pointer::{AxisFrame, ButtonEvent, MotionEvent, RelativeMotionEvent};
 use smithay::output::Output;
 use smithay::reexports::wayland_server::protocol::wl_data_device_manager::DndAction;
@@ -18,7 +20,7 @@ use smithay::wayland::shell::wlr_layer::{KeyboardInteractivity, Layer as WlrLaye
 
 use super::{KeyConsumer, LockState, State};
 use crate::canoe::{self, PointerTarget};
-use crate::config::modifiers;
+use crate::config::{modifiers, KeyboardConfig, LayoutSwitch};
 
 /// A relative motion: delta, unaccelerated delta, timestamp in µs.
 pub type RelativeMotion = (Point<f64, Logical>, Point<f64, Logical>, u64);
@@ -145,6 +147,47 @@ impl State {
     // ------------------------------------------------------------------
     // Keyboard
 
+    /// Set the keyboard up as the `[keyboard]` settings say, if they changed
+    /// since it last was. A new keymap starts out on its first layout.
+    pub fn apply_keyboard_config(&mut self) {
+        let config = self.context.borrow().config.keyboard.clone();
+        let keyboard = self.seat.get_keyboard().unwrap();
+        if (config.repeat_rate, config.repeat_delay)
+            != (
+                self.keyboard_config.repeat_rate,
+                self.keyboard_config.repeat_delay,
+            )
+        {
+            keyboard.change_repeat_info(config.repeat_rate, config.repeat_delay);
+        }
+        if !config.same_keymap(&self.keyboard_config) {
+            if let Err(err) = keyboard.set_xkb_config(self, xkb_config(&config)) {
+                eprintln!(
+                    "canoe: keeping the keyboard layout, {} can't be loaded: {err}",
+                    describe_keymap(&config)
+                );
+            }
+        }
+        // Even a keymap that failed is remembered, so it is only tried again
+        // once it changes.
+        self.keyboard_config = config;
+    }
+
+    /// Switch the keyboard to another layout of its keymap.
+    pub fn switch_layout(&mut self, to: LayoutSwitch) {
+        let keyboard = self.seat.get_keyboard().unwrap();
+        keyboard.with_xkb_state(self, |mut xkb| match to {
+            LayoutSwitch::Next => xkb.cycle_next_layout(),
+            LayoutSwitch::Previous => xkb.cycle_prev_layout(),
+            LayoutSwitch::Index(index) => {
+                let count = xkb.xkb().lock().unwrap().layouts().count();
+                if (index as usize) < count {
+                    xkb.set_layout(Layout(index));
+                }
+            }
+        });
+    }
+
     pub fn on_key(&mut self, keycode: Keycode, pressed: bool, time: u32) {
         let serial = SERIAL_COUNTER.next_serial();
         let keyboard = self.seat.get_keyboard().unwrap();
@@ -162,9 +205,16 @@ impl State {
         let (filter, mods_changed) =
             keyboard.input_intercept(self, keycode, state_key, |state, _mods, handle| {
                 if pressed {
-                    let raw: Vec<u32> = handle.raw_syms().iter().map(|s| s.raw()).collect();
+                    let raw_current: Vec<u32> = handle.raw_syms().iter().map(|s| s.raw()).collect();
                     let translated: Vec<u32> =
                         handle.modified_syms().iter().map(|s| s.raw()).collect();
+                    // Bindings name Latin keys, so on a layout without them
+                    // (Cyrillic, Greek, ...) they match the key's symbol in
+                    // the first layout that has a Latin one.
+                    let raw: Vec<u32> = match handle.raw_latin_sym_or_raw_current_sym() {
+                        Some(sym) => vec![sym.raw()],
+                        None => raw_current.clone(),
+                    };
                     for sym in &translated {
                         let vt = sym.wrapping_sub(xkbcommon::xkb::keysyms::KEY_XF86Switch_VT_1);
                         if vt < 12 {
@@ -187,7 +237,7 @@ impl State {
                         return FilterResult::Intercept(Some(KeyAction::CancelDrag));
                     }
                     // Shift is what translation usually consumes.
-                    let consumed = if raw != translated {
+                    let consumed = if raw_current != translated {
                         modifiers::SHIFT
                     } else {
                         0
@@ -921,5 +971,37 @@ impl State {
             root = parent;
         }
         &root == window.wl_surface()
+    }
+}
+
+/// The XKB names of `config`, with those that are unset left empty, so that
+/// libxkbcommon takes them from `XKB_DEFAULT_*`.
+pub fn xkb_config(config: &KeyboardConfig) -> XkbConfig<'_> {
+    XkbConfig {
+        rules: config.rules.as_deref().unwrap_or(""),
+        model: config.model.as_deref().unwrap_or(""),
+        layout: config.layout.as_deref().unwrap_or(""),
+        variant: config.variant.as_deref().unwrap_or(""),
+        options: config.options.clone(),
+    }
+}
+
+/// The keymap `config` asks for, for messages.
+pub fn describe_keymap(config: &KeyboardConfig) -> String {
+    let names = [
+        ("rules", &config.rules),
+        ("model", &config.model),
+        ("layout", &config.layout),
+        ("variant", &config.variant),
+        ("options", &config.options),
+    ];
+    let set: Vec<String> = names
+        .iter()
+        .filter_map(|(name, value)| value.as_ref().map(|value| format!("{name} {value:?}")))
+        .collect();
+    if set.is_empty() {
+        "the default keymap".to_string()
+    } else {
+        format!("the keymap with {}", set.join(", "))
     }
 }

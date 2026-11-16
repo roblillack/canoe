@@ -294,8 +294,7 @@ pub struct Config {
     /// Which windows the window lists show.
     pub window_list_scope: WindowListScope,
 
-    pub repeat_rate: i32,
-    pub repeat_delay: i32,
+    pub keyboard: KeyboardConfig,
     pub scroll_factor: f64,
     pub sloppy_focus: bool,
 
@@ -306,15 +305,109 @@ pub struct Config {
     pub hotkeys: Vec<Hotkey>,
 }
 
-/// A user-configured global hotkey: a key chord that spawns a command.
+/// How the keyboard is set up: its XKB keymap and key repeat.
+///
+/// The XKB names that are unset come from `XKB_DEFAULT_RULES`,
+/// `XKB_DEFAULT_MODEL`, `XKB_DEFAULT_LAYOUT`, `XKB_DEFAULT_VARIANT` and
+/// `XKB_DEFAULT_OPTIONS` in canoe's own environment, and failing that from
+/// libxkbcommon's defaults. A variant only counts together with a layout.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyboardConfig {
+    pub rules: Option<String>,
+    pub model: Option<String>,
+    /// Comma-separated layouts, e.g. `"us,de"`.
+    pub layout: Option<String>,
+    /// Comma-separated variants, one per layout.
+    pub variant: Option<String>,
+    /// Comma-separated XKB options, e.g. `"grp:alt_shift_toggle,caps:escape"`.
+    /// Set but empty means no options at all.
+    pub options: Option<String>,
+    /// Repeated keys per second.
+    pub repeat_rate: i32,
+    /// Milliseconds a key is held before it repeats.
+    pub repeat_delay: i32,
+}
+
+impl Default for KeyboardConfig {
+    fn default() -> Self {
+        Self {
+            rules: None,
+            model: None,
+            layout: None,
+            variant: None,
+            options: None,
+            repeat_rate: 50,
+            repeat_delay: 300,
+        }
+    }
+}
+
+impl KeyboardConfig {
+    /// Whether `other` asks for the same keymap, whatever its key repeat.
+    pub fn same_keymap(&self, other: &KeyboardConfig) -> bool {
+        (
+            &self.rules,
+            &self.model,
+            &self.layout,
+            &self.variant,
+            &self.options,
+        ) == (
+            &other.rules,
+            &other.model,
+            &other.layout,
+            &other.variant,
+            &other.options,
+        )
+    }
+
+    fn apply(&mut self, file: KeyboardConfigFile) {
+        // Blank names count as unset, but blank options mean "none".
+        let name = |value: Option<String>| {
+            value
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty())
+        };
+        self.rules = name(file.rules);
+        self.model = name(file.model);
+        self.layout = name(file.layout);
+        self.variant = name(file.variant);
+        self.options = file.options.map(|options| options.trim().to_string());
+        if let Some(rate) = file.repeat_rate {
+            self.repeat_rate = rate;
+        }
+        if let Some(delay) = file.repeat_delay {
+            self.repeat_delay = delay;
+        }
+    }
+}
+
+/// Which keyboard layout to switch to, among those of the keymap.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LayoutSwitch {
+    /// The next one, wrapping around after the last.
+    Next,
+    /// The previous one, wrapping around before the first.
+    Previous,
+    /// The one at this index, counting from 0.
+    Index(u32),
+}
+
+/// A user-configured global hotkey: a key chord and what it does.
 #[derive(Debug, Clone)]
 pub struct Hotkey {
     /// XKB keysym of the (unshifted) key.
     pub keysym: u32,
     /// Required modifier mask (see [`modifiers`]).
     pub modifiers: u32,
-    /// Command to spawn, as an argv vector (first element is the program).
-    pub argv: Vec<String>,
+    pub action: HotkeyAction,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HotkeyAction {
+    /// Spawn a command, given as an argv vector (first element is the program).
+    Spawn(Vec<String>),
+    /// Switch the keyboard layout.
+    SwitchLayout(LayoutSwitch),
 }
 
 impl Default for Config {
@@ -336,8 +429,7 @@ impl Default for Config {
             main_modifier: MainModifier::default(),
             window_list_scope: WindowListScope::default(),
 
-            repeat_rate: 50,
-            repeat_delay: 300,
+            keyboard: KeyboardConfig::default(),
             scroll_factor: 1.0,
             sloppy_focus: false,
 
@@ -534,10 +626,61 @@ struct FileConfig {
     lock_cmd: Option<StringOrVec>,
     startup_cmds: Option<Vec<StringOrVec>>,
     update_activation_environment: Option<bool>,
+    keyboard: Option<KeyboardConfigFile>,
     ui: Option<UiConfigFile>,
     rules: Option<Vec<RuleFile>>,
-    /// Map of key chord (e.g. `"Super+I"`) to the command it spawns.
-    hotkeys: Option<HashMap<String, StringOrVec>>,
+    /// Map of key chord (e.g. `"Super+I"`) to the command it spawns or the
+    /// action it takes.
+    hotkeys: Option<HashMap<String, HotkeyFile>>,
+}
+
+#[derive(Debug, Deserialize)]
+struct KeyboardConfigFile {
+    rules: Option<String>,
+    model: Option<String>,
+    layout: Option<String>,
+    variant: Option<String>,
+    options: Option<String>,
+    repeat_rate: Option<i32>,
+    repeat_delay: Option<i32>,
+}
+
+/// What a hotkey does: a command, or one of the actions below.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum HotkeyFile {
+    Command(StringOrVec),
+    Action(HotkeyActionFile),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HotkeyActionFile {
+    /// `"next"`, `"previous"`, or the layout's number, counting from 1.
+    switch_layout: LayoutSwitchFile,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum LayoutSwitchFile {
+    Name(String),
+    Number(i64),
+}
+
+impl LayoutSwitchFile {
+    fn parse(self) -> Option<LayoutSwitch> {
+        match self {
+            LayoutSwitchFile::Name(name) => match name.trim().to_ascii_lowercase().as_str() {
+                "next" => Some(LayoutSwitch::Next),
+                "previous" | "prev" => Some(LayoutSwitch::Previous),
+                _ => None,
+            },
+            LayoutSwitchFile::Number(number) => u32::try_from(number)
+                .ok()
+                .and_then(|number| number.checked_sub(1))
+                .map(LayoutSwitch::Index),
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -904,30 +1047,46 @@ fn parse_chord(chord: &str) -> Option<(u32, u32)> {
 }
 
 /// Build the hotkey list from the `[hotkeys]` config table, skipping (with a
-/// warning) any entry whose chord can't be parsed or whose command is empty.
+/// warning) any entry whose chord can't be parsed, whose command is empty or
+/// whose action is unknown.
 ///
 /// A string command is split on whitespace into an argv (so
 /// `"control-panel -m display"` runs three arguments); the array form is the
 /// explicit alternative for arguments that themselves contain spaces.
-fn hotkeys_from_file(hotkeys: HashMap<String, StringOrVec>) -> Vec<Hotkey> {
+fn hotkeys_from_file(hotkeys: HashMap<String, HotkeyFile>) -> Vec<Hotkey> {
     let mut parsed = Vec::new();
-    for (chord, cmd) in hotkeys {
+    for (chord, value) in hotkeys {
         let Some((modifiers, keysym)) = parse_chord(&chord) else {
             eprintln!("canoe: ignoring hotkey with unparsable chord {chord:?}");
             continue;
         };
-        let argv = match cmd {
-            StringOrVec::String(cmd) => cmd.split_whitespace().map(String::from).collect(),
-            StringOrVec::Vec(args) => clean_cmd_args(args),
+        let action = match value {
+            HotkeyFile::Command(cmd) => {
+                let argv: Vec<String> = match cmd {
+                    StringOrVec::String(cmd) => cmd.split_whitespace().map(String::from).collect(),
+                    StringOrVec::Vec(args) => clean_cmd_args(args),
+                };
+                if argv.is_empty() {
+                    eprintln!("canoe: ignoring hotkey {chord:?} with empty command");
+                    continue;
+                }
+                HotkeyAction::Spawn(argv)
+            }
+            HotkeyFile::Action(HotkeyActionFile { switch_layout }) => {
+                let Some(switch) = switch_layout.parse() else {
+                    eprintln!(
+                        "canoe: ignoring hotkey {chord:?}: switch_layout takes \"next\", \
+                         \"previous\" or a layout number from 1"
+                    );
+                    continue;
+                };
+                HotkeyAction::SwitchLayout(switch)
+            }
         };
-        if argv.is_empty() {
-            eprintln!("canoe: ignoring hotkey {chord:?} with empty command");
-            continue;
-        }
         parsed.push(Hotkey {
             keysym,
             modifiers,
-            argv,
+            action,
         });
     }
     parsed
@@ -1052,6 +1211,9 @@ impl Config {
         }
         if let Some(update) = file.update_activation_environment {
             self.update_activation_environment = update;
+        }
+        if let Some(keyboard) = file.keyboard {
+            self.keyboard.apply(keyboard);
         }
         if let Some(ui) = file.ui {
             self.ui.apply(ui);
@@ -1299,6 +1461,11 @@ mod tests {
         assert_eq!(config.emulate_sway, defaults.emulate_sway);
         assert_eq!(config.emulate_kwin, defaults.emulate_kwin);
         assert_eq!(config.remember_outputs, defaults.remember_outputs);
+        assert_eq!(
+            (config.keyboard.repeat_rate, config.keyboard.repeat_delay),
+            (defaults.keyboard.repeat_rate, defaults.keyboard.repeat_delay)
+        );
+        assert!(config.keyboard.layout.is_some());
 
         // The sample spells out the values that UiConfig leaves as `None` and
         // derives at runtime.
@@ -1474,12 +1641,14 @@ mod tests {
         assert_eq!(hotkeys.len(), 4);
 
         let argv_of = |keysym: u32| -> Vec<String> {
-            hotkeys
+            let hotkey = hotkeys
                 .iter()
                 .find(|h| h.keysym == keysym)
-                .unwrap_or_else(|| panic!("hotkey for keysym {keysym:#x} bound"))
-                .argv
-                .clone()
+                .unwrap_or_else(|| panic!("hotkey for keysym {keysym:#x} bound"));
+            match &hotkey.action {
+                HotkeyAction::Spawn(argv) => argv.clone(),
+                action => panic!("hotkey for keysym {keysym:#x} spawns nothing: {action:?}"),
+            }
         };
         let display_argv = vec![
             "control-panel".to_string(),
@@ -1498,6 +1667,89 @@ mod tests {
         assert_eq!(cp.modifiers, SUPER);
         let term = hotkeys.iter().find(|h| h.keysym == 0x74).unwrap();
         assert_eq!(term.modifiers, SUPER | SHIFT);
+    }
+
+    #[test]
+    fn test_layout_switch_hotkeys() {
+        let contents = r#"
+            [hotkeys]
+            "Super+space" = { switch_layout = "next" }
+            "Super+Shift+space" = { switch_layout = "Previous" }
+            "Super+F1" = { switch_layout = 1 }
+            "Super+F2" = { switch_layout = 2 }
+            "Super+F3" = { switch_layout = 0 }
+            "Super+F4" = { switch_layout = "sideways" }
+        "#;
+
+        let file_config = toml::from_str::<FileConfig>(contents).expect("parse config");
+        let hotkeys = hotkeys_from_file(file_config.hotkeys.expect("hotkeys present"));
+        let action_of = |keysym: u32, modifiers: u32| {
+            hotkeys
+                .iter()
+                .find(|h| h.keysym == keysym && h.modifiers == modifiers)
+                .map(|h| h.action.clone())
+        };
+
+        use modifiers::*;
+        use xkbcommon::xkb::keysyms::*;
+        let switch = |to| Some(HotkeyAction::SwitchLayout(to));
+        assert_eq!(action_of(KEY_space, SUPER), switch(LayoutSwitch::Next));
+        assert_eq!(
+            action_of(KEY_space, SUPER | SHIFT),
+            switch(LayoutSwitch::Previous)
+        );
+        // Layouts are numbered from 1 in the file, from 0 inside.
+        assert_eq!(action_of(KEY_F1, SUPER), switch(LayoutSwitch::Index(0)));
+        assert_eq!(action_of(KEY_F2, SUPER), switch(LayoutSwitch::Index(1)));
+        // There is no layout 0, and no "sideways".
+        assert_eq!(action_of(KEY_F3, SUPER), None);
+        assert_eq!(action_of(KEY_F4, SUPER), None);
+
+        // An unknown action key is no command either: the file doesn't parse.
+        assert!(toml::from_str::<FileConfig>("[hotkeys]\n\"Super+X\" = { bogus = 1 }\n").is_err());
+    }
+
+    #[test]
+    fn test_keyboard_config() {
+        let parse = |contents: &str| {
+            let mut config = Config::default();
+            config.apply(toml::from_str(contents).expect("parse config"));
+            config.keyboard
+        };
+
+        assert_eq!(parse(""), KeyboardConfig::default());
+        assert_eq!(parse("[keyboard]\n"), KeyboardConfig::default());
+
+        let keyboard = parse(
+            r#"
+            [keyboard]
+            layout = "us,de"
+            variant = ",nodeadkeys"
+            options = "grp:alt_shift_toggle"
+            repeat_rate = 30
+            repeat_delay = 250
+            "#,
+        );
+        assert_eq!(keyboard.layout.as_deref(), Some("us,de"));
+        assert_eq!(keyboard.variant.as_deref(), Some(",nodeadkeys"));
+        assert_eq!(keyboard.options.as_deref(), Some("grp:alt_shift_toggle"));
+        assert_eq!((keyboard.rules, keyboard.model), (None, None));
+        assert_eq!((keyboard.repeat_rate, keyboard.repeat_delay), (30, 250));
+
+        // Blank names are unset (XKB_DEFAULT_* then applies), but blank
+        // options turn off the default ones.
+        let keyboard = parse("[keyboard]\nlayout = \" \"\noptions = \"\"\n");
+        assert_eq!(keyboard.layout, None);
+        assert_eq!(keyboard.options.as_deref(), Some(""));
+
+        // Changing only the key repeat keeps the keymap.
+        let mut other = KeyboardConfig {
+            repeat_rate: 10,
+            ..Default::default()
+        };
+        assert!(other.same_keymap(&KeyboardConfig::default()));
+        other.layout = Some("de".to_string());
+        assert!(!other.same_keymap(&KeyboardConfig::default()));
     }
 
     #[test]

@@ -217,6 +217,13 @@ impl Seat {
         }
     }
 
+    /// Switch the keyboard to another of its layouts.
+    pub fn switch_layout(&self, to: crate::config::LayoutSwitch) {
+        if let Some(ref rwm_seat) = self.rwm_seat {
+            rwm_seat.switch_layout(to);
+        }
+    }
+
     /// Hide the cursor while the pointer is on canoe's surfaces.
     pub fn hide_cursor(&mut self) {
         if let Some(ref rwm_seat) = self.rwm_seat {

@@ -257,9 +257,8 @@ impl Context {
     /// `manage_dirty` request kicks off that sequence; it is explicitly allowed
     /// outside a sequence for exactly this kind of out-of-band state change.
     ///
-    /// Note: per-input-device settings (`repeat_rate`, `scroll_factor`) and
-    /// keyboard/pointer bindings are bound when a seat/device first appears,
-    /// so changes to those only take effect for devices connected afterwards.
+    /// The compositor applies the `[keyboard]` settings itself after this
+    /// returns (see `State::apply_keyboard_config`).
     pub fn reload_config(&mut self) {
         self.config = load_config(self.skip_config);
 
@@ -476,7 +475,7 @@ impl Context {
     fn populate_xkb_bindings(&self, seat: &mut Seat) {
         use crate::binding::action::default_xkb_bindings;
         use crate::binding::BindingEvent;
-        use crate::config::Mode;
+        use crate::config::{HotkeyAction, Mode};
 
         // User-configured hotkeys fire in the default mode on key press and take
         // precedence over any built-in binding sharing the same key + modifiers,
@@ -503,18 +502,15 @@ impl Context {
             );
         }
 
-        // Add user-configured hotkeys (spawn a command on key press)
+        // Add user-configured hotkeys (act on key press)
         for hotkey in &self.config.hotkeys {
+            let action = match &hotkey.action {
+                HotkeyAction::Spawn(argv) => Action::Spawn { argv: argv.clone() },
+                HotkeyAction::SwitchLayout(to) => Action::SwitchLayout { to: *to },
+            };
             seat.add_xkb_binding(
-                XkbBinding::new(
-                    Mode::Default,
-                    hotkey.keysym,
-                    hotkey.modifiers,
-                    Action::Spawn {
-                        argv: hotkey.argv.clone(),
-                    },
-                )
-                .with_event(BindingEvent::Pressed),
+                XkbBinding::new(Mode::Default, hotkey.keysym, hotkey.modifiers, action)
+                    .with_event(BindingEvent::Pressed),
             );
         }
     }
@@ -794,6 +790,11 @@ impl Context {
             Action::SwitchMode { mode } => {
                 if let Some(seat) = self.seats.get(&seat_id) {
                     seat.borrow_mut().switch_mode(mode);
+                }
+            }
+            Action::SwitchLayout { to } => {
+                if let Some(seat) = self.seats.get(&seat_id) {
+                    seat.borrow().switch_layout(to);
                 }
             }
             Action::ToggleFullscreen { in_window } => {

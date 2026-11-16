@@ -84,12 +84,29 @@
 # Fix blank windows in Java apps running under Xwayland.
 #_JAVA_AWT_WM_NONREPARENTING = "1"
 
+# The keyboard's XKB keymap: comma-separated layouts, their variants and XKB
+# options, plus rules and model. Unset by default: Canoe then uses
+# XKB_DEFAULT_LAYOUT and friends from its own environment, falling back to
+# "us". Switch between layouts with an option like grp:alt_shift_toggle, or
+# with a switch_layout hotkey (see [hotkeys] below).
+[keyboard]
+#layout = "us,de"
+#variant = ",nodeadkeys"
+#options = "grp:alt_shift_toggle,caps:escape"
+# Key repeat: keys per second, and milliseconds before a held key repeats.
+#repeat_rate = 50
+#repeat_delay = 300
+
 # Key chords that spawn commands. A string value is split on whitespace; use
 # an array if an argument contains spaces. A chord that matches a built-in
 # shortcut overrides it.
 [hotkeys]
 #"Super+I" = "control-panel"
 #"Super+E" = ["sh", "-c", "notify-send 'hi there' && foot"]
+# Instead of a command, switch the keyboard layout: "next", "previous", or a
+# layout's place in the list, counting from 1.
+#"Ctrl+Alt+space" = { switch_layout = "next" }
+#"Super+F1" = { switch_layout = 1 }
 
 # Colors accept #RGB, #RRGGBB, #RRGGBBAA or "transparent". Sizes are in
 # logical pixels.
