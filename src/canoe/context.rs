@@ -35,6 +35,47 @@ struct ShowDesktop {
     focused: Option<WindowId>,
 }
 
+/// What an output is known by, to find it again when it comes back as a new
+/// output.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct OutputName {
+    /// The connector (e.g. "DP-1")
+    connector: Option<String>,
+    /// See [`Output::monitor`]
+    monitor: Option<String>,
+}
+
+/// A window anchored to an output that went away, waiting to be placed on
+/// one that is there.
+struct OutputOrphan {
+    window_id: WindowId,
+    /// The output, to go back to it should it return while the session is
+    /// locked
+    output: OutputName,
+    /// Where the output was: (x, y, width, height)
+    output_rect: (i32, i32, i32, i32),
+    /// The output's usable area
+    area: (i32, i32, i32, i32),
+    /// Whether the window was fullscreen on the output
+    fullscreen: bool,
+}
+
+impl OutputName {
+    fn of(output: &Output) -> Self {
+        Self {
+            connector: output.name.clone(),
+            monitor: output.monitor.clone(),
+        }
+    }
+}
+
+/// The outputs there were when the session was locked.
+struct LockedOutputs {
+    names: Vec<OutputName>,
+    current: Option<OutputName>,
+    last_focused: Option<OutputName>,
+}
+
 /// The central window manager context
 pub struct Context {
     /// The compositor
@@ -85,6 +126,9 @@ pub struct Context {
     // Runtime state
     pub running: bool,
     pub session_locked: bool,
+    /// The outputs at the time the session was locked. Monitors that go to
+    /// sleep or are woken while it is, come back to how they were.
+    locked_outputs: Option<LockedOutputs>,
     /// Set when the session is unlocked. The compositor drops keyboard focus
     /// on unlock, so the next manage sequence has to send it again.
     pending_unlock_focus: bool,
@@ -128,10 +172,12 @@ pub struct Context {
     /// Outputs whose usable area changed since the last manage sequence,
     /// e.g. because a bar was started, stopped or resized.
     pub pending_usable_area_changes: Vec<OutputId>,
-    /// Windows anchored to a removed output: (window_id, dead usable area).
-    pending_output_orphans: Vec<(WindowId, (i32, i32, i32, i32))>,
-    /// Windows fullscreen on a removed output they are not anchored to.
-    pending_fullscreen_exits: Vec<WindowId>,
+    /// Windows anchored to a removed output. They wait while the session
+    /// is locked, for the output to come back.
+    pending_output_orphans: Vec<OutputOrphan>,
+    /// Windows fullscreen on a removed output (named) they are not anchored
+    /// to. They wait while the session is locked, as orphans do.
+    pending_fullscreen_exits: Vec<(WindowId, OutputName)>,
     /// The primary output was chosen or came back: new windows go there
     /// (see [`Self::focus_output`]). Waits while the session is locked.
     pub pending_primary_output: Option<OutputId>,
@@ -168,6 +214,7 @@ impl Context {
 
             running: true,
             session_locked: false,
+            locked_outputs: None,
             pending_unlock_focus: false,
             startup_unminimize_done: false,
 
@@ -333,6 +380,7 @@ impl Context {
 
         if let Some(output) = self.outputs.get(&output_id) {
             let dead_area = output.borrow().usable_area();
+            let name = OutputName::of(&output.borrow());
             for (&window_id, window) in &self.windows {
                 let anchored = window
                     .borrow()
@@ -342,17 +390,23 @@ impl Context {
                     .map(|o| o.borrow().id == output_id)
                     .unwrap_or(false);
                 if anchored {
-                    self.pending_output_orphans.push((window_id, dead_area));
+                    self.pending_output_orphans.push(OutputOrphan {
+                        window_id,
+                        output: name.clone(),
+                        output_rect: dead_rect.unwrap_or(dead_area),
+                        area: dead_area,
+                        fullscreen: window.borrow().is_fullscreen_on(output_id),
+                    });
                     window.borrow_mut().output = None;
                 } else if window.borrow().is_fullscreen_on(output_id) {
                     // Fullscreen here at a client's request while anchored
                     // elsewhere: only the fullscreen state needs undoing.
-                    self.pending_fullscreen_exits.push(window_id);
+                    self.pending_fullscreen_exits
+                        .push((window_id, name.clone()));
                 }
             }
         }
 
-        // Update current output if necessary
         // Update current output if necessary. Windows orphaned by the removal
         // move to the current output, so prefer the removed one's neighbour.
         if self.current_output == Some(output_id) {
@@ -1280,11 +1334,85 @@ impl Context {
         }
     }
 
+    /// Record that the session is locked, and the outputs there are, to
+    /// get back to when it is unlocked.
+    pub fn handle_session_locked(&mut self) {
+        self.session_locked = true;
+        if self.locked_outputs.is_some() {
+            return;
+        }
+        let name = |id: Option<OutputId>| {
+            id.and_then(|id| self.outputs.get(&id))
+                .map(|output| OutputName::of(&output.borrow()))
+        };
+        self.locked_outputs = Some(LockedOutputs {
+            names: self
+                .outputs
+                .values()
+                .map(|output| OutputName::of(&output.borrow()))
+                .collect(),
+            current: name(self.current_output),
+            last_focused: name(self.last_focused_output),
+        });
+    }
+
     /// Record that the session was unlocked. Focus is sent again in the next
     /// manage sequence, which the compositor starts right after the event.
     pub fn handle_session_unlocked(&mut self) {
         self.session_locked = false;
         self.pending_unlock_focus = true;
+    }
+
+    /// Outputs that went away and came back while the session was locked
+    /// are the current one again if they were before. A primary output that
+    /// was there all along doesn't take focus from where it was.
+    fn restore_outputs_after_unlock(&mut self, locked: LockedOutputs) {
+        if let Some(id) = locked.current.and_then(|name| self.output_named(&name)) {
+            self.current_output = Some(id);
+        }
+        if let Some(id) = locked
+            .last_focused
+            .and_then(|name| self.output_named(&name))
+        {
+            self.last_focused_output = Some(id);
+        }
+        let primary_was_there = self.pending_primary_output.is_some_and(|primary| {
+            locked
+                .names
+                .iter()
+                .any(|name| self.output_named(name) == Some(primary))
+        });
+        if primary_was_there {
+            self.pending_primary_output = None;
+        }
+    }
+
+    /// The output showing the monitor `name` names, preferably on the same
+    /// connector. Identical monitors are told apart by connector only.
+    fn output_named(&self, name: &OutputName) -> Option<OutputId> {
+        let same_connector =
+            |output: &Output| name.connector.is_some() && output.name == name.connector;
+        let candidates: Vec<(OutputId, bool)> = self
+            .outputs
+            .iter()
+            .filter_map(|(&id, output)| {
+                let output = output.borrow();
+                let same = match (&name.monitor, &output.monitor) {
+                    (Some(monitor), Some(theirs)) => monitor == theirs,
+                    _ => same_connector(&output),
+                };
+                same.then(|| (id, same_connector(&output)))
+            })
+            .collect();
+        let only = match candidates.as_slice() {
+            [only] => Some(only),
+            _ => None,
+        };
+        candidates
+            .iter()
+            .find(|(_, same_connector)| *same_connector)
+            .or(only)
+            .map(|&(id, _)| id)
     }
 
     /// River clears every seat's keyboard focus when the session is unlocked
@@ -2218,15 +2346,26 @@ impl Context {
         for output_id in area_changes {
             self.resnap_output_windows(output_id);
         }
-        let orphans = std::mem::take(&mut self.pending_output_orphans);
-        if !orphans.is_empty() {
-            for (window_id, dead_area) in orphans {
-                self.migrate_orphaned_window(window_id, dead_area);
+        // Monitors go to sleep and wake up again behind the lock screen,
+        // where nobody sees the windows anyway: those of outputs that went
+        // away wait for the unlock, and go back if their output did.
+        if !self.session_locked {
+            let orphans = std::mem::take(&mut self.pending_output_orphans);
+            if !orphans.is_empty() {
+                for orphan in orphans {
+                    self.migrate_orphaned_window(orphan);
+                }
+                self.mark_all_desktops_dirty(); // icons follow their window
             }
-            self.mark_all_desktops_dirty(); // icons follow their window
-        }
-        for window_id in std::mem::take(&mut self.pending_fullscreen_exits) {
-            self.restore_from_stale_fullscreen(window_id);
+            for (window_id, output) in std::mem::take(&mut self.pending_fullscreen_exits) {
+                let returned = self.output_named(&output);
+                if !returned.is_some_and(|id| self.fullscreen_again(window_id, id, None)) {
+                    self.restore_from_stale_fullscreen(window_id);
+                }
+            }
+            if let Some(locked) = self.locked_outputs.take() {
+                self.restore_outputs_after_unlock(locked);
+            }
         }
         self.fit_oversized_new_windows();
 
@@ -2279,7 +2418,18 @@ impl Context {
         }
 
         // Keep window output association in sync with window positions.
-        let window_ids: Vec<WindowId> = self.windows.keys().copied().collect();
+        // Windows waiting for their output stay where they are.
+        let window_ids: Vec<WindowId> = self
+            .windows
+            .keys()
+            .copied()
+            .filter(|&id| {
+                !self
+                    .pending_output_orphans
+                    .iter()
+                    .any(|orphan| orphan.window_id == id)
+            })
+            .collect();
         for window_id in window_ids {
             let output_id = {
                 let Some(window) = self.windows.get(&window_id) else {
@@ -3950,21 +4100,51 @@ impl Context {
     /// geometry proportionally. Maximized/snapped windows are snapped the same
     /// way on the target; fullscreen-on-the-dead-output degrades to
     /// its pre-fullscreen geometry per the protocol's implicit exit.
-    fn migrate_orphaned_window(&mut self, window_id: WindowId, dead_area: (i32, i32, i32, i32)) {
-        let target_id = self
-            .current_output
+    ///
+    /// If the output came back (while the session was locked), the window
+    /// goes back onto it instead, where it was and fullscreen if it was.
+    fn migrate_orphaned_window(&mut self, orphan: OutputOrphan) {
+        let window_id = orphan.window_id;
+        let dead_area = orphan.area;
+        let home = self.output_named(&orphan.output);
+        let target_id = home
+            .or(self.current_output)
             .filter(|id| self.outputs.contains_key(id))
             .or_else(|| self.outputs.keys().min().copied());
         let Some(target_id) = target_id else {
-            self.pending_output_orphans.push((window_id, dead_area));
+            self.pending_output_orphans.push(orphan);
             return;
         };
         let Some(target) = self.outputs.get(&target_id).cloned() else {
             return;
         };
-        let new_area = target.borrow().usable_area();
+        let (new_area, target_rect) = {
+            let target = target.borrow();
+            (
+                target.usable_area(),
+                (target.x, target.y, target.width, target.height),
+            )
+        };
         if new_area.2 <= 0 || new_area.3 <= 0 {
-            self.pending_output_orphans.push((window_id, dead_area));
+            self.pending_output_orphans.push(orphan);
+            return;
+        }
+        // Back on its output, which is where it was: the window stays put.
+        // Bars on it may not be back yet, so it is not mapped from the area
+        // they left to the one without them; snapped windows are snapped to
+        // the area there is now, and again once they are back.
+        let back_home = home == Some(target_id);
+        let from_area = if back_home && target_rect == orphan.output_rect {
+            new_area
+        } else {
+            dead_area
+        };
+
+        if back_home
+            && orphan.fullscreen
+            && self.fullscreen_again(window_id, target_id, Some(from_area))
+        {
+            self.set_window_output(window_id, target_id);
             return;
         }
 
@@ -4003,12 +4183,67 @@ impl Context {
 
         // Leaving fullscreen leaves position and dimensions undefined until
         // both are proposed, so always propose the windowed size.
-        let placed = self.relocate_window(window_id, rect, dead_area, target_id, stale_fullscreen);
+        let placed = self.relocate_window(window_id, rect, from_area, target_id, stale_fullscreen);
         if stale_fullscreen {
             if let Some(window) = self.windows.get(&window_id) {
                 window.borrow_mut().pre_fullscreen = Some(placed);
             }
         }
+    }
+
+    /// Make a window fullscreen on a removed output fullscreen again on
+    /// `output_id`, the output that came back in its place. Its windowed
+    /// geometry is carried over from `old_area`, if given, to the output's
+    /// usable area. Returns whether the window was fullscreen on a removed
+    /// output.
+    fn fullscreen_again(
+        &mut self,
+        window_id: WindowId,
+        output_id: OutputId,
+        old_area: Option<(i32, i32, i32, i32)>,
+    ) -> bool {
+        let (Some(window), Some(output_rc)) = (
+            self.windows.get(&window_id).cloned(),
+            self.outputs.get(&output_id).cloned(),
+        ) else {
+            return false;
+        };
+        let mut w = window.borrow_mut();
+        let stale = match &w.fullscreen {
+            super::window::FullscreenState::Output(output) => output.upgrade().is_none(),
+            _ => false,
+        };
+        if !stale {
+            return false;
+        }
+        let output = output_rc.borrow();
+        let Some(rwm_output) = output.rwm_output.as_ref() else {
+            return false;
+        };
+        let new_area = output.usable_area();
+        if let (Some(saved), Some(old_area)) = (w.pre_fullscreen, old_area) {
+            if old_area != new_area {
+                let too_large = saved.width > new_area.2 || saved.height > new_area.3;
+                let (x, y, width, height) = map_rect_between_areas(
+                    saved.x,
+                    saved.y,
+                    saved.width,
+                    saved.height,
+                    old_area,
+                    new_area,
+                    too_large,
+                );
+                w.pre_fullscreen = Some(super::window::SavedGeometry {
+                    x,
+                    y,
+                    width,
+                    height,
+                });
+            }
+        }
+        w.fullscreen_on(rwm_output);
+        w.fullscreen = super::window::FullscreenState::Output(Rc::downgrade(&output_rc));
+        true
     }
 }
 
@@ -4872,6 +5107,268 @@ mod tests {
             (pre_snap.x, pre_snap.y, pre_snap.width, pre_snap.height),
             (133, 95, 640, 512)
         );
+    }
+
+    /// Outputs named `name` at (x, y, width, height), with handles that
+    /// queue their requests in `requests`.
+    fn context_with_named_outputs(
+        outputs: &[(OutputId, &str, i32, i32, i32, i32)],
+        requests: &crate::wm::Requests,
+    ) -> Context {
+        let mut ctx = Context::new(true);
+        for &(id, name, x, y, width, height) in outputs {
+            add_named_output(&mut ctx, id, name, (x, y, width, height), requests);
+        }
+        ctx.current_output = outputs.first().map(|o| o.0);
+        ctx
+    }
+
+    fn add_named_output(
+        ctx: &mut Context,
+        id: OutputId,
+        name: &str,
+        rect: (i32, i32, i32, i32),
+        requests: &crate::wm::Requests,
+    ) {
+        let mut output = Output::new(id);
+        output.name = Some(name.to_string());
+        output.rwm_output = Some(OutputHandle::new(100 + id as u64, requests.clone()));
+        output.update_position(rect.0, rect.1);
+        output.update_dimensions(rect.2, rect.3);
+        ctx.outputs.insert(id, Rc::new(RefCell::new(output)));
+    }
+
+    fn anchor_of(ctx: &Context, window_id: WindowId) -> Option<OutputId> {
+        ctx.windows[&window_id]
+            .borrow()
+            .output
+            .as_ref()
+            .and_then(|o| o.upgrade())
+            .map(|o| o.borrow().id)
+    }
+
+    #[test]
+    fn windows_wait_for_their_output_while_locked() {
+        let requests = crate::wm::Requests::default();
+        let layout = [
+            (1, "eDP-1", 0, 0, 1920, 1200),
+            (2, "DP-1", 1920, 0, 2560, 1440),
+        ];
+        let mut ctx = context_with_named_outputs(&layout, &requests);
+        ctx.startup_unminimize_done = true;
+        add_window(&mut ctx, 10, 2, (2100, 100, 800, 600));
+        add_window(&mut ctx, 11, 2, (3000, 500, 1200, 800));
+        ctx.windows[&11].borrow_mut().snap_state = Some(super::super::window::SnapState::Right);
+        ctx.handle_session_locked();
+
+        // The monitor goes to sleep: its windows stay as they are.
+        ctx.destroy_output(2);
+        ctx.handle_manage_start();
+        ctx.handle_render_start();
+        for id in [10, 11] {
+            let w = ctx.windows[&id].borrow();
+            assert!(!w.hidden);
+            assert!(w.output.is_none());
+        }
+        assert_eq!(
+            (ctx.windows[&10].borrow().x, ctx.windows[&10].borrow().y),
+            (2100, 100)
+        );
+
+        // It wakes up, still locked: they still wait.
+        add_named_output(&mut ctx, 3, "DP-1", (1920, 0, 2560, 1440), &requests);
+        ctx.handle_manage_start();
+        assert_eq!(anchor_of(&ctx, 10), None);
+
+        // Unlocked: back on it, where they were.
+        ctx.handle_session_unlocked();
+        ctx.handle_manage_start();
+        assert_eq!(anchor_of(&ctx, 10), Some(3));
+        assert_eq!(anchor_of(&ctx, 11), Some(3));
+        let w = ctx.windows[&10].borrow();
+        assert_eq!((w.x, w.y, w.width, w.height), (2100, 100, 800, 600));
+        assert_eq!(w.proposed_dimensions(), (0, 0));
+        drop(w);
+        let snapped = ctx.snapped_geometry(
+            11,
+            super::super::window::SnapState::Right,
+            (1920, 0, 2560, 1440),
+        );
+        let w = ctx.windows[&11].borrow();
+        assert_eq!((w.x, w.y), (snapped.0, snapped.1));
+        assert_eq!(w.proposed_dimensions(), (snapped.2, snapped.3));
+    }
+
+    #[test]
+    fn windows_move_on_at_unlock_if_their_output_stays_away() {
+        let requests = crate::wm::Requests::default();
+        let layout = [
+            (1, "eDP-1", 0, 0, 1920, 1080),
+            (2, "DP-1", 1920, 0, 1920, 1080),
+        ];
+        let mut ctx = context_with_named_outputs(&layout, &requests);
+        add_window(&mut ctx, 10, 2, (2020, 100, 800, 600));
+        ctx.handle_session_locked();
+
+        ctx.destroy_output(2);
+        ctx.handle_manage_start();
+        assert_eq!(anchor_of(&ctx, 10), None);
+
+        ctx.handle_session_unlocked();
+        ctx.handle_manage_start();
+        assert_eq!(anchor_of(&ctx, 10), Some(1));
+        let w = ctx.windows[&10].borrow();
+        assert_eq!((w.x, w.y), (100, 100));
+    }
+
+    #[test]
+    fn window_returning_to_moved_output_keeps_its_relative_place() {
+        let requests = crate::wm::Requests::default();
+        let layout = [
+            (1, "eDP-1", 0, 0, 1920, 1080),
+            (2, "DP-1", 1920, 0, 1920, 1080),
+        ];
+        let mut ctx = context_with_named_outputs(&layout, &requests);
+        add_window(&mut ctx, 10, 2, (2020, 100, 800, 600));
+        ctx.handle_session_locked();
+
+        ctx.destroy_output(2);
+        ctx.handle_manage_start();
+        // Back, but on the left this time.
+        add_named_output(&mut ctx, 3, "DP-1", (-1920, 0, 1920, 1080), &requests);
+        ctx.handle_session_unlocked();
+        ctx.handle_manage_start();
+
+        assert_eq!(anchor_of(&ctx, 10), Some(3));
+        let w = ctx.windows[&10].borrow();
+        assert_eq!((w.x, w.y), (-1820, 100));
+    }
+
+    #[test]
+    fn windows_find_their_monitor_on_another_connector() {
+        let requests = crate::wm::Requests::default();
+        let mut ctx = context_with_named_outputs(&[(1, "eDP-1", 0, 0, 1920, 1080)], &requests);
+        add_named_output(&mut ctx, 2, "DP-3-1", (1920, 0, 1920, 1080), &requests);
+        add_named_output(&mut ctx, 3, "DP-3-2", (3840, 0, 1920, 1080), &requests);
+        ctx.outputs[&2].borrow_mut().monitor = Some("Dell U24 A".into());
+        ctx.outputs[&3].borrow_mut().monitor = Some("Dell U24 B".into());
+        add_window(&mut ctx, 10, 2, (2020, 100, 800, 600));
+        add_window(&mut ctx, 11, 3, (3940, 100, 800, 600));
+        ctx.handle_session_locked();
+
+        ctx.destroy_output(2);
+        ctx.destroy_output(3);
+        ctx.handle_manage_start();
+        // The dock numbers its connectors the other way round this time.
+        add_named_output(&mut ctx, 4, "DP-3-1", (1920, 0, 1920, 1080), &requests);
+        add_named_output(&mut ctx, 5, "DP-3-2", (3840, 0, 1920, 1080), &requests);
+        ctx.outputs[&4].borrow_mut().monitor = Some("Dell U24 B".into());
+        ctx.outputs[&5].borrow_mut().monitor = Some("Dell U24 A".into());
+        ctx.handle_session_unlocked();
+        ctx.handle_manage_start();
+
+        assert_eq!(anchor_of(&ctx, 10), Some(5));
+        assert_eq!(anchor_of(&ctx, 11), Some(4));
+        assert_eq!(ctx.windows[&10].borrow().x, 3940);
+        assert_eq!(ctx.windows[&11].borrow().x, 2020);
+    }
+
+    #[test]
+    fn fullscreen_window_is_fullscreen_again_on_its_returning_output() {
+        use super::super::window::FullscreenState;
+
+        let requests = crate::wm::Requests::default();
+        let layout = [
+            (1, "eDP-1", 0, 0, 1920, 1080),
+            (2, "DP-1", 1920, 0, 2560, 1440),
+        ];
+        let mut ctx = context_with_named_outputs(&layout, &requests);
+        add_window(&mut ctx, 10, 2, (1920, 0, 2560, 1440));
+        // Anchored to the panel, fullscreen on the monitor.
+        add_window(&mut ctx, 11, 1, (100, 100, 800, 600));
+        for id in [10, 11] {
+            let output = Rc::downgrade(&ctx.outputs[&2]);
+            let mut w = ctx.windows[&id].borrow_mut();
+            w.rwm_window = Some(WindowHandle::new(id as u64, requests.clone()));
+            w.fullscreen = FullscreenState::Output(output);
+            w.pre_fullscreen = Some(super::super::window::SavedGeometry {
+                x: 2020,
+                y: 100,
+                width: 800,
+                height: 600,
+            });
+        }
+        ctx.handle_session_locked();
+
+        ctx.destroy_output(2);
+        ctx.handle_manage_start();
+        add_named_output(&mut ctx, 3, "DP-1", (1920, 0, 2560, 1440), &requests);
+        ctx.handle_manage_start();
+        requests.drain();
+        ctx.handle_session_unlocked();
+        ctx.handle_manage_start();
+
+        let sent = requests.drain();
+        for id in [10, 11] {
+            let w = ctx.windows[&id].borrow();
+            assert!(w.is_fullscreen_on(3), "window {id}");
+            assert!(sent.contains(&crate::wm::Request::Fullscreen(id as u64, 103)));
+            let saved = w.pre_fullscreen.unwrap();
+            assert_eq!((saved.x, saved.y), (2020, 100));
+        }
+        assert_eq!(anchor_of(&ctx, 10), Some(3));
+        assert_eq!(anchor_of(&ctx, 11), Some(1));
+    }
+
+    #[test]
+    fn output_back_by_unlock_keeps_focus_where_it_was() {
+        let requests = crate::wm::Requests::default();
+        let layout = [
+            (1, "eDP-1", 0, 0, 1920, 1080),
+            (2, "DP-1", 1920, 0, 1920, 1080),
+        ];
+        let mut ctx = context_with_named_outputs(&layout, &requests);
+        add_window(&mut ctx, 10, 1, (100, 100, 800, 600));
+        add_window(&mut ctx, 20, 2, (2020, 100, 800, 600));
+        ctx.focus(20);
+        ctx.focus(10);
+        assert_eq!(ctx.current_output, Some(1));
+        ctx.handle_session_locked();
+
+        ctx.destroy_output(2);
+        ctx.handle_manage_start();
+        // The profile for both makes DP-1 primary again.
+        add_named_output(&mut ctx, 3, "DP-1", (1920, 0, 1920, 1080), &requests);
+        ctx.pending_primary_output = Some(3);
+        ctx.handle_manage_start();
+        ctx.handle_session_unlocked();
+        ctx.handle_manage_start();
+
+        assert_eq!(ctx.focused_window, Some(10));
+        assert_eq!(ctx.current_output, Some(1));
+        assert_eq!(anchor_of(&ctx, 20), Some(3));
+    }
+
+    #[test]
+    fn current_output_back_by_unlock_is_current_again() {
+        let requests = crate::wm::Requests::default();
+        let layout = [
+            (1, "eDP-1", 0, 0, 1920, 1080),
+            (2, "DP-1", 1920, 0, 1920, 1080),
+        ];
+        let mut ctx = context_with_named_outputs(&layout, &requests);
+        ctx.current_output = Some(2);
+        ctx.last_focused_output = Some(2);
+        ctx.handle_session_locked();
+
+        ctx.destroy_output(2);
+        assert_eq!(ctx.current_output, Some(1));
+        add_named_output(&mut ctx, 3, "DP-1", (1920, 0, 1920, 1080), &requests);
+        ctx.handle_session_unlocked();
+        ctx.handle_manage_start();
+
+        assert_eq!(ctx.current_output, Some(3));
+        assert_eq!(ctx.current_output_for_new_window(), Some(3));
     }
 
     #[test]

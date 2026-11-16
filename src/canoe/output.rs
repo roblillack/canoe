@@ -20,6 +20,9 @@ pub struct Output {
 
     /// Output name (e.g. "DP-1")
     pub name: Option<String>,
+    /// The monitor connected: its make, model and serial number, as output
+    /// profiles know it, or the output's name if it doesn't tell
+    pub monitor: Option<String>,
 
     /// Position X in global coordinates
     pub x: i32,
@@ -61,6 +64,7 @@ impl Output {
             id,
             rwm_output: None,
             name: None,
+            monitor: None,
             x: 0,
             y: 0,
             width: 0,

@@ -21,6 +21,7 @@ use super::protocols::xdg_foreign::{delegate_xdg_foreign, XdgForeignHandler, Xdg
 use super::State;
 use crate::wm::OutputHandle;
 use smithay::reexports::wayland_server::protocol::wl_surface::WlSurface;
+use smithay::reexports::wayland_server::Resource;
 
 impl VirtualPointerHandler for State {
     fn virtual_pointer_event(
@@ -99,6 +100,7 @@ impl State {
             self.outputs[index].id = id;
             self.outputs[index].reported = None;
             self.outputs[index].reported_usable = None;
+            self.forget_retired_wl_outputs(index);
             self.outputs[index].global = Some(output.create_global::<State>(&self.display_handle));
             self.output_changed(output);
         } else {
@@ -114,6 +116,22 @@ impl State {
             self.schedule_wm();
         }
         super::backend::Backend::update_output_power(self, output);
+    }
+
+    /// Destroy the `wl_output`s left of the globals the output had before
+    /// it was disabled. A client may drop its `wl_output` of a global that
+    /// went away without releasing it (kitty does), which leaves it here.
+    /// The output keeps it once enabled again, and would name it in
+    /// `wl_surface.enter` and `leave` along with the new one: the client
+    /// sees a null output and crashes. Those that wanted to release theirs
+    /// did so on `global_remove`, sent as the output was disabled.
+    fn forget_retired_wl_outputs(&mut self, index: usize) {
+        let handle = self.display_handle.backend_handle();
+        for wl_output in std::mem::take(&mut self.outputs[index].bound) {
+            if let Ok(wl_output) = wl_output.upgrade() {
+                let _ = handle.destroy_object::<State>(&Resource::id(&wl_output));
+            }
+        }
     }
 
     /// Turn an enabled output's monitor off or back on. It stays in the

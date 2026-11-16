@@ -758,6 +758,10 @@ impl DataControlHandler for State {
 
 impl OutputHandler for State {
     fn output_bound(&mut self, output: Output, wl_output: WlOutput) {
+        if let Some(managed) = self.outputs.iter_mut().find(|o| o.output == output) {
+            managed.bound.retain(|bound| bound.upgrade().is_ok());
+            managed.bound.push(wl_output.downgrade());
+        }
         self.foreign_toplevel_manager_state
             .output_bound(&output, &wl_output);
     }
