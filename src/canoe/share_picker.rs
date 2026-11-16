@@ -64,42 +64,6 @@ pub struct LastChoice {
     pub at: std::time::Instant,
 }
 
-/// When to nudge a window after it was picked for sharing.
-///
-/// wlroots (0.20.2 and earlier) captures a window only when it changes. A
-/// capture session that starts while another one of the same window is
-/// running, and Chrome runs its preview while asking for the real share,
-/// waits for the window's next change and shows black until then. If the
-/// window is idle that can be forever. So after the user picks a window,
-/// canoe makes it repaint, a little later and once more in case the portal
-/// was slow to start capturing.
-pub const NUDGE_DELAYS: [std::time::Duration; 2] = [
-    std::time::Duration::from_millis(300),
-    std::time::Duration::from_millis(1500),
-];
-
-/// How long a nudge holds the changed state.
-pub const NUDGE_LENGTH: std::time::Duration = std::time::Duration::from_millis(50);
-
-/// One step of a nudge. Windows repaint when their xdg_toplevel state
-/// changes, but which state they react to varies: terminals like foot react
-/// to "resizing", GTK and Firefox to "tiled". A nudge sets both, then clears
-/// them again; the window's size stays the same, so the capture doesn't have
-/// to renegotiate its buffers.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NudgeStep {
-    Start,
-    End,
-}
-
-/// A nudge step that's due at `due`.
-#[derive(Debug, Clone, Copy)]
-pub struct Nudge {
-    pub window: WindowId,
-    pub due: std::time::Instant,
-    pub step: NudgeStep,
-}
-
 /// Something the user can choose to share.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShareTarget {

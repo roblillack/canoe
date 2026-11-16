@@ -19,7 +19,7 @@ TICK=$(getconf CLK_TCK)
 
 t_start=$(date +%s.%N)
 if [ "$MODE" = river ]; then
-    BIN=${2:-${CANOE_MAIN_BIN:?set CANOE_MAIN_BIN to a canoe built from main}}
+    BIN=${2:-${CANOE_RIVER_BIN:?set CANOE_RIVER_BIN to a canoe built from v0.6.2, the last release for River}}
     WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_HEADLESS_OUTPUTS=1 \
         river -no-xwayland -c "echo \$WAYLAND_DISPLAY > $BASE/display; exec $BIN" >"$BASE/log" 2>&1 &
     MAIN=$!

@@ -159,10 +159,6 @@ pub struct Context {
 
     /// The open screen-sharing picker, if any
     pub share_picker: Option<super::share_picker::SharePicker>,
-    /// Shared windows to make repaint, see [`super::share_picker::Nudge`]
-    pub share_nudges: Vec<super::share_picker::Nudge>,
-    /// A manage sequence was requested to run due nudges
-    pub share_nudge_requested: bool,
     /// The last thing picked for sharing, see
     /// [`super::share_picker::REPEAT_CHOICE_WINDOW`]
     pub share_last_choice: Option<super::share_picker::LastChoice>,
@@ -242,8 +238,6 @@ impl Context {
             window_menu_alt_tab_preview_was_hidden: false,
 
             share_picker: None,
-            share_nudges: Vec::new(),
-            share_nudge_requested: false,
             share_last_choice: None,
 
             pending_output_shifts: Vec::new(),
@@ -354,7 +348,6 @@ impl Context {
         if let Some(picker) = self.share_picker.as_mut() {
             picker.remove_target(super::share_picker::ShareTarget::Window(window_id));
         }
-        self.share_nudges.retain(|n| n.window != window_id);
         self.forget_share_choice(super::share_picker::ShareTarget::Window(window_id));
 
         if was_focused {
@@ -2278,16 +2271,12 @@ impl Context {
         }
     }
 
-    /// Remember that the user picked `target` for sharing, and make it
-    /// repaint if it's a window.
+    /// Remember that the user picked `target` for sharing.
     pub fn record_share_choice(&mut self, target: super::share_picker::ShareTarget) {
         self.share_last_choice = Some(super::share_picker::LastChoice {
             target,
             at: std::time::Instant::now(),
         });
-        if let super::share_picker::ShareTarget::Window(window) = target {
-            self.schedule_share_nudge(window);
-        }
     }
 
     /// The candidate to answer a new request with without asking: the one the
@@ -2302,86 +2291,13 @@ impl Context {
         if last.at.elapsed() > super::share_picker::REPEAT_CHOICE_WINDOW {
             return None;
         }
-        let candidate = candidates.iter().find(|c| c.target == last.target)?.clone();
-        if let super::share_picker::ShareTarget::Window(window) = candidate.target {
-            self.schedule_share_nudge(window);
-        }
-        Some(candidate)
+        candidates.iter().find(|c| c.target == last.target).cloned()
     }
 
     /// Don't repeat a choice of `target`, which went away.
     fn forget_share_choice(&mut self, target: super::share_picker::ShareTarget) {
         if self.share_last_choice.is_some_and(|c| c.target == target) {
             self.share_last_choice = None;
-        }
-    }
-
-    /// Make a window that was just picked for sharing repaint, see
-    /// [`super::share_picker::Nudge`].
-    pub fn schedule_share_nudge(&mut self, window: WindowId) {
-        use super::share_picker::{Nudge, NudgeStep, NUDGE_DELAYS};
-        let now = std::time::Instant::now();
-        self.share_nudges.retain(|n| n.window != window);
-        for delay in NUDGE_DELAYS {
-            self.share_nudges.push(Nudge {
-                window,
-                due: now + delay,
-                step: NudgeStep::Start,
-            });
-        }
-    }
-
-    /// When the next nudge is due, unless a manage sequence to run it was
-    /// already requested.
-    pub fn next_share_nudge(&self) -> Option<std::time::Instant> {
-        if self.share_nudge_requested {
-            return None;
-        }
-        self.share_nudges.iter().map(|n| n.due).min()
-    }
-
-    /// Run the nudges that are due. Must be called in a manage sequence.
-    fn run_share_nudges(&mut self) {
-        use super::share_picker::{Nudge, NudgeStep, NUDGE_LENGTH};
-        self.share_nudge_requested = false;
-        let now = std::time::Instant::now();
-        let (due, rest): (Vec<Nudge>, Vec<Nudge>) =
-            self.share_nudges.drain(..).partition(|n| n.due <= now);
-        self.share_nudges = rest;
-        for nudge in due {
-            let Some(window) = self.windows.get(&nudge.window) else {
-                continue;
-            };
-            let w = window.borrow();
-            let Some(rwm_window) = w.rwm_window.as_ref() else {
-                continue;
-            };
-            match nudge.step {
-                NudgeStep::Start => {
-                    // Leave a window the user is resizing alone, and don't
-                    // overlap with a nudge still in progress.
-                    let busy = matches!(w.operator, super::window::Operator::Resize { .. })
-                        || self
-                            .share_nudges
-                            .iter()
-                            .any(|n| n.window == nudge.window && n.step == NudgeStep::End);
-                    if busy {
-                        continue;
-                    }
-                    rwm_window.inform_resize_start();
-                    rwm_window.set_tiled(Edges::Top | Edges::Bottom | Edges::Left | Edges::Right);
-                    self.share_nudges.push(Nudge {
-                        window: nudge.window,
-                        due: now + NUDGE_LENGTH,
-                        step: NudgeStep::End,
-                    });
-                }
-                NudgeStep::End => {
-                    rwm_window.inform_resize_end();
-                    // Canoe never marks windows tiled.
-                    rwm_window.set_tiled(Edges::empty());
-                }
-            }
         }
     }
 
@@ -2467,8 +2383,6 @@ impl Context {
             }
         }
         self.fit_oversized_new_windows();
-
-        self.run_share_nudges();
 
         // Process seat actions
         let seat_ids: Vec<SeatId> = self.seats.keys().copied().collect();

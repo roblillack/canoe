@@ -8,6 +8,7 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+#[cfg(feature = "debug-logging")]
 use std::time::Instant;
 
 use crate::binding;
@@ -1535,16 +1536,10 @@ pub(super) fn configure_canoe_layers(state: &mut State, output_id: canoe::Output
     }
 }
 
-/// Handle `canoe --share-picker` requests and due nudges of shared windows.
+/// Handle `canoe --share-picker` requests.
 /// Runs from a timer, as the server's connections come and go.
 pub fn poll_share_server(state: &mut State) {
     use nix::poll::{poll, PollFd, PollFlags};
-
-    let next_nudge = state.context.borrow().next_share_nudge();
-    if next_nudge.is_some_and(|due| due <= Instant::now()) {
-        state.context.borrow_mut().share_nudge_requested = true;
-        state.schedule_wm();
-    }
 
     let Some(server) = state.share_server.as_ref() else {
         return;

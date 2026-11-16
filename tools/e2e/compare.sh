@@ -1,7 +1,8 @@
 #!/bin/bash
 # Run a scenario on River and on the standalone compositor and put the
 # screenshots side by side: tools/e2e/compare.sh <scenario> [out-root]
-# CANOE_MAIN_BIN names the canoe (built from main) River runs.
+# CANOE_RIVER_BIN names the canoe River runs: one built from v0.6.2, the last
+# release that ran inside River.
 HERE=$(cd "$(dirname "$0")" && pwd)
 S=$1; NAME=$(basename "${S%.*}"); OUT=${2:-/tmp/cne2e-out}/$NAME
 "$HERE/run.sh" river "$S" "$OUT/river"

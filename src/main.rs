@@ -335,8 +335,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let busy = state
                                 .share_server
                                 .as_ref()
-                                .is_some_and(|s| s.has_connections())
-                                || state.context.borrow().next_share_nudge().is_some();
+                                .is_some_and(|s| s.has_connections());
                             if busy {
                                 TimeoutAction::ToDuration(Duration::from_millis(50))
                             } else {

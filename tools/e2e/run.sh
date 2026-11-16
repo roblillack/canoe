@@ -39,7 +39,7 @@ cleanup() { for p in "${PIDS[@]}"; do kill "$p" 2>/dev/null; done; pkill -P $$ 2
 trap cleanup EXIT
 
 if [ "$MODE" = river ]; then
-    BIN=${4:-${CANOE_MAIN_BIN:?set CANOE_MAIN_BIN to a canoe built from main}}
+    BIN=${4:-${CANOE_RIVER_BIN:?set CANOE_RIVER_BIN to a canoe built from v0.6.2, the last release for River}}
     export CANOE_BIN=$BIN
     n=$(echo "$OUTPUTS" | tr ',' '\n' | wc -l)
     WLR_BACKENDS=headless WLR_RENDERER=pixman WLR_HEADLESS_OUTPUTS=$n \

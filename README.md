@@ -5,11 +5,6 @@
 A stacking Wayland compositor and window manager, written in Rust on top of
 [Smithay](https://github.com/Smithay/smithay).
 
-> **Experimental branch.** Canoe started out as a window manager for the
-> River compositor. This branch runs the same window manager inside its own
-> compositor instead. See [Status of the standalone
-> compositor](#status-of-the-standalone-compositor) for what is missing.
-
 ## Features
 
 - Stacking window management
@@ -262,13 +257,6 @@ update_activation_environment = false
 
 The headless backend never exports anything, so test sessions don't redirect
 the portals of the session you're working in.
-
-On River, wlroots 0.20.2 and earlier could show a black share when an app
-captured a window that was already being captured (Chrome does this,
-previewing the window while it asks to share it). Canoe's own compositor
-renders every capture afresh and doesn't have this problem; the workaround
-from the River days (briefly flagging the picked window as resizing and tiled
-so it repaints) still runs, and is harmless.
 
 ## Screenshots
 
@@ -649,15 +637,14 @@ force_ssd = true
 swallow_top = 48
 ```
 
-## Status of the standalone compositor
+## Protocols and limitations
 
-Canoe's window manager is unchanged in substance: it runs in process and
-talks to the compositor through the same requests and events it used with
-River (see `src/wm.rs`), so its behavior carries over. `tools/e2e` runs
-scripted scenarios on River with Canoe from `main` and on this compositor,
-and compares screenshots: windows, decorations at fractional scales, menus,
-the window switcher, icons, multiple outputs, layer shell, session locking,
-screen-sharing picks, configuration and rules give the same results.
+Canoe ran as a window manager inside River up to version 0.6. Its window
+manager is unchanged in substance: it runs in process and talks to the
+compositor through the same requests and events it used with River (see
+`src/wm.rs`), so its behavior carries over. `tools/e2e` runs scripted
+scenarios on River with Canoe 0.6.2 and on Canoe's own compositor, and
+compares screenshots.
 
 Supported: xdg-shell (with xdg-decoration and popups), KDE's server
 decoration protocol (through which GTK asks to be decorated), wlr-layer-shell,

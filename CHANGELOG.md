@@ -18,6 +18,12 @@ pick the Canoe session in your display manager; River is no longer needed.
 Your configuration, rules and themes carry over, and X11 programs run through
 Xwayland. (#66)
 
+Canoe now needs libinput, libseat (seatd or systemd-logind), libgbm, libdrm,
+Mesa (EGL and OpenGL ES 2) and pixman, and Xwayland for X11 programs.
+Packages should install `contrib/canoe.desktop` into
+`/usr/share/wayland-sessions/` and `contrib/canoe-portals.conf` into
+`/usr/share/xdg-desktop-portal/`; see Installation in the README.
+
 ### Added
 
 - `xdg-toplevel-icon-v1`: a minimized window's desktop icon is the icon its
@@ -100,7 +106,6 @@ Xwayland. (#66)
   is restored with Super+Up, the arrow keys move the selection and
   Super+Alt+Arrow sends the icon to another output. Minimizing with Super
   keeps the icon selected until Super is released. (#95)
-
 - Window titles are centered in the titlebar, moving aside where the
   buttons are in the way. `titlebar_text_align = "left"` under `[ui]` puts
   them next to the close button again. (#89)
@@ -119,11 +124,13 @@ Xwayland. (#66)
 - Optimize memory used for window frames and shadows, and more efficiently
   return it to the system when windows close. (#90)
 
+### Removed
+
+- Running as a window manager inside River. Canoe 0.6.2 is the last version
+  that does. (#66)
+
 ### Fixed
 
-- Drag and drop shows what is dragged and what a drop would do: the
-  program's drag icon follows the pointer, and the cursor shows copy, move,
-  ask or no-drop. Escape cancels the drag. (#91)
 - Windows are no longer minimized when the last output goes away, e.g.
   while the only monitor wakes up and reconnects; they come back on the
   first output that appears. (#82)
@@ -133,31 +140,8 @@ Xwayland. (#66)
   unlock and go back to it if it came back, fullscreen if they were, instead
   of all ending up on the remaining screen. A monitor that comes back while
   the screen is locked doesn't take focus from where it was. (#96)
-- Clients like kitty no longer crash on showing up on an output that was
-  turned off and on again, e.g. the laptop's panel after closing and
-  opening the lid. (#96)
-- Cursors keep their shapes where no `default` XCursor theme is installed, as
-  on NixOS: Canoe falls back to a theme that is, and tells clients about it.
-  With no theme at all, the built-in cursor is now a proper arrow instead of
-  a triangle. (#88)
-- X11 programs take clicks and notice the pointer on outputs placed above or
-  left of others (at negative positions, e.g. by kanshi). Such a layout is
-  moved so it starts at 0,0, as Xwayland's screen does. (#66)
-- X11 programs run as root (e.g. `sudo xterm`) can connect to Xwayland. (#66)
-- The first click after moving or resizing a window by its own (client-side)
-  decorations, as in GNOME Calculator, reaches what it is on instead of that
-  window. (#66)
 - The desktop icon of a minimized window disappears when the window closes,
   instead of staying until it is clicked. (#69)
-- The desktop icon of a minimized window shows its new title as soon as the
-  window changes it, instead of once the icon is clicked or Super+Tab
-  opened. (#74)
-- A second screen locker, e.g. from an idle daemon, is refused while the
-  session is locked, instead of taking over and stranding the first. (#77)
-- Monitors that come and go while another VT has the display are set up again
-  on switching back, instead of staying dark until replugged. (#77)
-- Clients like kitty no longer crash when a monitor is unplugged or turned
-  off. (#77)
 - Focusing a window only takes fullscreen from windows on its own output, so a
   program can cover every output with a fullscreen window of its own (as
   Spectacle does to select a region). A new window is focused once what it
