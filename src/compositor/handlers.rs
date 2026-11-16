@@ -107,6 +107,9 @@ impl CompositorHandler for State {
             if let Some(window) = self.window_for_surface(&root) {
                 window.window.on_commit();
             }
+            if let Some(toplevel) = super::protocols::iconlet::icon_surface_owner(&root) {
+                self.toplevel_icon_surface_changed(&toplevel);
+            }
             if &root == surface {
                 if let Some(icon) = super::protocols::toplevel_icon::commit(surface) {
                     self.toplevel_icon_changed(surface, icon);
