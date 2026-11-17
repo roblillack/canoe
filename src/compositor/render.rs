@@ -95,11 +95,14 @@ where
     elements
 }
 
-/// A surface tree plus its popups, topmost first.
+/// A surface tree plus its popups, topmost first. `geometry` is where the
+/// surface's window geometry starts within it, which popups are positioned
+/// relative to; a layer surface has none, so passes zero.
 pub(super) fn surface_with_popups<R>(
     renderer: &mut R,
     surface: &WlSurface,
     location: Point<f64, Physical>,
+    geometry: Point<i32, Logical>,
     scale: Scale<f64>,
     alpha: f32,
 ) -> (
@@ -112,8 +115,10 @@ where
 {
     let mut popups = Vec::new();
     for (popup, offset) in PopupManager::popups_for_surface(surface) {
-        let geometry = popup.geometry();
-        let at = location + (offset - geometry.loc).to_f64().to_physical(scale);
+        let at = location
+            + (geometry + offset - popup.geometry().loc)
+                .to_f64()
+                .to_physical(scale);
         let mut elements = surface_tree_elements(
             renderer,
             popup.wl_surface(),
@@ -424,6 +429,7 @@ impl State {
                 renderer,
                 window.wl_surface(),
                 to_phys(surface_origin),
+                window.window.geometry().loc,
                 scale,
                 alpha,
             );
@@ -496,8 +502,14 @@ impl State {
                 Kind::Unspecified,
             )));
             let origin = window.surface_origin(Some(geometry.loc)).to_f64();
-            let (main, popups) =
-                surface_with_popups(renderer, window.wl_surface(), to_phys(origin), scale, 1.0);
+            let (main, popups) = surface_with_popups(
+                renderer,
+                window.wl_surface(),
+                to_phys(origin),
+                window.window.geometry().loc,
+                scale,
+                1.0,
+            );
             push_top_first(&mut bottom_up, main.into_iter().map(Into::into).collect());
             push_top_first(&mut bottom_up, popups.into_iter().map(Into::into).collect());
         }
@@ -585,8 +597,14 @@ impl State {
                 continue;
             };
             let location = layer_geo.loc.to_f64().to_physical(scale);
-            let (main, popups) =
-                surface_with_popups(renderer, surface.wl_surface(), location, scale, 1.0);
+            let (main, popups) = surface_with_popups(
+                renderer,
+                surface.wl_surface(),
+                location,
+                Point::default(),
+                scale,
+                1.0,
+            );
             bottom_up.extend(main.into_iter().rev().map(Into::into));
             bottom_up.extend(popups.into_iter().rev().map(Into::into));
         }
