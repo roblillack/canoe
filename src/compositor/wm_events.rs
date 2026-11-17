@@ -147,9 +147,12 @@ impl State {
             return;
         }
         self.startup_pending = false;
-        let cmds = self.context.borrow().config.startup_cmds.clone();
-        for cmd in &cmds {
-            self.context.borrow().spawn(cmd);
+        let context = self.context.borrow();
+        for cmd in &context.config.startup_cmds {
+            context.spawn(cmd);
+        }
+        for cmd in &self.cli_startup_cmds {
+            context.spawn_shell(cmd);
         }
     }
 
