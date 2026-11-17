@@ -941,48 +941,46 @@ impl Context {
             return;
         }
 
-        match unsafe { nix::unistd::fork() } {
-            Ok(nix::unistd::ForkResult::Parent { .. }) => {
-                // Parent continues
-            }
-            Ok(nix::unistd::ForkResult::Child) => {
-                // Child process - create new session and exec
+        let mut cmd = Command::new(&argv[0]);
+        cmd.args(&argv[1..]);
+        cmd.stdin(Stdio::null());
+        cmd.stdout(Stdio::null());
+        cmd.stderr(Stdio::null());
+
+        if let Some(ref dir) = self.config.working_directory {
+            cmd.current_dir(dir);
+        }
+
+        for (key, value) in &self.config.env {
+            cmd.env(key, value);
+        }
+
+        // Protocol note: propagate the theme to spawned clients so
+        // client-rendered cursors match compositor-rendered ones.
+        // Unset parts stay unset, leaving clients their own defaults.
+        let theme = self.config.xcursor_theme_resolved();
+        if let Some(name) = &theme.name {
+            cmd.env("XCURSOR_THEME", name);
+        }
+        if let Some(size) = theme.size {
+            cmd.env("XCURSOR_SIZE", size.to_string());
+        }
+
+        // Its own session, so it outlives us. Everything else is prepared
+        // before the fork: canoe has threads (the GL driver's, at least),
+        // and a child that allocates before exec can deadlock on a lock
+        // one of them held, keeping our sockets (and a nested session's
+        // host window) alive forever.
+        unsafe {
+            cmd.pre_exec(|| {
                 let _ = nix::unistd::setsid();
+                Ok(())
+            });
+        }
 
-                let mut cmd = Command::new(&argv[0]);
-                cmd.args(&argv[1..]);
-                cmd.stdin(Stdio::null());
-                cmd.stdout(Stdio::null());
-                cmd.stderr(Stdio::null());
-
-                if let Some(ref dir) = self.config.working_directory {
-                    cmd.current_dir(dir);
-                }
-
-                for (key, value) in &self.config.env {
-                    cmd.env(key, value);
-                }
-
-                // Protocol note: propagate the theme to spawned clients so
-                // client-rendered cursors match compositor-rendered ones.
-                // Unset parts stay unset, leaving clients their own defaults.
-                let theme = self.config.xcursor_theme_resolved();
-                if let Some(name) = &theme.name {
-                    cmd.env("XCURSOR_THEME", name);
-                }
-                if let Some(size) = theme.size {
-                    cmd.env("XCURSOR_SIZE", size.to_string());
-                }
-
-                // Make sure child inherits display environment
-                // (WAYLAND_DISPLAY should already be in env)
-
-                let err = cmd.exec();
-                // exec() only returns on error
-                eprintln!("Failed to exec {:?}: {:?}", argv, err);
-                std::process::exit(1);
-            }
-            Err(_) => (),
+        // The SIGCHLD handler reaps it.
+        if let Err(e) = cmd.spawn() {
+            eprintln!("canoe: failed to spawn {:?}: {e}", argv);
         }
     }
 
