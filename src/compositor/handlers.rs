@@ -243,7 +243,10 @@ impl XdgShellHandler for State {
         surface.send_repositioned(token);
     }
 
-    fn move_request(&mut self, surface: ToplevelSurface, _seat: WlSeat, _serial: Serial) {
+    fn move_request(&mut self, surface: ToplevelSurface, _seat: WlSeat, serial: Serial) {
+        if !self.press_held(serial) {
+            return;
+        }
         self.window_request(
             surface.wl_surface(),
             canoe::WindowEvent::Move(self.wm_seat_weak()),
@@ -254,9 +257,12 @@ impl XdgShellHandler for State {
         &mut self,
         surface: ToplevelSurface,
         _seat: WlSeat,
-        _serial: Serial,
+        serial: Serial,
         edges: xdg_toplevel::ResizeEdge,
     ) {
+        if !self.press_held(serial) {
+            return;
+        }
         self.window_request(
             surface.wl_surface(),
             canoe::WindowEvent::Resize(self.wm_seat_weak(), u32::from(edges)),
@@ -413,6 +419,16 @@ impl State {
     }
 
     /// Queue a request a window made for the window manager.
+    /// Whether the button press `serial` names is still held. A client asks to
+    /// move or resize its window from a press, and the request can arrive
+    /// after the button already went up; an operation started then would
+    /// never see the release that ends it.
+    fn press_held(&self, serial: Serial) -> bool {
+        self.seat
+            .get_pointer()
+            .is_some_and(|pointer| pointer.has_grab(serial))
+    }
+
     pub(super) fn window_request(&mut self, surface: &WlSurface, event: canoe::WindowEvent) {
         let Some(id) = self.window_for_surface(surface).map(|w| w.id) else {
             return;
