@@ -8,6 +8,10 @@ use smithay::backend::renderer::gles::GlesRenderer;
 use smithay::backend::renderer::ImportDma;
 use smithay::backend::winit::{self, WinitEvent, WinitGraphicsBackend};
 use smithay::output::{Mode, Output, PhysicalProperties, Subpixel};
+use smithay::reexports::winit::dpi::LogicalSize;
+use smithay::reexports::winit::platform::wayland::WindowAttributesExtWayland;
+use smithay::reexports::winit::platform::x11::WindowAttributesExtX11;
+use smithay::reexports::winit::window::Window;
 use smithay::utils::Transform;
 
 use super::Backend;
@@ -31,7 +35,14 @@ impl WinitData {
 }
 
 pub fn init(state: &mut State) -> Result<(), Box<dyn std::error::Error>> {
-    let (mut backend, winit) = winit::init::<GlesRenderer>()?;
+    // Smithay's defaults, but named after us rather than "Smithay".
+    let attributes = Window::default_attributes()
+        .with_inner_size(LogicalSize::new(1280.0, 800.0))
+        .with_title("Canoe")
+        .with_visible(true);
+    let attributes = WindowAttributesExtWayland::with_name(attributes, "canoe", "canoe");
+    let attributes = WindowAttributesExtX11::with_name(attributes, "canoe", "canoe");
+    let (mut backend, winit) = winit::init_from_attributes::<GlesRenderer>(attributes)?;
     let size = backend.window_size();
     let mode = Mode {
         size,

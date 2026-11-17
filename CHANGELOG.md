@@ -118,6 +118,9 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
 - Menus and other popups of a window that draws its own decorations, with a
   shadow around them, open where the program puts them instead of shifted up
   and to the left by the shadow's size. (#98)
+- Startup programs and commands from key bindings no longer hang before they
+  start, which also left the window of a nested Canoe open after it quit.
+  The nested window is now titled Canoe. (#101)
 
 ## [0.6.2] - 2026-11-07
 
