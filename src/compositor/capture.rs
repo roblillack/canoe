@@ -327,6 +327,7 @@ impl State {
             renderer,
             window.wl_surface(),
             to_phys(surface_origin),
+            window.window.geometry().loc,
             Scale::from(scale),
             1.0,
         );
