@@ -5,7 +5,6 @@ edition = "2021"
 description = "Canoe, a stacking Wayland compositor with Win 3.x looks"
 license = "MIT"
 repository = "https://github.com/roblillack/canoe"
-homepage = "https://github.com/roblillack/canoe"
 
 [package.metadata.release]
 # Only ever cut a release from `main`.
