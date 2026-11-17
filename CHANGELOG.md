@@ -122,7 +122,7 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
   start, which also left the window of a nested Canoe open after it quit.
   The nested window is now titled Canoe. (#101)
 - A window that asks to be moved or resized after the button is already up no
-  longer leaves the pointer stuck moving or resizing it.
+  longer leaves the pointer stuck moving or resizing it. (#99)
 
 ## [0.6.2] - 2026-11-07
 
