@@ -105,6 +105,10 @@ Usage: canoe [OPTIONS]
 
 Options:
   -n, --no-config   Ignore ~/.config/canoe/canoe.toml and use built-in defaults
+  -s, --startup <COMMAND>
+                    Run COMMAND (through `sh -c`) in the session once it is
+                    up, after the config's startup_cmds; may be given more
+                    than once, e.g. `canoe -s foot -s firefox`
       --backend <udev|winit|headless>
                     Where to show the session: on the monitors of this seat
                     (udev, the default on a text console), in a window of the
@@ -132,23 +136,26 @@ struct CliArgs {
     skip_config: bool,
     backend: BackendKind,
     xwayland: bool,
+    /// Shell commands from `-s`, in the order given.
+    startup: Vec<String>,
 }
 
 /// Parse command-line arguments, exiting the process for --help/--version or on
 /// an unknown flag. Kept deliberately tiny so we avoid a full arg-parsing dep.
-fn parse_args() -> CliArgs {
+fn parse_args(argv: impl IntoIterator<Item = String>) -> CliArgs {
     let nested =
         std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
     let mut args = CliArgs {
         skip_config: false,
         xwayland: true,
+        startup: Vec::new(),
         backend: if nested {
             BackendKind::Winit
         } else {
             BackendKind::Udev
         },
     };
-    let mut iter = std::env::args().skip(1);
+    let mut iter = argv.into_iter();
     while let Some(arg) = iter.next() {
         let (flag, inline) = match arg.split_once('=') {
             Some((flag, value)) if flag.starts_with("--") => {
@@ -159,6 +166,13 @@ fn parse_args() -> CliArgs {
         match flag.as_str() {
             "-n" | "--no-config" => args.skip_config = true,
             "--no-xwayland" => args.xwayland = false,
+            "-s" | "--startup" => match inline.or_else(|| iter.next()) {
+                Some(cmd) if !cmd.trim().is_empty() => args.startup.push(cmd),
+                _ => {
+                    eprintln!("canoe: {flag} needs a command\n\n{USAGE}");
+                    std::process::exit(2);
+                }
+            },
             "--share-picker" => std::process::exit(ipc::run_share_picker()),
             "--backend" => {
                 let value = inline.or_else(|| iter.next()).unwrap_or_default();
@@ -258,7 +272,7 @@ fn handle_signals(state: &mut State, fd: &OwnedFd) {
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let args = parse_args();
+    let args = parse_args(std::env::args().skip(1));
     compositor::memory::init();
 
     let mut event_loop: EventLoop<'static, State> = EventLoop::try_new()?;
@@ -269,6 +283,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         event_loop.get_signal(),
         args.skip_config,
     )?;
+    state.cli_startup_cmds = args.startup;
 
     // Programs canoe launches connect to it. Set before the backend starts,
     // since a nested session must still reach its host until then.
@@ -377,6 +392,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn argv(args: &[&str]) -> Vec<String> {
+        args.iter().map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn test_startup_flag_repeats_in_order() {
+        let args = parse_args(argv(&[
+            "-s",
+            "foot",
+            "--startup",
+            "foot -e htop",
+            "--no-xwayland",
+            "--startup=firefox",
+        ]));
+        assert_eq!(args.startup, ["foot", "foot -e htop", "firefox"]);
+        assert!(!args.xwayland);
+    }
 
     fn lookup_from(vars: &[(&str, &str)]) -> impl Fn(&str) -> Option<String> {
         let vars: HashMap<String, String> = vars

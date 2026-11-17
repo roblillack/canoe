@@ -358,6 +358,16 @@ before starting the next. They start once Canoe has set up the desktop on every
 output. They run only at startup: a `SIGHUP` reload does not run them again, so
 changes take effect the next time Canoe starts.
 
+To launch programs just for one session, pass them on the command line with
+`-s` (or `--startup`), as often as you like:
+
+```bash
+canoe -s foot -s "firefox --new-window"
+```
+
+Each is run through `sh -c`, so arguments, quoting and `$VARIABLES` work as in
+a shell. They start after `startup_cmds`, in the order given.
+
 When a program like `swaybg` draws your wallpaper, set `desktop_background =
 "transparent"`, as above; see [Desktop and wallpapers](#desktop-and-wallpapers)
 for why.

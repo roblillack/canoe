@@ -38,6 +38,8 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
   follows a monitor to another port and output tools can tell monitors
   apart. (#82)
 - Super+Shift+Arrow focuses the output in that direction. (#92)
+- `-s`/`--startup` launches a program in the session, e.g.
+  `canoe -s foot -s firefox`; it can be given any number of times.
 - Windows glide into place when they are maximized, snapped or restored, and
   minimized windows shrink into their desktop icons. `animations_enabled` and
   `animations_duration` under `[ui]` turn the animations off or change their

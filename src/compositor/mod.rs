@@ -481,6 +481,8 @@ pub struct State {
     pub trim_timer: Option<smithay::reexports::calloop::RegistrationToken>,
     /// The startup commands are still to be launched.
     pub startup_pending: bool,
+    /// Shell commands from `canoe -s`, launched after `startup_cmds`.
+    pub cli_startup_cmds: Vec<String>,
 
     /// Black backdrops behind fullscreen windows, per output.
     pub backdrop_ids:
@@ -699,6 +701,7 @@ impl State {
             share_timer: None,
             trim_timer: None,
             startup_pending: true,
+            cli_startup_cmds: Vec::new(),
             backdrop_ids: HashMap::new(),
             cursor_hidden_by_backend: false,
             suppress_cursor: false,
