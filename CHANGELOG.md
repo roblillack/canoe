@@ -13,116 +13,84 @@ While pre-1.0, the minor version is bumped for breaking changes.
 ### [A Canoe without a River](https://github.com/roblillack/canoe/discussions/83)
 
 Canoe is now a Wayland compositor of its own, built on Smithay, instead of a
-window manager inside River. Start it with `canoe` from a text console or
-pick the Canoe session in your display manager; River is no longer needed.
-Your configuration, rules and themes carry over, and X11 programs run through
-Xwayland. (#66)
+window manager running inside River. Start it with `canoe` from a text console
+or pick the Canoe session in your display manager. Your configuration, rules
+and themes carry over, and X11 programs run through Xwayland. (#66)
 
 Canoe now needs libinput, libseat (seatd or systemd-logind), libgbm, libdrm,
-Mesa (EGL and OpenGL ES 2) and pixman, and Xwayland for X11 programs.
-Packages should install `contrib/canoe.desktop` into
-`/usr/share/wayland-sessions/` and `contrib/canoe-portals.conf` into
-`/usr/share/xdg-desktop-portal/`; see Installation in the README.
+Mesa (EGL and OpenGL ES 2), pixman, and Xwayland for X11 programs. Packages
+should install the session file `contrib/canoe.desktop` and the portal
+configuration `contrib/canoe-portals.conf`; see Installation in the README.
 
 ### Added
 
-- `xdg-toplevel-icon-v1`: a minimized window's desktop icon is the icon its
-  program sets, unless one is put in `~/.config/canoe/icons/`. (#67)
-- KDE's `org_kde_plasma_shell` protocol, of which only `set_skip_switcher`
-  is honored: windows that ask for it are left out of the window menu,
-  Super+Tab and focus cycling, while their desktop icon still shows when
-  minimized. Other requests are accepted and ignored. (#70)
-- Super+D minimizes all windows on all screens, like on Windows. Pressing it
-  again while no window is shown brings them back, in their old stacking
-  order and with the focus they had. (#72)
-- An experimental protocol of canoe's own, `xx-iconlet-v1`: programs can
-  draw a minimized window's desktop icon themselves with a surface they
-  update at will, learn where on the screen the icon is, and declare
-  themselves iconlets, programs living only as their icon. An iconlet's
-  window starts out minimized and never comes up: double-clicking its icon
-  tells the program instead. It is left out of the window menu, Super+Tab
-  and taskbars, and its icon comes first on the desktop. (#78)
-- Cursor sessions of `ext-image-copy-capture-v1` report where the pointer is
-  on the output or window they capture, so programs like eyes following the
-  pointer work. Their cursor image stays empty. (#75)
-- Windows glide and stretch into place when they are maximized, snapped to
-  a half of the screen or restored, instead of jumping there. The frame,
-  titlebar and shadow keep their proportions while the content stretches.
-  Minimized windows shrink into their desktop icons and fade out, and grow
-  back out of them when brought back. `animations_enabled` and
-  `animations_duration` (in milliseconds, 150 by default) under `[ui]` turn
-  the animations off or change their speed. (#76)
-- X11 programs are crisp on scaled outputs: they draw at the outputs'
-  scale, rounded up, and learn it through `Xft.dpi` and XSETTINGS
-  (`Gdk/WindowScalingFactor`), as does their default cursor. Programs
-  that can't scale come out small; `xwayland_hidpi = false` goes back to
-  drawing them at scale 1, stretched and blurry. (#80)
-- Screenshot tools made for sway or KWin work with `emulate_sway` and
-  `emulate_kwin`. The first answers the questions sway's IPC answers about
-  outputs, windows and focus, for shotman and grimshot; the second offers
-  KWin's screenshot D-Bus interface, for Spectacle in all its modes, with
-  Canoe's picker for the window under the cursor. Both are off by default;
-  see Screenshots in the README. (#81)
-- `xdg-toplevel-tag-v1`: windows may tag themselves. The tags aren't used
-  yet, but KDE programs expect the protocol and Spectacle crashes without
-  it. (#81)
-- Canoe remembers the output layout for each combination of connected
-  monitors and restores it when the combination comes back, so kanshi is no
-  longer needed: whatever an output tool like `wdisplays` or `wlr-randr`
-  applies is saved, in `~/.local/state/canoe/outputs.toml`.
-  `remember_outputs = false` turns this off. (#82)
-- A primary output per combination of monitors, where new windows open
-  after monitors come or go and where layer surfaces without an output go.
-  The pointer starts in its middle, and iconlets always start there and
-  move along when the primary output changes.
-  It is chosen with an experimental protocol of canoe's own,
-  `xx-primary-output-v1`. (#82)
-- Monitors report their make, model and serial number from their EDID, so
-  output tools can tell them apart. (#82)
-- Closing a laptop's lid turns its panel off, and opening it turns the
-  panel back on, unless the remembered layout says otherwise: the lid
-  open and the lid closed each have a layout of their own. Until one of
-  them is set up, the other one is used.
-  `xx-primary-output-v1` tells output tools which outputs are a laptop's
-  panel and whether the lid is closed over them. (#82)
-- Super+Shift+Arrow focuses the output in that direction: the window last
-  focused there, or none if it shows no windows, with the pointer in the
-  middle of the output. (#92)
-- Double-clicking a titlebar maximizes the window, or restores it. (#93)
-- A `[keyboard]` table sets the XKB layouts, variants, options, model and
-  rules, and the key repeat, and a `SIGHUP` reload applies changes to them.
-  Unset names still come from `XKB_DEFAULT_*`. Hotkeys can switch to the
-  next, previous or a given layout: `{ switch_layout = "next" }`. (#97)
+- Canoe remembers the output layout for each set of connected monitors and
+  restores it when that set comes back, e.g. when docking a laptop. Set it up
+  once with any output tool, like `wdisplays` or `wlr-randr`; kanshi is no
+  longer needed. `remember_outputs = false` turns this off. See Multiple
+  Outputs in the README. (#82)
+- Closing a laptop's lid turns its panel off, and opening it turns the panel
+  back on. Lid open and lid closed can each have their own layout. (#82)
+- A primary output for each set of monitors, where new windows and launchers
+  open when monitors come or go, and where the pointer starts. Output tools
+  choose it through Canoe's experimental `xx-primary-output-v1` protocol. (#82)
+- Monitors report their make, model and serial number, so a remembered layout
+  follows a monitor to another port and output tools can tell monitors
+  apart. (#82)
+- Super+Shift+Arrow focuses the output in that direction. (#92)
+- Windows glide into place when they are maximized, snapped or restored, and
+  minimized windows shrink into their desktop icons. `animations_enabled` and
+  `animations_duration` under `[ui]` turn the animations off or change their
+  speed. (#76)
+- Double-clicking a titlebar maximizes or restores the window. (#93)
+- Super+D minimizes all windows on all outputs; pressing it again brings them
+  back. (#72)
+- While dragging, the cursor shows whether a drop would copy, move, ask or
+  not be accepted, and Escape cancels the drag. (#91)
+- A `[keyboard]` section sets the keyboard layouts, variants, options and key
+  repeat, and hotkeys can switch layouts, e.g. `{ switch_layout = "next" }`.
+  See Keyboard in the README. (#97)
+- X11 programs are sharp on scaled outputs instead of blurry. Programs that
+  can't scale come out small; `xwayland_hidpi = false` brings back the old
+  behavior. (#80)
+- Screenshot tools made for sway (grimshot, shotman) or KDE (Spectacle) work
+  once `emulate_sway` or `emulate_kwin` is turned on. See Screenshots in the
+  README. (#81)
+- A minimized window's desktop icon is the icon its program sets
+  (`xdg-toplevel-icon-v1`), unless there is one in `~/.config/canoe/icons/`.
+  (#67)
+- Iconlets: small programs that live as a desktop icon they draw themselves,
+  like a CPU meter, through Canoe's experimental `xx-iconlet-v1` protocol.
+  Double-clicking an iconlet is passed on to its program. Through the same
+  protocol, any program can draw its minimized window's icon itself. (#78)
+- `org_kde_plasma_shell`, of which only `set_skip_switcher` is supported, to
+  keep a window out of the window menu, Super+Tab and focus cycling. (#70)
+- `xdg-toplevel-tag-v1`, without which Spectacle crashes. (#81)
+- Cursor capture sessions of `ext-image-copy-capture-v1` report where the
+  pointer is, for programs like eyes following it. (#75)
+- A Nix flake and package. (#36, thanks @alvv-z)
 
 ### Changed
 
-- Super+Tab, Super+` and the window menu of the desktop list only the
-  windows on their output. `window_list_scope = "all"` lists the windows on
-  every output again. (#92)
+- Every window gets Canoe's titlebar, including GTK 3 and GTK 4 apps, which
+  used to draw their own, except windows that can only draw their own
+  decorations, like libadwaita apps: they no longer get a second titlebar on
+  top. A `force_ssd` rule still gives them Canoe's. (#66)
+- Window titles are centered in the titlebar. `titlebar_text_align = "left"`
+  under `[ui]` brings back the old look. (#89)
+- The window menu and Super+Tab show each window's application name before
+  its title, e.g. "Alacritty — ~: fish" or "Google Chrome — Page", and find
+  names and icons for more applications. (#73)
+- Super+Tab, Super+` and the desktop's window menu list only the windows on
+  their output. `window_list_scope = "all"` lists all windows again. (#92)
 - Super+Alt+Arrow sends the focused window to the output in that direction,
-  like Super+Shift+Arrow, instead of to the "next" or "previous" output in
-  no particular order. (#92)
-- Better keyboard handling of minimized windows: a selected desktop icon
-  is restored with Super+Up, the arrow keys move the selection and
-  Super+Alt+Arrow sends the icon to another output. Minimizing with Super
-  keeps the icon selected until Super is released. (#95)
-- Window titles are centered in the titlebar, moving aside where the
-  buttons are in the way. `titlebar_text_align = "left"` under `[ui]` puts
-  them next to the close button again. (#89)
-- Windows that only draw their own decorations, as libadwaita apps do, keep
-  them instead of getting Canoe's titlebar on top. A `force_ssd` rule still
-  gives them one. Every other window is decorated by Canoe, even one that
-  would rather draw its own decorations, and GTK 3 and plain GTK 4 apps now
-  leave theirs off: they ask to be decorated through KDE's server decoration
-  protocol, which Canoe now offers. (#66)
-- The window menu and Super+Tab lead each title with the name of its
-  application, from its desktop entry: "~: fish" shows as
-  "Alacritty — ~: fish", and "Page - Google Chrome" as
-  "Google Chrome — Page". The menu of one application's windows has that
-  name as its header instead of the app id. Desktop entries are also found
-  by lower-case app id and by `StartupWMClass`, for names and icons alike. (#73)
-- Optimize memory used for window frames and shadows, and more efficiently
-  return it to the system when windows close. (#90)
+  instead of to the next or previous output in no particular order. (#92)
+- Minimized windows can be handled from the keyboard: minimizing with Super
+  keeps the desktop icon selected until Super is released, so Super+Up brings
+  the window right back. A clicked icon can be moved between with the arrow
+  keys, restored with Super+Up and sent to another output with
+  Super+Alt+Arrow. (#95)
+- Window frames and shadows use less memory. (#90)
 
 ### Removed
 
@@ -131,27 +99,20 @@ Packages should install `contrib/canoe.desktop` into
 
 ### Fixed
 
-- Windows are no longer minimized when the last output goes away, e.g.
-  while the only monitor wakes up and reconnects; they come back on the
-  first output that appears. (#82)
-- Windows stay where they were when a monitor turns off or reconnects while
-  the screen is locked, e.g. a monitor going to sleep or a laptop
-  resuming from suspend. Windows from a monitor that went away wait for the
-  unlock and go back to it if it came back, fullscreen if they were, instead
-  of all ending up on the remaining screen. A monitor that comes back while
-  the screen is locked doesn't take focus from where it was. (#96)
-- The desktop icon of a minimized window disappears when the window closes,
-  instead of staying until it is clicked. (#69)
-- Focusing a window only takes fullscreen from windows on its own output, so a
-  program can cover every output with a fullscreen window of its own (as
-  Spectacle does to select a region). A new window is focused once what it
-  asked for before showing up, like fullscreen on a given output, is done. (#81)
-- Windows that ask to be maximized or fullscreen before they first show up, as
-  Qt programs do, start out that way. Canoe answered such a request at once,
-  which kept it from choosing how they start, so they could start
-  windowed. (#81)
-- Shortcuts and hotkeys work while a layout without Latin letters, like a
-  Cyrillic or Greek one, is active. (#97)
+- Windows are no longer minimized when the only monitor goes away for a
+  moment, e.g. while it wakes up. (#82)
+- Windows of a monitor that goes away while the screen is locked, e.g. on
+  suspend, wait for the unlock and go back to it if it came back, instead of
+  all ending up on the remaining screen. (#96)
+- A fullscreen window stays fullscreen when a window on another output is
+  focused, so programs like Spectacle can cover every output to select a
+  region. (#81)
+- Windows that ask to start maximized or fullscreen, as Qt programs do, start
+  out that way. (#81)
+- The desktop icon of a minimized window disappears when the window closes.
+  (#69)
+- Shortcuts and hotkeys work while a non-Latin keyboard layout, like Cyrillic
+  or Greek, is active. (#97)
 
 ## [0.6.2] - 2026-11-07
 
