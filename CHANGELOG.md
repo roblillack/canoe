@@ -115,7 +115,7 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
   or Greek, is active. (#97)
 - Menus and other popups of a window that draws its own decorations, with a
   shadow around them, open where the program puts them instead of shifted up
-  and to the left by the shadow's size.
+  and to the left by the shadow's size. (#98)
 
 ## [0.6.2] - 2026-11-07
 
