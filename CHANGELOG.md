@@ -71,6 +71,9 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
 - Cursor capture sessions of `ext-image-copy-capture-v1` report where the
   pointer is, for programs like eyes following it. (#75)
 - A Nix flake and package. (#36, thanks @alvv-z)
+- A manpage, `man canoe`, and a Makefile: `make && sudo make install` installs
+  Canoe, its manpage, the session file and the portal configuration under
+  `/usr/local`. (#102)
 
 ### Changed
 

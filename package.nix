@@ -3,6 +3,7 @@
   rustPlatform,
   pkg-config,
   makeBinaryWrapper,
+  installShellFiles,
   fontconfig,
   freetype,
   libdrm,
@@ -48,6 +49,7 @@ rustPlatform.buildRustPackage {
   nativeBuildInputs = [
     pkg-config
     makeBinaryWrapper
+    installShellFiles
   ];
 
   buildInputs = [
@@ -71,6 +73,8 @@ rustPlatform.buildRustPackage {
     substituteInPlace $out/share/wayland-sessions/canoe.desktop \
       --replace-fail "Exec=canoe" "Exec=$out/bin/canoe"
     install -Dm644 contrib/canoe-portals.conf $out/share/xdg-desktop-portal/canoe-portals.conf
+
+    installManPage canoe.1
   '';
 
   # Xwayland is looked up on PATH; one installed on the system comes first.
@@ -88,7 +92,7 @@ rustPlatform.buildRustPackage {
 
   meta = {
     description = "Stacking Wayland compositor with Win 3.x looks";
-    homepage = cargoToml.package.homepage;
+    homepage = cargoToml.package.repository;
     changelog = "https://github.com/roblillack/canoe/blob/main/CHANGELOG.md";
     license = lib.licenses.mit;
     platforms = lib.platforms.linux;
