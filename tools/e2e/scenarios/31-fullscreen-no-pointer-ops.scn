@@ -1,0 +1,11 @@
+# Super+drag neither resizes (right button) nor moves (left button) a window
+# that is fullscreen on an output: it keeps filling it, and clients.log shows
+# no configure after the fullscreen one.
+spawn $WLTEST --app-id full --title Full --size 400x250 --decoration ssd --request fullscreen --request-delay 1000
+wait-toplevel full 4000
+sleep 1500
+keydown super ; drag 1000 600 700 400 20 right ; keyup super
+shot 01-after-resize-drag
+keydown super ; drag 600 300 300 200 20 left ; keyup super
+shot 02-after-move-drag
+toplevels 02-toplevels

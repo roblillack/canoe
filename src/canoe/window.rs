@@ -541,6 +541,12 @@ impl Window {
     }
 
     /// Whether the window is fullscreen on the output with the given id
+    /// Fullscreen on an output (as opposed to within the window's frame),
+    /// where moving or resizing it makes no sense.
+    pub fn is_output_fullscreen(&self) -> bool {
+        matches!(self.fullscreen, FullscreenState::Output(_))
+    }
+
     pub fn is_fullscreen_on(&self, output_id: super::OutputId) -> bool {
         match &self.fullscreen {
             FullscreenState::Output(output) => output
