@@ -129,6 +129,9 @@ pub struct ManagedWindow {
     pub reported_hints: Option<(i32, i32, i32, i32)>,
     /// Pending state changed; a configure must be sent.
     pub needs_configure: bool,
+    /// The client asked to change its state: it gets a configure once the
+    /// window manager has handled that, even if nothing changed.
+    pub answer_state_request: bool,
     /// The decoration mode must be told to the client, with the next
     /// configure.
     pub decoration_mode_dirty: bool,

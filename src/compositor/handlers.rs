@@ -303,24 +303,24 @@ impl XdgShellHandler for State {
 
     fn maximize_request(&mut self, surface: ToplevelSurface) {
         self.window_request(surface.wl_surface(), canoe::WindowEvent::Maximize);
-        answer_state_request(&surface);
+        self.answer_state_request(&surface);
     }
 
     fn unmaximize_request(&mut self, surface: ToplevelSurface) {
         self.window_request(surface.wl_surface(), canoe::WindowEvent::Unmaximize);
-        answer_state_request(&surface);
+        self.answer_state_request(&surface);
     }
 
     fn fullscreen_request(&mut self, surface: ToplevelSurface, output: Option<WlOutput>) {
         let output = output.and_then(|wl| Output::from_resource(&wl));
         let output = self.wm_output_weak(output.as_ref());
         self.window_request(surface.wl_surface(), canoe::WindowEvent::Fullscreen(output));
-        answer_state_request(&surface);
+        self.answer_state_request(&surface);
     }
 
     fn unfullscreen_request(&mut self, surface: ToplevelSurface) {
         self.window_request(surface.wl_surface(), canoe::WindowEvent::Unfullscreen);
-        answer_state_request(&surface);
+        self.answer_state_request(&surface);
     }
 
     fn minimize_request(&mut self, surface: ToplevelSurface) {
@@ -345,19 +345,36 @@ impl XdgShellHandler for State {
     }
 }
 
-/// Reply to a toplevel's request to change its state: the protocol wants a
-/// configure in reply even if nothing changes. Before the client's initial
-/// commit nothing may be sent; the initial configure, which the window
-/// manager makes once it has handled the request, is the reply then.
-/// (Sending one earlier would also count as the initial configure, so the
-/// window manager wouldn't get to pick how the window starts out.)
-fn answer_state_request(surface: &ToplevelSurface) {
-    if surface.is_initial_configure_sent() {
-        surface.send_configure();
-    }
-}
-
 impl State {
+    /// Reply to a toplevel's request to change its state: the protocol
+    /// wants a configure in reply even if nothing changes. It goes out once
+    /// the window manager has handled the request, so it carries the new
+    /// state: a configure with the old one first would tell the client that
+    /// its request was refused (Chrome then leaves a video's fullscreen
+    /// mode again). Before the client's initial commit nothing may be sent;
+    /// the initial configure, which the window manager makes once it has
+    /// handled the request, is the reply then. (Sending one earlier would
+    /// also count as the initial configure, so the window manager wouldn't
+    /// get to pick how the window starts out.)
+    fn answer_state_request(&mut self, surface: &ToplevelSurface) {
+        if !surface.is_initial_configure_sent() {
+            return;
+        }
+        let window = self
+            .windows
+            .iter_mut()
+            .find(|w| w.wl_surface() == surface.wl_surface());
+        match window {
+            Some(window) => {
+                window.answer_state_request = true;
+                self.schedule_wm();
+            }
+            None => {
+                surface.send_configure();
+            }
+        }
+    }
+
     /// Keep a popup on its toplevel's output.
     fn unconstrain_popup(&self, popup: &PopupSurface) {
         let kind = PopupKind::Xdg(popup.clone());

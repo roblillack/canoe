@@ -245,6 +245,7 @@ impl State {
             reported_size: None,
             reported_hints: None,
             needs_configure: false,
+            answer_state_request: false,
             decoration_mode_dirty: false,
             pending_positions: Vec::new(),
             initial_commit: false,
@@ -586,15 +587,21 @@ impl State {
             let Some(toplevel) = window.toplevel() else {
                 continue;
             };
-            if !window.needs_configure {
+            let answer = window.answer_state_request;
+            if !window.needs_configure && !answer {
                 continue;
             }
             // Nothing may be sent before the client's initial commit.
             if !toplevel.is_initial_configure_sent() {
                 continue;
             }
-            toplevel.send_pending_configure();
+            // A state request is answered with the configure carrying its
+            // outcome, or, if nothing changed, with the current state.
+            if toplevel.send_pending_configure().is_none() && answer {
+                toplevel.send_configure();
+            }
             window.needs_configure = false;
+            window.answer_state_request = false;
         }
         self.configure_x11_windows();
     }
