@@ -1604,9 +1604,12 @@ impl Context {
             self.focus(wid);
         }
 
-        // Now move the focused window
+        // Now move the focused window, unless it fills an output.
         if let Some(window_id) = self.focused_window {
             if let Some(window) = self.windows.get(&window_id) {
+                if window.borrow().is_output_fullscreen() {
+                    return;
+                }
                 if let Some(seat) = self.seats.get(&seat_id) {
                     let mut w = window.borrow_mut();
                     w.floating = true; // Make floating if not already
@@ -1633,10 +1636,11 @@ impl Context {
         // Now resize the focused window
         if let Some(window_id) = self.focused_window {
             if let Some(window) = self.windows.get(&window_id) {
-                // Fixed-size toplevels and dialogs are not resizable; the
+                // Fixed-size toplevels and dialogs are not resizable, and a
+                // window filling an output has its output's size; the
                 // modifier+drag gesture must not start a resize on them (the
                 // window stays focused from the step above).
-                if !window.borrow().is_resizable() {
+                if !window.borrow().is_resizable() || window.borrow().is_output_fullscreen() {
                     return;
                 }
                 if let Some(seat) = self.seats.get(&seat_id) {
@@ -2651,7 +2655,7 @@ impl Context {
                 if let Some(window) = self.windows.get(&window_id) {
                     if let Some(seat) = seat.upgrade() {
                         let mut w = window.borrow_mut();
-                        if !w.is_resizable() {
+                        if !w.is_resizable() || w.is_output_fullscreen() {
                             return;
                         }
                         w.clear_maximized_without_restore();
