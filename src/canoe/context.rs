@@ -3538,7 +3538,12 @@ impl Context {
                 desktop.dirty = true;
             }
         }
-        self.icon_focus_output = Some(output_id);
+        // Only one icon is selected: one on another output is no longer.
+        if let Some(previous) = self.icon_focus_output.replace(output_id) {
+            if previous != output_id {
+                self.deselect_icon_on(previous);
+            }
+        }
         // A clicked icon stays selected until something else is.
         self.icon_focus_until_release = false;
         if let Some(seat) = self.seats.get(&seat_id) {
