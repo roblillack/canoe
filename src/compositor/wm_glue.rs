@@ -144,6 +144,13 @@ pub(super) fn open_window_menu_with_items(
     }
     menu.origin_x = local_x;
     menu.origin_y = local_y;
+    if mode == canoe::WindowMenuMode::Pointer {
+        // The title row normally sits under the pointer, but near the
+        // output's right or bottom edge the menu is pushed back and an item
+        // may land there instead. Releasing the opening click must not pick
+        // it, so nothing is hovered until the pointer moves.
+        menu.hold_hover_until_moved(pointer.0 - local_x, pointer.1 - local_y);
+    }
 
     menu.layer_surface.set_anchor(Anchor::Top | Anchor::Left);
     menu.layer_surface.set_margin(local_y, 0, 0, local_x);

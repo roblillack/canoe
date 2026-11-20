@@ -44,6 +44,11 @@ pub struct WindowMenu {
     pub origin_x: i32,
     pub origin_y: i32,
     pub theme: MenuTheme,
+    /// Menu-local position of a pointer that hasn't moved since the menu
+    /// opened. Hover stays off until it moves, so releasing the opening
+    /// click doesn't pick an item that ended up under the pointer because
+    /// the menu was pushed back inside the output.
+    hover_hold: Option<(i32, i32)>,
     /// Width of the rows' content, between the borders (logical px)
     inner_width: i32,
     cache: Option<MenuCache>,
@@ -214,6 +219,7 @@ impl WindowMenu {
             origin_x,
             origin_y,
             theme,
+            hover_hold: None,
             inner_width,
             cache: None,
         }
@@ -259,7 +265,19 @@ impl WindowMenu {
         })
     }
 
+    /// Keep items from being hovered by the pointer until it moves away from
+    /// the menu-local position (x, y).
+    pub fn hold_hover_until_moved(&mut self, x: i32, y: i32) {
+        self.hover_hold = Some((x, y));
+    }
+
     pub fn update_hover(&mut self, x: i32, y: i32) -> bool {
+        if let Some(hold) = self.hover_hold {
+            if !pointer_moved(hold, (x, y)) {
+                return false;
+            }
+            self.hover_hold = None;
+        }
         let next = self.item_at(x, y);
         if next != self.hovered {
             self.hovered = next;
@@ -443,6 +461,12 @@ impl Drop for WindowMenu {
 /// Index one step from `current` in `direction` among `len` items, wrapping
 /// around. With nothing selected, forward starts at the first item and reverse
 /// at the last.
+/// Whether the pointer has left `from`, allowing a pixel of slack for the
+/// different roundings of global and surface-local pointer positions.
+fn pointer_moved(from: (i32, i32), to: (i32, i32)) -> bool {
+    (to.0 - from.0).abs() > 1 || (to.1 - from.1).abs() > 1
+}
+
 fn step_index(current: Option<usize>, len: usize, direction: Direction) -> Option<usize> {
     if len == 0 {
         return None;
@@ -835,6 +859,14 @@ fn draw_diamond(renderer: &mut Renderer, x: i32, y: i32, size: i32, color_argb: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pointer_moved_ignores_rounding_slack() {
+        assert!(!pointer_moved((10, 20), (10, 20)));
+        assert!(!pointer_moved((10, 20), (11, 19)));
+        assert!(pointer_moved((10, 20), (12, 20)));
+        assert!(pointer_moved((10, 20), (10, 18)));
+    }
 
     #[test]
     fn step_forward_advances_and_wraps() {

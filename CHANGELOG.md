@@ -135,6 +135,9 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
 - Clicks on one monitor, its desktop and icons included, no longer go to a
   fullscreen window on another one, e.g. pausing a video playing there.
   (#104)
+- Right-clicking the desktop near its bottom or right edge, where the window
+  menu is pushed back onto the screen, no longer picks the window under the
+  pointer as soon as the button is released. (#47)
 
 ## [0.6.2] - 2026-11-07
 
