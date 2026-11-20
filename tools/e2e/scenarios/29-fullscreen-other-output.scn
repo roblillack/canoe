@@ -1,0 +1,15 @@
+#! outputs 1280x720,1280x720
+# A fullscreen window takes clicks on its own output only. Where it would be
+# as a window, reaching into the right output, clicks go to what is there:
+# the desktop, which takes the focus (clients.log: no pointer events before
+# "keyboard leave"). Clicking it on its own output focuses it again.
+spawn $WLTEST --app-id full --title Full --size 400x250 --decoration ssd --request fullscreen --request-delay 3000
+wait-toplevel full 4000
+drag 200 20 1000 300
+sleep 3500
+shot 01-fullscreen
+move 1400 500 ; btn click left
+shot 02-right-desktop-clicked
+toplevels 02-toplevels
+move 400 400 ; btn click left
+toplevels 03-toplevels
