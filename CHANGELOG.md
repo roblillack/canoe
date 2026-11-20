@@ -126,6 +126,9 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
   The nested window is now titled Canoe. (#101)
 - A window that asks to be moved or resized after the button is already up no
   longer leaves the pointer stuck moving or resizing it. (#99)
+- Selecting a desktop icon on one monitor deselects the one selected on
+  another, which otherwise stayed highlighted, even when its window was
+  restored and minimized again later.
 
 ## [0.6.2] - 2026-11-07
 

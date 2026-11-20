@@ -1,0 +1,25 @@
+#! outputs 1280x720,1280x720
+# Clicking a desktop icon on one output deselects the one selected on the
+# other, which stayed highlighted for good otherwise, and again whenever its
+# window was minimized later on.
+spawn $WLTEST --app-id aaa --title Aaa --size 400x250 --decoration ssd
+wait-toplevel aaa 4000
+spawn $WLTEST --app-id bbb --title Bbb --size 400x250 --color a05050 --decoration ssd
+wait-toplevel bbb 4000
+spawn $WLTEST --app-id ccc --title Ccc --size 400x250 --color 30a040 --decoration ssd
+wait-toplevel ccc 4000
+key super+alt+Right
+# Minimize Ccc on the right, then Bbb on the left, with their buttons.
+move 1655 27 ; btn click left
+move 375 27 ; btn click left
+shot 01-both-minimized
+# Select Bbb's icon, then Ccc's: only Ccc's is highlighted.
+move 53 666 ; btn click left
+sleep 600
+move 1333 666 ; btn click left
+shot 02-ccc-icon-selected
+# Ccc restored and focused, Bbb's icon still not highlighted.
+sleep 600
+btn click left ; btn click left
+shot 03-ccc-restored
+toplevels 03-toplevels
