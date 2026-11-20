@@ -128,7 +128,7 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
   longer leaves the pointer stuck moving or resizing it. (#99)
 - Selecting a desktop icon on one monitor deselects the one selected on
   another, which otherwise stayed highlighted, even when its window was
-  restored and minimized again later.
+  restored and minimized again later. (#103)
 
 ## [0.6.2] - 2026-11-07
 
