@@ -1,0 +1,9 @@
+# A window asking for fullscreen hears back once the window manager made it
+# fullscreen: clients.log shows a configure with "fullscreen" right after the
+# request, no configure with the old state before it (Chrome takes that as a
+# refusal and leaves a video's fullscreen mode again).
+spawn $WLTEST --app-id full --title Full --size 400x250 --decoration ssd --request fullscreen --request-delay 1000
+wait-toplevel full 4000
+sleep 1500
+shot 01-fullscreen
+toplevels 01-toplevels
