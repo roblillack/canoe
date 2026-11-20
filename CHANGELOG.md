@@ -128,7 +128,7 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
   longer leaves the pointer stuck moving or resizing it. (#99)
 - Super+drag no longer resizes or moves a fullscreen window. (#106)
 - A video put in fullscreen mode in Chrome, e.g. with `f` on YouTube, fills
-  the screen right away instead of only after asking a second time.
+  the screen right away instead of only after asking a second time. (#105)
 - Selecting a desktop icon on one monitor deselects the one selected on
   another, which otherwise stayed highlighted, even when its window was
   restored and minimized again later. (#103)
