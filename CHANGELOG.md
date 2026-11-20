@@ -129,6 +129,9 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
 - Selecting a desktop icon on one monitor deselects the one selected on
   another, which otherwise stayed highlighted, even when its window was
   restored and minimized again later. (#103)
+- Clicks on one monitor, its desktop and icons included, no longer go to a
+  fullscreen window on another one, e.g. pausing a video playing there.
+  (#104)
 
 ## [0.6.2] - 2026-11-07
 

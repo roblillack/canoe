@@ -825,7 +825,9 @@ impl State {
         }
 
         for window in self.windows.iter().rev() {
-            if window.hidden {
+            // A fullscreen window shows on its output only, not where it
+            // would be as a window, which may reach into other outputs.
+            if window.hidden || window.fullscreen.is_some() {
                 continue;
             }
             if let Some(hit) = self.window_hit(window, location) {
