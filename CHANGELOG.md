@@ -104,6 +104,10 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
 
 ### Fixed
 
+- A window that asks to be moved or resized, as X11 programs without a
+  title bar do, no longer leaves the pointer stuck when the button is
+  released before canoe gets to the request: clicks reached nothing until
+  canoe was restarted.
 - Windows are no longer minimized when the only monitor goes away for a
   moment, e.g. while it wakes up. (#82)
 - Windows of a monitor that goes away while the screen is locked, e.g. on
