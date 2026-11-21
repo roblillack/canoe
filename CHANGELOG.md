@@ -138,6 +138,10 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
 - Right-clicking the desktop near its bottom or right edge, where the window
   menu is pushed back onto the screen, no longer picks the window under the
   pointer as soon as the button is released. (#107)
+- A program that turns Canoe's decorations off while its window is shown, as
+  programs built with winit do to hide their titlebar, gets to draw its own
+  instead of keeping Canoe's. Canoe also answers every such request, as the
+  protocol wants, also when the decorations stay as they are.
 
 ## [0.6.2] - 2026-11-07
 

@@ -188,6 +188,10 @@ pub struct Window {
     pub decoration: Option<WindowDecoration>,
     /// Decoration hint from client (None = not received yet)
     pub decoration_hint: Option<u32>,
+    /// The client asked to draw its own decorations once it was shown: not
+    /// the preference a toolkit states at startup, but a decision, as when
+    /// a program hides its titlebar.
+    pub csd_requested: bool,
 
     /// Current operator (move/resize)
     pub operator: Operator,
@@ -256,6 +260,7 @@ impl Window {
             clip_state: ClipState::Unknown,
             decoration: None,
             decoration_hint: None,
+            csd_requested: false,
             operator: Operator::None,
             unhandled_events: VecDeque::new(),
             position_undefined: true,

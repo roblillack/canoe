@@ -10,7 +10,8 @@ A stacking Wayland compositor and window manager, written in Rust on top of
 - Stacking window management
 - Server-side decorations with classic window borders & titlebars, for every
   app that can be asked to leave its decorations to the window manager (apps
-  that only draw their own, like libadwaita's, keep them)
+  that only draw their own, like libadwaita's, keep them; so do apps that
+  turn Canoe's off while shown, e.g. to hide their titlebar)
 - Titlebar/edge window movement and resizing (Super+Drag anywhere)
 - Multihead support (focus/send windows across outputs, windows follow
   output layout and resolution changes, and move off unplugged outputs)

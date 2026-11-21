@@ -489,7 +489,7 @@ impl XdgDecorationHandler for State {
     fn new_decoration(&mut self, toplevel: ToplevelSurface) {
         // A client that creates a decoration object without a mode has no
         // preference.
-        self.decoration_hint_changed(toplevel.wl_surface(), 3);
+        self.decoration_hint_changed(toplevel.wl_surface(), 3, false);
     }
 
     fn request_mode(&mut self, toplevel: ToplevelSurface, mode: DecorationMode) {
@@ -498,11 +498,20 @@ impl XdgDecorationHandler for State {
             DecorationMode::ServerSide => 2,
             _ => 3,
         };
-        self.decoration_hint_changed(toplevel.wl_surface(), hint);
+        // Asking for client-side decorations at startup is what toolkits do
+        // by default, and canoe decorates such windows anyway. Asking once
+        // the window was configured, i.e. after being told canoe decorates
+        // it, is a decision (winit's `set_decorations(false)`), and honored.
+        let csd_requested =
+            mode == DecorationMode::ClientSide && toplevel.is_initial_configure_sent();
+        self.decoration_hint_changed(toplevel.wl_surface(), hint, csd_requested);
+        // The protocol wants a configure in reply, even if the mode stays.
+        self.answer_state_request(&toplevel);
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
-        self.decoration_hint_changed(toplevel.wl_surface(), 3);
+        self.decoration_hint_changed(toplevel.wl_surface(), 3, false);
+        self.answer_state_request(&toplevel);
     }
 }
 
@@ -564,7 +573,7 @@ impl KdeDecorationHandler for State {
                 sent_ssd: None,
             };
         });
-        self.decoration_hint_changed(surface, 3);
+        self.decoration_hint_changed(surface, 3, false);
     }
 
     fn request_mode(
@@ -583,19 +592,21 @@ impl KdeDecorationHandler for State {
             _ => 0,
         };
         with_kde_decoration(surface, |d| d.hint = Some(hint));
-        self.decoration_hint_changed(surface, hint);
+        self.decoration_hint_changed(surface, hint, false);
     }
 
     fn release(&mut self, _decoration: &OrgKdeKwinServerDecoration, surface: &WlSurface) {
         with_kde_decoration(surface, |d| *d = KdeDecoration::default());
-        self.decoration_hint_changed(surface, 0);
+        self.decoration_hint_changed(surface, 0, false);
     }
 }
 
 impl State {
     /// Decoration hints as River reports them: 0 only_supports_csd (no
     /// decoration object), 1 prefers_csd, 2 prefers_ssd, 3 no_preference.
-    fn decoration_hint_changed(&mut self, surface: &WlSurface, hint: u32) {
+    /// `csd_requested` is whether the client asked for client-side
+    /// decorations once its window was shown (see `Window::csd_requested`).
+    fn decoration_hint_changed(&mut self, surface: &WlSurface, hint: u32, csd_requested: bool) {
         let Some(key) = self.window_for_surface(surface).map(|w| w.key) else {
             return;
         };
@@ -607,6 +618,7 @@ impl State {
             };
             let mut w = window.borrow_mut();
             w.decoration_hint = Some(hint);
+            w.csd_requested = csd_requested;
             context.apply_rules_to_window(&mut w);
         }
         // The mode must be sent again, as the client just (re)created its

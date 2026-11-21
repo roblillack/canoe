@@ -564,11 +564,15 @@ impl Context {
         //
         // Canoe decorates every window that can be asked to leave its
         // decorations to the window manager, even one that would rather
-        // draw its own (prefers_csd). Only a window that can't be asked
-        // keeps drawing its own, unless a rule forces SSD on it: a Wayland
-        // client offering no decoration protocol (as libadwaita apps), or
-        // an X11 window that turned the window manager's decorations off.
-        let decoration = if window.decoration_hint == Some(0) && !applied.force_ssd {
+        // draw its own (prefers_csd): toolkits say that at startup whether
+        // or not they mean it. Only a window that can't be asked keeps
+        // drawing its own, unless a rule forces SSD on it: a Wayland client
+        // offering no decoration protocol (as libadwaita apps), or an X11
+        // window that turned the window manager's decorations off. So does
+        // a Wayland client that asks for client-side decorations once it
+        // is shown, as programs do to hide their titlebar.
+        let client_side = window.decoration_hint == Some(0) || window.csd_requested;
+        let decoration = if client_side && !applied.force_ssd {
             WindowDecoration::Csd
         } else {
             WindowDecoration::Ssd
@@ -5836,6 +5840,38 @@ mod tests {
         });
         assert_eq!(decoration(&ctx, "forced", 0), Some(WindowDecoration::Ssd));
         assert_eq!(decoration(&ctx, "app", 0), Some(WindowDecoration::Csd));
+    }
+
+    #[test]
+    fn windows_asking_for_their_own_decorations_once_shown_get_them() {
+        let mut ctx = Context::new(false);
+        let mut window = Window::new(1);
+        window.app_id = Some("app".to_string());
+        window.decoration_hint = Some(1);
+        ctx.apply_rules_to_window(&mut window);
+        assert_eq!(window.decoration, Some(WindowDecoration::Ssd));
+
+        // Hiding its titlebar, say.
+        window.csd_requested = true;
+        ctx.apply_rules_to_window(&mut window);
+        assert_eq!(window.decoration, Some(WindowDecoration::Csd));
+
+        // And back.
+        window.csd_requested = false;
+        window.decoration_hint = Some(2);
+        ctx.apply_rules_to_window(&mut window);
+        assert_eq!(window.decoration, Some(WindowDecoration::Ssd));
+
+        // A rule forcing SSD still wins.
+        ctx.config.rules.push(rule::Rule {
+            app_id: Some(vec!["app".to_string()]),
+            force_ssd: true,
+            ..Default::default()
+        });
+        window.csd_requested = true;
+        window.decoration_hint = Some(1);
+        ctx.apply_rules_to_window(&mut window);
+        assert_eq!(window.decoration, Some(WindowDecoration::Ssd));
     }
 
     fn hidden(ctx: &Context, id: WindowId) -> bool {
