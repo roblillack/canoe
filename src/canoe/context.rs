@@ -580,8 +580,20 @@ impl Context {
         // A hint or rule can change once the window is up, e.g. when the
         // client creates its decoration object after its toplevel.
         if window.decoration != Some(decoration) {
+            let floating = window.decoration.is_some()
+                && window.width > 0
+                && window.height > 0
+                && !window.maximized
+                && window.snap_state.is_none()
+                && matches!(window.fullscreen, super::window::FullscreenState::None);
             window.decoration = Some(decoration);
             window.set_decoration(decoration);
+            // A floating window is told the size it has along with its new
+            // decorations: told to pick its own, Chromium keeps the window
+            // geometry it had, which then takes in its own shadow too.
+            if floating {
+                window.propose_dimensions(window.width, window.height);
+            }
         }
         window.set_swallow_top(applied.swallow_top.unwrap_or(0));
 
@@ -5851,10 +5863,14 @@ mod tests {
         ctx.apply_rules_to_window(&mut window);
         assert_eq!(window.decoration, Some(WindowDecoration::Ssd));
 
-        // Hiding its titlebar, say.
+        // Hiding its titlebar, say. It's told to keep its size, as some
+        // (Chromium) don't take in their new decorations otherwise.
+        window.width = 300;
+        window.height = 200;
         window.csd_requested = true;
         ctx.apply_rules_to_window(&mut window);
         assert_eq!(window.decoration, Some(WindowDecoration::Csd));
+        assert_eq!(window.proposed_dimensions(), (300, 200));
 
         // And back.
         window.csd_requested = false;
