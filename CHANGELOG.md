@@ -142,6 +142,9 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
   programs built with winit do to hide their titlebar, gets to draw its own
   instead of keeping Canoe's. Canoe also answers every such request, as the
   protocol wants, also when the decorations stay as they are.
+- Windows that draw their own decorations with a shadow, as GTK 4 apps and
+  Chromium without the system titlebar do, no longer get a second one from
+  Canoe.
 
 ## [0.6.2] - 2026-11-07
 

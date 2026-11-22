@@ -1170,7 +1170,12 @@ impl State {
 
                 let is_fullscreen = !matches!(w.fullscreen, canoe::window::FullscreenState::None);
                 let is_focused = focused_window == Some(w.id);
-                let shadows_on = ui.shadows_enabled && !is_fullscreen && !w.maximized;
+                // A window decorating itself that draws outside its
+                // geometry casts its own shadow.
+                let own_shadow =
+                    w.decoration == Some(config::WindowDecoration::Csd) && w.draws_outside;
+                let shadows_on =
+                    ui.shadows_enabled && !is_fullscreen && !w.maximized && !own_shadow;
                 let shadow_size = if !shadows_on {
                     0
                 } else if is_focused {

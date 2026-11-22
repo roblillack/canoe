@@ -285,7 +285,19 @@ impl State {
             return;
         }
         let size = window.window.geometry().size;
-        let key = window.key;
+        // The geometry is clamped to the surfaces' bounding box, so they
+        // differ only where the client draws outside it.
+        let draws_outside = window.window.bbox() != window.window.geometry();
+        let (key, id, sized) = (window.key, window.id, window.reported_size.is_some());
+        let changed = self.context.borrow().windows.get(&id).is_some_and(|w| {
+            let mut w = w.borrow_mut();
+            std::mem::replace(&mut w.draws_outside, draws_outside) != draws_outside
+        });
+        // Once its size is known, its shadow is drawn; until then it's
+        // drawn with the size.
+        if changed && sized {
+            self.schedule_wm();
+        }
         self.settle_position(key);
         self.capture_window_damage(key);
         let window = self.window_by_key_mut(key).unwrap();

@@ -192,6 +192,9 @@ pub struct Window {
     /// the preference a toolkit states at startup, but a decision, as when
     /// a program hides its titlebar.
     pub csd_requested: bool,
+    /// The client draws beyond its window geometry, as toolkits that
+    /// decorate themselves do to cast their own shadow.
+    pub draws_outside: bool,
 
     /// Current operator (move/resize)
     pub operator: Operator,
@@ -261,6 +264,7 @@ impl Window {
             decoration: None,
             decoration_hint: None,
             csd_requested: false,
+            draws_outside: false,
             operator: Operator::None,
             unhandled_events: VecDeque::new(),
             position_undefined: true,
