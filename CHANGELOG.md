@@ -104,10 +104,6 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
 
 ### Fixed
 
-- A window that asks to be moved or resized, as X11 programs without a
-  title bar do, no longer leaves the pointer stuck when the button is
-  released before canoe gets to the request: clicks reached nothing until
-  canoe was restarted.
 - Windows are no longer minimized when the only monitor goes away for a
   moment, e.g. while it wakes up. (#82)
 - Windows of a monitor that goes away while the screen is locked, e.g. on
@@ -147,6 +143,10 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
 - Windows that draw their own decorations with a shadow, as GTK 4 apps and
   Chromium without the system titlebar do, no longer get a second one from
   Canoe. (#108)
+- A window that asks to be moved or resized, as X11 programs without a
+  title bar do, no longer leaves the pointer stuck when the button is
+  released before canoe gets to the request: clicks reached nothing until
+  canoe was restarted. (#109)
 
 ## [0.6.2] - 2026-11-07
 
