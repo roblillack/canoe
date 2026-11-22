@@ -188,6 +188,9 @@ pub struct Window {
     pub decoration: Option<WindowDecoration>,
     /// Decoration hint from client (None = not received yet)
     pub decoration_hint: Option<u32>,
+    /// The client draws beyond its window geometry, as toolkits that
+    /// decorate themselves do to cast their own shadow.
+    pub draws_outside: bool,
 
     /// Current operator (move/resize)
     pub operator: Operator,
@@ -256,6 +259,7 @@ impl Window {
             clip_state: ClipState::Unknown,
             decoration: None,
             decoration_hint: None,
+            draws_outside: false,
             operator: Operator::None,
             unhandled_events: VecDeque::new(),
             position_undefined: true,

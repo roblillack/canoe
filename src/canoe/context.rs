@@ -562,13 +562,17 @@ impl Context {
         // Decoration hints (river_window_v1.decoration_hint):
         //   0 only_supports_csd, 1 prefers_csd, 2 prefers_ssd, 3 no_preference
         //
-        // Canoe decorates every window that can be asked to leave its
-        // decorations to the window manager, even one that would rather
-        // draw its own (prefers_csd). Only a window that can't be asked
-        // keeps drawing its own, unless a rule forces SSD on it: a Wayland
-        // client offering no decoration protocol (as libadwaita apps), or
-        // an X11 window that turned the window manager's decorations off.
-        let decoration = if window.decoration_hint == Some(0) && !applied.force_ssd {
+        // Canoe decorates every window that leaves it the choice. A window
+        // that can't be asked keeps drawing its own decorations, unless a
+        // rule forces SSD on it: a Wayland client offering no decoration
+        // protocol (as libadwaita apps), or an X11 window that turned the
+        // window manager's decorations off. So does a Wayland client asking
+        // for client-side decorations (prefers_csd), at startup or later:
+        // the clients that do mean it. Chromium with its own titlebar, say,
+        // keeps drawing it whatever it is told, and winit programs ask to
+        // hide their titlebar.
+        let client_side = matches!(window.decoration_hint, Some(0 | 1));
+        let decoration = if client_side && !applied.force_ssd {
             WindowDecoration::Csd
         } else {
             WindowDecoration::Ssd
@@ -576,8 +580,20 @@ impl Context {
         // A hint or rule can change once the window is up, e.g. when the
         // client creates its decoration object after its toplevel.
         if window.decoration != Some(decoration) {
+            let floating = window.decoration.is_some()
+                && window.width > 0
+                && window.height > 0
+                && !window.maximized
+                && window.snap_state.is_none()
+                && matches!(window.fullscreen, super::window::FullscreenState::None);
             window.decoration = Some(decoration);
             window.set_decoration(decoration);
+            // A floating window is told the size it has along with its new
+            // decorations: told to pick its own, Chromium keeps the window
+            // geometry it had, which then takes in its own shadow too.
+            if floating {
+                window.propose_dimensions(window.width, window.height);
+            }
         }
         window.set_swallow_top(applied.swallow_top.unwrap_or(0));
 
@@ -5813,7 +5829,7 @@ mod tests {
     }
 
     #[test]
-    fn only_windows_that_cannot_be_asked_keep_their_own_decorations() {
+    fn only_windows_that_cannot_be_asked_or_ask_keep_their_own_decorations() {
         let mut ctx = Context::new(false);
         let decoration = |ctx: &Context, app_id: &str, hint: u32| {
             let mut window = Window::new(1);
@@ -5825,7 +5841,8 @@ mod tests {
 
         // 0 only_supports_csd, 1 prefers_csd, 2 prefers_ssd, 3 no_preference
         assert_eq!(decoration(&ctx, "app", 0), Some(WindowDecoration::Csd));
-        for hint in 1..=3 {
+        assert_eq!(decoration(&ctx, "app", 1), Some(WindowDecoration::Csd));
+        for hint in 2..=3 {
             assert_eq!(decoration(&ctx, "app", hint), Some(WindowDecoration::Ssd));
         }
 
@@ -5835,7 +5852,34 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(decoration(&ctx, "forced", 0), Some(WindowDecoration::Ssd));
+        assert_eq!(decoration(&ctx, "forced", 1), Some(WindowDecoration::Ssd));
         assert_eq!(decoration(&ctx, "app", 0), Some(WindowDecoration::Csd));
+    }
+
+    #[test]
+    fn windows_changing_their_decorations_once_shown_get_them() {
+        let ctx = Context::new(false);
+        let mut window = Window::new(1);
+        window.app_id = Some("app".to_string());
+        window.decoration_hint = Some(2);
+        ctx.apply_rules_to_window(&mut window);
+        assert_eq!(window.decoration, Some(WindowDecoration::Ssd));
+
+        // Hiding its titlebar, say. It's told to keep its size, as some
+        // (Chromium) don't take in their new decorations otherwise.
+        window.width = 300;
+        window.height = 200;
+        window.decoration_hint = Some(1);
+        ctx.apply_rules_to_window(&mut window);
+        assert_eq!(window.decoration, Some(WindowDecoration::Csd));
+        assert_eq!(window.proposed_dimensions(), (300, 200));
+
+        // And back, again keeping its size.
+        window.width = 320;
+        window.decoration_hint = Some(2);
+        ctx.apply_rules_to_window(&mut window);
+        assert_eq!(window.decoration, Some(WindowDecoration::Ssd));
+        assert_eq!(window.proposed_dimensions(), (320, 200));
     }
 
     fn hidden(ctx: &Context, id: WindowId) -> bool {

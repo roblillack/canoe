@@ -138,6 +138,11 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
 - Right-clicking the desktop near its bottom or right edge, where the window
   menu is pushed back onto the screen, no longer picks the window under the
   pointer as soon as the button is released. (#107)
+- Allow programs to toggle server-side decorations for windows already shown.
+  (#108)
+- Windows that draw their own decorations with a shadow, as GTK 4 apps and
+  Chromium without the system titlebar do, no longer get a second one from
+  Canoe. (#108)
 
 ## [0.6.2] - 2026-11-07
 

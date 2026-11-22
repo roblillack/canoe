@@ -499,10 +499,13 @@ impl XdgDecorationHandler for State {
             _ => 3,
         };
         self.decoration_hint_changed(toplevel.wl_surface(), hint);
+        // The protocol wants a configure in reply, even if the mode stays.
+        self.answer_state_request(&toplevel);
     }
 
     fn unset_mode(&mut self, toplevel: ToplevelSurface) {
         self.decoration_hint_changed(toplevel.wl_surface(), 3);
+        self.answer_state_request(&toplevel);
     }
 }
 

@@ -56,7 +56,8 @@ pub struct Rule {
     /// Regex pattern for title
     pub title_regex: Option<Regex>,
 
-    /// Require the window to only support CSD
+    /// Require the window to draw its own decorations (only supporting or
+    /// asking for CSD)
     pub require_csd_only: Option<bool>,
     /// Require the window to have no parent
     pub require_no_parent: Option<bool>,
@@ -118,7 +119,7 @@ impl Rule {
             _ => false,
         };
 
-        let csd_only = decoration_hint == Some(0);
+        let csd_only = matches!(decoration_hint, Some(0 | 1));
         let csd_matches = match self.require_csd_only {
             Some(true) => csd_only,
             Some(false) => !csd_only,

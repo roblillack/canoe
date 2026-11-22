@@ -371,8 +371,9 @@ properties listed in **match_props**:
 : The window has no parent.
 
 **csd_only**
-: The program draws its own decorations and can't be asked not to (e.g.
-  libadwaita programs).
+: The program draws its own decorations: it can't be asked not to (e.g.
+  libadwaita programs) or asks to (e.g. Chromium without the system
+  titlebar).
 
 A matching rule can set:
 
