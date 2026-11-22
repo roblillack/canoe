@@ -639,7 +639,7 @@ impl State {
 
     /// All buttons are up during a pointer operation: tell the window
     /// manager once.
-    fn check_op_release(&mut self) {
+    pub(super) fn check_op_release(&mut self) {
         let release = match self.pointer_op.as_mut() {
             Some(op) if !op.released && self.pressed_buttons.is_empty() => {
                 op.released = true;

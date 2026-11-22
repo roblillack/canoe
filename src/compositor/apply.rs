@@ -30,6 +30,8 @@ impl State {
         for request in requests {
             self.apply_request(request, &resized);
         }
+        // A pointer operation started with no button held is over already.
+        self.check_op_release();
     }
 
     /// Apply positions that waited too long for their client.
@@ -229,9 +231,16 @@ impl State {
             Request::ClearFocus(_) => self.wm_focus = None,
             Request::OpStartPointer(_) => {
                 if self.pointer_op.is_none() {
+                    // Ended once all buttons are up, which they may already
+                    // be: a program asking to be moved or resized does so
+                    // after its button press, and the button can be released
+                    // before the request gets here. Then the operation ends
+                    // right away (see apply_requests); it must not wait for a
+                    // release that already happened, taking every later
+                    // click with it.
                     self.pointer_op = Some(PointerOp {
                         start: self.pointer_location,
-                        released: self.pressed_buttons.is_empty(),
+                        released: false,
                     });
                     // Nothing has pointer focus during the operation, not
                     // even the window manager's own surfaces.
