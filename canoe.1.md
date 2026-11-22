@@ -18,10 +18,10 @@ canoe - a stacking Wayland compositor with Win 3.x looks
 
 Canoe is a stacking Wayland compositor and window manager. Windows overlap
 and are moved and resized freely; Canoe draws classic window borders and
-titlebars around every program that can be asked to leave its decorations to
-the window manager, unless it turns them off while its window is shown, as to
-hide its titlebar. Minimized windows become icons on the desktop, and
-right-clicking the empty desktop opens a menu of all windows.
+titlebars around every program that leaves its decorations to the window
+manager, rather than drawing its own or asking to. Minimized windows become
+icons on the desktop, and right-clicking the empty desktop opens a menu of all
+windows.
 
 Started from a text console (VT), with seatd or systemd-logind managing the
 seat, Canoe takes over the monitors and input devices of that seat. Started
@@ -372,8 +372,9 @@ properties listed in **match_props**:
 : The window has no parent.
 
 **csd_only**
-: The program draws its own decorations and can't be asked not to (e.g.
-  libadwaita programs).
+: The program draws its own decorations: it can't be asked not to (e.g.
+  libadwaita programs) or asks to (e.g. Chromium without the system
+  titlebar).
 
 A matching rule can set:
 

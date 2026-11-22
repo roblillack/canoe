@@ -80,7 +80,8 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
 - Every window gets Canoe's titlebar, including GTK 3 and GTK 4 apps, which
   used to draw their own, except windows that can only draw their own
   decorations, like libadwaita apps: they no longer get a second titlebar on
-  top. A `force_ssd` rule still gives them Canoe's. (#66)
+  top. Neither do programs that ask to draw their own, like Chromium without
+  the system titlebar. A `force_ssd` rule still gives them Canoe's. (#66)
 - Window titles are centered in the titlebar. `titlebar_text_align = "left"`
   under `[ui]` brings back the old look. (#89)
 - The window menu and Super+Tab show each window's application name before
@@ -138,10 +139,12 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
 - Right-clicking the desktop near its bottom or right edge, where the window
   menu is pushed back onto the screen, no longer picks the window under the
   pointer as soon as the button is released. (#107)
-- A program that turns Canoe's decorations off while its window is shown, as
-  programs built with winit do to hide their titlebar, gets to draw its own
-  instead of keeping Canoe's. Canoe also answers every such request, as the
-  protocol wants, also when the decorations stay as they are.
+- A program that asks to draw its own decorations gets to, at startup or
+  while its window is shown: Chromium without the system titlebar no longer
+  gets Canoe's on top of its own, switching it on or off swaps one for the
+  other, and programs built with winit can hide their titlebar. Canoe also
+  answers every such request, as the protocol wants, also when the
+  decorations stay as they are.
 - Windows that draw their own decorations with a shadow, as GTK 4 apps and
   Chromium without the system titlebar do, no longer get a second one from
   Canoe.

@@ -9,9 +9,9 @@ A stacking Wayland compositor and window manager, written in Rust on top of
 
 - Stacking window management
 - Server-side decorations with classic window borders & titlebars, for every
-  app that can be asked to leave its decorations to the window manager (apps
-  that only draw their own, like libadwaita's, keep them; so do apps that
-  turn Canoe's off while shown, e.g. to hide their titlebar)
+  app that leaves its decorations to the window manager (apps that only draw
+  their own, like libadwaita's, keep them; so do apps that ask to, like
+  Chromium without the system titlebar)
 - Titlebar/edge window movement and resizing (Super+Drag anywhere)
 - Multihead support (focus/send windows across outputs, windows follow
   output layout and resolution changes, and move off unplugged outputs)
@@ -634,9 +634,9 @@ match_props = ["toplevel", "csd_only"] # all props must match
 
 Supported `match_props` values:
 - `toplevel` (window has no parent)
-- `csd_only` (client does not support SSD: it draws its own decorations and
-  can't be asked not to, as libadwaita apps or X11 programs that turn the
-  window manager's decorations off)
+- `csd_only` (client draws its own decorations: it can't be asked not to, as
+  libadwaita apps or X11 programs that turn the window manager's decorations
+  off, or asks to, as Chromium without the system titlebar)
 
 The matching windows can have parts of their content "swallowed". This removes
 the client-side decoration on my Firefox, for instance:

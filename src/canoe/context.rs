@@ -562,16 +562,16 @@ impl Context {
         // Decoration hints (river_window_v1.decoration_hint):
         //   0 only_supports_csd, 1 prefers_csd, 2 prefers_ssd, 3 no_preference
         //
-        // Canoe decorates every window that can be asked to leave its
-        // decorations to the window manager, even one that would rather
-        // draw its own (prefers_csd): toolkits say that at startup whether
-        // or not they mean it. Only a window that can't be asked keeps
-        // drawing its own, unless a rule forces SSD on it: a Wayland client
-        // offering no decoration protocol (as libadwaita apps), or an X11
-        // window that turned the window manager's decorations off. So does
-        // a Wayland client that asks for client-side decorations once it
-        // is shown, as programs do to hide their titlebar.
-        let client_side = window.decoration_hint == Some(0) || window.csd_requested;
+        // Canoe decorates every window that leaves it the choice. A window
+        // that can't be asked keeps drawing its own decorations, unless a
+        // rule forces SSD on it: a Wayland client offering no decoration
+        // protocol (as libadwaita apps), or an X11 window that turned the
+        // window manager's decorations off. So does a Wayland client asking
+        // for client-side decorations (prefers_csd), at startup or later:
+        // the clients that do mean it. Chromium with its own titlebar, say,
+        // keeps drawing it whatever it is told, and winit programs ask to
+        // hide their titlebar.
+        let client_side = matches!(window.decoration_hint, Some(0 | 1));
         let decoration = if client_side && !applied.force_ssd {
             WindowDecoration::Csd
         } else {
@@ -5829,7 +5829,7 @@ mod tests {
     }
 
     #[test]
-    fn only_windows_that_cannot_be_asked_keep_their_own_decorations() {
+    fn only_windows_that_cannot_be_asked_or_ask_keep_their_own_decorations() {
         let mut ctx = Context::new(false);
         let decoration = |ctx: &Context, app_id: &str, hint: u32| {
             let mut window = Window::new(1);
@@ -5841,7 +5841,8 @@ mod tests {
 
         // 0 only_supports_csd, 1 prefers_csd, 2 prefers_ssd, 3 no_preference
         assert_eq!(decoration(&ctx, "app", 0), Some(WindowDecoration::Csd));
-        for hint in 1..=3 {
+        assert_eq!(decoration(&ctx, "app", 1), Some(WindowDecoration::Csd));
+        for hint in 2..=3 {
             assert_eq!(decoration(&ctx, "app", hint), Some(WindowDecoration::Ssd));
         }
 
@@ -5851,15 +5852,16 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(decoration(&ctx, "forced", 0), Some(WindowDecoration::Ssd));
+        assert_eq!(decoration(&ctx, "forced", 1), Some(WindowDecoration::Ssd));
         assert_eq!(decoration(&ctx, "app", 0), Some(WindowDecoration::Csd));
     }
 
     #[test]
-    fn windows_asking_for_their_own_decorations_once_shown_get_them() {
-        let mut ctx = Context::new(false);
+    fn windows_changing_their_decorations_once_shown_get_them() {
+        let ctx = Context::new(false);
         let mut window = Window::new(1);
         window.app_id = Some("app".to_string());
-        window.decoration_hint = Some(1);
+        window.decoration_hint = Some(2);
         ctx.apply_rules_to_window(&mut window);
         assert_eq!(window.decoration, Some(WindowDecoration::Ssd));
 
@@ -5867,27 +5869,17 @@ mod tests {
         // (Chromium) don't take in their new decorations otherwise.
         window.width = 300;
         window.height = 200;
-        window.csd_requested = true;
+        window.decoration_hint = Some(1);
         ctx.apply_rules_to_window(&mut window);
         assert_eq!(window.decoration, Some(WindowDecoration::Csd));
         assert_eq!(window.proposed_dimensions(), (300, 200));
 
-        // And back.
-        window.csd_requested = false;
+        // And back, again keeping its size.
+        window.width = 320;
         window.decoration_hint = Some(2);
         ctx.apply_rules_to_window(&mut window);
         assert_eq!(window.decoration, Some(WindowDecoration::Ssd));
-
-        // A rule forcing SSD still wins.
-        ctx.config.rules.push(rule::Rule {
-            app_id: Some(vec!["app".to_string()]),
-            force_ssd: true,
-            ..Default::default()
-        });
-        window.csd_requested = true;
-        window.decoration_hint = Some(1);
-        ctx.apply_rules_to_window(&mut window);
-        assert_eq!(window.decoration, Some(WindowDecoration::Ssd));
+        assert_eq!(window.proposed_dimensions(), (320, 200));
     }
 
     fn hidden(ctx: &Context, id: WindowId) -> bool {
