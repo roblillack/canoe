@@ -147,6 +147,8 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
   title bar do, no longer leaves the pointer stuck when the button is
   released before canoe gets to the request: clicks reached nothing until
   canoe was restarted. (#109)
+- Windows that start out maximized, like Inkscape, show their titlebar on
+  the screen, and no longer disappear when unmaximized. (#110)
 
 ## [0.6.2] - 2026-11-07
 
