@@ -400,7 +400,6 @@ impl Window {
     }
 
     /// The dimensions last proposed to the compositor
-    #[cfg(test)]
     pub fn proposed_dimensions(&self) -> (i32, i32) {
         (self.proposed_width, self.proposed_height)
     }
@@ -615,6 +614,16 @@ impl Window {
             self.maximized = false;
             self.inform_unmaximized();
         }
+    }
+
+    /// Leave the maximized or snapped state for a resize. The window then
+    /// floats at the size it is resized to, which is what maximizing it
+    /// again saves: the geometry it had before it was maximized is stale.
+    pub fn float_for_resize(&mut self) {
+        self.clear_maximized_without_restore();
+        self.snap_state = None;
+        self.pre_snap = None;
+        self.floating = true;
     }
 
     pub fn unmaximize_restore_size_only(&mut self) {
