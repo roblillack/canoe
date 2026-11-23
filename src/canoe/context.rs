@@ -586,6 +586,15 @@ impl Context {
                 && !window.maximized
                 && window.snap_state.is_none()
                 && matches!(window.fullscreen, super::window::FullscreenState::None);
+            // A maximized or snapped window keeps its frame where it is and
+            // makes room in it for the new decorations. GTK, for one, commits
+            // a toplevel it wants maximized before asking for server-side
+            // decorations, so it was sized for its own first.
+            let snapped = window.decoration.is_some()
+                && !window.position_undefined
+                && (window.maximized || window.snap_state.is_some())
+                && matches!(window.fullscreen, super::window::FullscreenState::None);
+            let old_insets = self.frame_insets(window);
             window.decoration = Some(decoration);
             window.set_decoration(decoration);
             // A floating window is told the size it has along with its new
@@ -593,6 +602,20 @@ impl Context {
             // geometry it had, which then takes in its own shadow too.
             if floating {
                 window.propose_dimensions(window.width, window.height);
+            } else if snapped {
+                let (old_left, old_top, old_right, old_bottom) = old_insets;
+                let (left, top, right, bottom) = self.frame_insets(window);
+                let (width, height) = match window.proposed_dimensions() {
+                    (w, h) if w > 0 && h > 0 => (w, h),
+                    _ => (window.width, window.height),
+                };
+                if width > 0 && height > 0 {
+                    window.set_position(window.x - old_left + left, window.y - old_top + top);
+                    window.propose_dimensions(
+                        (width + old_left + old_right - left - right).max(1),
+                        (height + old_top + old_bottom - top - bottom).max(1),
+                    );
+                }
             }
         }
         window.set_swallow_top(applied.swallow_top.unwrap_or(0));
@@ -1662,9 +1685,7 @@ impl Context {
                 if let Some(seat) = self.seats.get(&seat_id) {
                     let edges = {
                         let mut w = window.borrow_mut();
-                        w.clear_maximized_without_restore();
-                        w.snap_state = None;
-                        w.floating = true; // Make floating if not already
+                        w.float_for_resize();
 
                         // Determine edges based on pointer position relative to window
                         let seat_ref = seat.borrow();
@@ -1741,8 +1762,7 @@ impl Context {
         if edges != 0 {
             {
                 let mut w = window.borrow_mut();
-                w.clear_maximized_without_restore();
-                w.floating = true;
+                w.float_for_resize();
                 w.start_resize(Rc::downgrade(&seat), edges);
             }
             seat.borrow().start_pointer_op();
@@ -2036,10 +2056,13 @@ impl Context {
         }
 
         let saved = w.pre_snap.take();
+        let never_sized = saved
+            .as_ref()
+            .is_some_and(|s| s.width <= 0 || s.height <= 0);
         w.maximized = false;
         w.snap_state = None;
 
-        if let Some(saved) = saved {
+        if let Some(saved) = saved.filter(|_| !never_sized) {
             let swallow_top = w.swallow_top.max(0);
             let cur_w = w.width.max(1);
             let cur_h = w.height.max(1);
@@ -2053,6 +2076,9 @@ impl Context {
                 w.y
             };
             w.set_position(new_x, new_y);
+        } else if never_sized {
+            // Snapped before it had a size of its own: it picks one.
+            w.propose_preferred_dimensions();
         }
 
         if was_maximized {
@@ -2064,10 +2090,17 @@ impl Context {
         if let Some(window) = self.windows.get(&window_id) {
             let mut w = window.borrow_mut();
             w.maximized = false;
-            if let Some(saved) = w.pre_snap.take() {
-                self.animate_window_to(&w, saved.x, saved.y, saved.width, saved.height);
-                w.set_position(saved.x, saved.y);
-                w.propose_dimensions(saved.width, saved.height);
+            match w.pre_snap.take() {
+                Some(saved) if saved.width > 0 && saved.height > 0 => {
+                    self.animate_window_to(&w, saved.x, saved.y, saved.width, saved.height);
+                    w.set_position(saved.x, saved.y);
+                    w.propose_dimensions(saved.width, saved.height);
+                }
+                // Asked to start maximized, it never had a size of its own:
+                // it picks one where it is, rather than being shrunk to its
+                // minimum size.
+                Some(_) => w.propose_preferred_dimensions(),
+                None => {}
             }
             w.snap_state = None;
             w.inform_unmaximized();
@@ -2674,7 +2707,7 @@ impl Context {
                         if !w.is_resizable() || w.is_output_fullscreen() {
                             return;
                         }
-                        w.clear_maximized_without_restore();
+                        w.float_for_resize();
                         w.start_resize(Rc::downgrade(&seat), edges);
                         seat.borrow().start_pointer_op();
                     }
@@ -4871,6 +4904,55 @@ mod tests {
         );
     }
 
+    /// A window asked to start maximized, as Inkscape does.
+    fn add_window_maximized_before_sized(ctx: &mut Context, id: WindowId, output_id: OutputId) {
+        let mut window = Window::new(id);
+        window.output = ctx.outputs.get(&output_id).map(Rc::downgrade);
+        ctx.windows.insert(id, Rc::new(RefCell::new(window)));
+        ctx.current_output = Some(output_id);
+        ctx.maximize_window(id);
+    }
+
+    #[test]
+    fn unmaximizing_a_window_that_started_maximized_lets_it_pick_its_size() {
+        let mut ctx = context_with_outputs(&[(1, 1920, 0, 1920, 1080)]);
+        add_window_maximized_before_sized(&mut ctx, 10, 1);
+        let maximized_at = {
+            let w = ctx.windows[&10].borrow();
+            (w.x, w.y)
+        };
+
+        ctx.unmaximize_window(10);
+
+        // Not shrunk to its minimum size at a position it never had (0, 0,
+        // which may be off every output), but where it is, at its own size.
+        let w = ctx.windows[&10].borrow();
+        assert!(!w.maximized);
+        assert_eq!((w.x, w.y), maximized_at);
+        assert_eq!(w.proposed_dimensions(), (0, 0));
+    }
+
+    #[test]
+    fn resizing_a_maximized_window_forgets_its_old_geometry() {
+        let mut ctx = context_with_outputs(&[(1, 1920, 0, 1920, 1080)]);
+        add_window_maximized_before_sized(&mut ctx, 10, 1);
+        {
+            // Resized with modifier+drag, ending up floating.
+            let mut w = ctx.windows[&10].borrow_mut();
+            w.float_for_resize();
+            assert!(!w.maximized && w.pre_snap.is_none());
+            w.set_position(2000, 100);
+            w.update_dimensions(1200, 800);
+        }
+
+        ctx.maximize_window(10);
+        ctx.unmaximize_window(10);
+
+        let w = ctx.windows[&10].borrow();
+        assert_eq!((w.x, w.y), (2000, 100));
+        assert_eq!(w.proposed_dimensions(), (1200, 800));
+    }
+
     #[test]
     fn output_shift_moves_window_and_saved_geometry_once() {
         let mut ctx = context_with_outputs(&[(1, 1920, 0, 1920, 1080)]);
@@ -5880,6 +5962,30 @@ mod tests {
         ctx.apply_rules_to_window(&mut window);
         assert_eq!(window.decoration, Some(WindowDecoration::Ssd));
         assert_eq!(window.proposed_dimensions(), (320, 200));
+    }
+
+    #[test]
+    fn maximized_windows_getting_decorations_late_make_room_for_them() {
+        // GTK commits a toplevel it wants maximized before asking for
+        // server-side decorations: it was maximized drawing its own.
+        let ctx = Context::new(false);
+        let mut window = Window::new(1);
+        window.app_id = Some("app".to_string());
+        window.decoration_hint = Some(0);
+        ctx.apply_rules_to_window(&mut window);
+        window.maximized = true;
+        window.set_position(0, 0);
+        window.propose_dimensions(1536, 864);
+
+        window.decoration_hint = Some(2);
+        ctx.apply_rules_to_window(&mut window);
+        let (left, top, right, bottom) = ctx.frame_insets(&window);
+        assert!(top > 0);
+        assert_eq!((window.x, window.y), (left, top));
+        assert_eq!(
+            window.proposed_dimensions(),
+            (1536 - left - right, 864 - top - bottom)
+        );
     }
 
     fn hidden(ctx: &Context, id: WindowId) -> bool {
