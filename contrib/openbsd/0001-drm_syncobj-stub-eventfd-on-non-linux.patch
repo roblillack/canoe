@@ -1,0 +1,57 @@
+Subject: drm_syncobj: stub DrmSyncPoint::eventfd on platforms without eventfd(2)
+
+eventfd(2) is Linux-only in POSIX terms and rustix only exposes it on
+Linux, FreeBSD, illumos, and espidf. On the remaining platforms (OpenBSD,
+NetBSD, macOS, ...) the current unconditional call makes the whole
+`backend_drm` feature fail to compile.
+
+`supports_syncobj_eventfd()` probes the DRM_IOCTL_SYNCOBJ_EVENTFD ioctl
+without allocating an eventfd, and returns `false` wherever that ioctl
+isn't present. So on OpenBSD we only need `DrmSyncPoint::eventfd` to
+*exist*; it is never called, because the drm-syncobj protocol is simply
+not advertised and clients fall back to implicit sync.
+
+This keeps the Linux/FreeBSD/illumos/espidf path bit-identical and adds
+a stub returning `io::ErrorKind::Unsupported` everywhere else.
+
+--- a/src/wayland/drm_syncobj/sync_point.rs
++++ b/src/wayland/drm_syncobj/sync_point.rs
+@@ -114,6 +114,12 @@ impl DrmSyncPoint {
+
+ impl DrmSyncPoint {
+     /// Create an eventfd that will be signaled by the syncpoint
++    #[cfg(any(
++        target_os = "linux",
++        target_os = "freebsd",
++        target_os = "illumos",
++        target_os = "espidf"
++    ))]
+     pub fn eventfd(&self) -> io::Result<Arc<OwnedFd>> {
+         let fd = rustix::event::eventfd(
+             0,
+@@ -129,6 +135,25 @@ impl DrmSyncPoint {
+         ctx.event_fds.retain(|(_, fd)| fd.upgrade().is_some());
+         ctx.event_fds.push((self.point, Arc::downgrade(&fd)));
+         Ok(fd)
++    }
++
++    /// Create an eventfd that will be signaled by the syncpoint.
++    ///
++    /// Not available on platforms without `eventfd(2)` (OpenBSD, NetBSD,
++    /// macOS, ...). `supports_syncobj_eventfd()` returns `false` there, so
++    /// the drm-syncobj protocol is not advertised and clients fall back to
++    /// implicit sync. This stub exists only so the module compiles.
++    #[cfg(not(any(
++        target_os = "linux",
++        target_os = "freebsd",
++        target_os = "illumos",
++        target_os = "espidf"
++    )))]
++    pub fn eventfd(&self) -> io::Result<Arc<OwnedFd>> {
++        Err(io::Error::new(
++            io::ErrorKind::Unsupported,
++            "eventfd(2) is not available on this platform",
++        ))
+     }
+
+     /// Signal the sync point.

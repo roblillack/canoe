@@ -23,14 +23,13 @@ pre-release-replacements = [
 ]
 
 [dependencies]
-# The compositor itself
+# The compositor itself. Backends that bind to Linux kernel interfaces
+# (DRM/KMS, GBM, udev, libinput, libseat) are only pulled in on Linux; see
+# the target-specific section at the bottom. The rest is cross-platform
+# enough to let canoe build a winit-nested session on other Unixes
+# (OpenBSD).
 smithay = { version = "0.7", default-features = false, features = [
-    "backend_drm",
-    "backend_gbm",
     "backend_egl",
-    "backend_libinput",
-    "backend_udev",
-    "backend_session_libseat",
     "desktop",
     "renderer_gl",
     "renderer_pixman",
@@ -81,6 +80,18 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
 
+# DRM/KMS session backends. The full stack (drm + gbm + libinput + libseat
+# + udev enumeration) is available on Linux and on OpenBSD via the
+# libudev-openbsd shim + libinput-openbsd + seatd.
+[target.'cfg(any(target_os = "linux", target_os = "openbsd"))'.dependencies]
+smithay = { version = "0.7", features = [
+    "backend_drm",
+    "backend_gbm",
+    "backend_libinput",
+    "backend_udev",
+    "backend_session_libseat",
+] }
+
 [features]
 default = ["winit"]
 # Running nested in a window of another session (canoe --backend winit),
@@ -96,3 +107,10 @@ path = "src/main.rs"
 [profile.release]
 opt-level = 3
 lto = true
+
+# Vendored smithay with the OpenBSD compatibility patches in
+# contrib/openbsd/. Run tools/vendor-smithay-openbsd.sh once to populate
+# vendor/smithay/ before `cargo build`. Drop this [patch] stanza once
+# the changes land upstream.
+[patch.crates-io]
+smithay = { path = "vendor/smithay" }
