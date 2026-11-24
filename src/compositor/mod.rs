@@ -474,8 +474,7 @@ pub struct State {
         smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1,
     >,
 
-    /// Where `canoe --share-picker` requests and commands like
-    /// `canoe reload` arrive.
+    /// Where commands like `canoe reload` and `canoe share-picker` arrive.
     pub ipc_server: Option<crate::ipc::Server>,
     /// KWin's screenshot interface, while emulated (`emulate_kwin`).
     pub kwin_screenshot: Option<kwin_screenshot::KwinScreenshot>,

@@ -119,8 +119,7 @@ Options:
                     CANOE_HEADLESS_OUTPUTS, e.g. 1920x1080@1.5,1280x720)
       --no-xwayland Don't start Xwayland, so X11 programs don't run
       --share-picker
-                    Act as the screen-sharing chooser of xdg-desktop-portal-wlr:
-                    let the running canoe ask what to share, print the answer
+                    The same as `canoe share-picker`
   -h, --help        Print this help and exit
   -V, --version     Print version and exit
 
@@ -133,6 +132,9 @@ Commands:
   outputs [list]        List the outputs
   outputs primary       Print the name of the primary output
   outputs primary NAME  Make the output NAME (e.g. eDP-1) the primary one
+  share-picker          Ask what to share on the screen, as the chooser of
+                        xdg-desktop-portal-wlr: reads the offer from stdin,
+                        prints the choice, or nothing if declined
   help                  Print this help
 
 Run `canoe reload` (or send SIGHUP) to re-read the configuration file.";
@@ -198,6 +200,8 @@ fn parse_args(argv: impl IntoIterator<Item = String>) -> CliArgs {
                     std::process::exit(2);
                 }
             },
+            // `canoe share-picker` from before commands, which portal
+            // configurations still name.
             "--share-picker" => std::process::exit(ipc::run_share_picker()),
             "--backend" => {
                 let value = inline.or_else(|| iter.next()).unwrap_or_default();
@@ -349,8 +353,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(PostAction::Continue)
         })?;
 
-    // Answer commands like `canoe reload`, and screen-sharing requests from
-    // `canoe --share-picker`.
+    // Answer commands like `canoe reload` and `canoe share-picker`.
     match ipc::Server::bind() {
         Ok(server) => state.ipc_server = Some(server),
         Err(e) => {

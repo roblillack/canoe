@@ -844,7 +844,7 @@ pub(super) fn render_all_desktop_surfaces(state: &mut State) {
     state.update_icon_geometry();
 }
 
-/// Answer a `canoe --share-picker` request without asking the user.
+/// Answer a `canoe share-picker` request without asking the user.
 pub(super) fn decline_share_request(
     state: &mut State,
     request: canoe::share_picker::ShareRequestId,
@@ -854,7 +854,7 @@ pub(super) fn decline_share_request(
     }
 }
 
-/// Open the screen-sharing picker for a `canoe --share-picker` request: an
+/// Open the screen-sharing picker for a `canoe share-picker` request: an
 /// overlay on every output that highlights the window or screen under the
 /// pointer.
 pub(super) fn start_share_picker(state: &mut State, request: ipc::ShareRequest) {
@@ -1548,7 +1548,7 @@ pub(super) fn configure_canoe_layers(state: &mut State, output_id: canoe::Output
     }
 }
 
-/// Handle `canoe --share-picker` requests and commands like `canoe reload`.
+/// Handle commands like `canoe reload` and `canoe share-picker`.
 /// Runs from a timer, as the server's connections come and go.
 pub fn poll_ipc_server(state: &mut State) {
     use nix::poll::{poll, PollFd, PollFlags};

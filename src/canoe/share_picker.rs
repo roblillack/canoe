@@ -1,7 +1,7 @@
 //! Interactive picker for screen sharing.
 //!
 //! The screencast portal backend (xdg-desktop-portal-wlr) runs
-//! `canoe --share-picker` to ask the user what to share. That process hands the
+//! `canoe share-picker` to ask the user what to share. That process hands the
 //! portal's offer to the running window manager, which shows this picker: every
 //! output is dimmed by an overlay, the window or screen under the pointer is
 //! highlighted, and a click shares it. Esc or a right click declines.
@@ -14,7 +14,7 @@ use super::scale::{FractionalSurface, Origin, Scale};
 use super::surface::{Buffer, LayerSurface, Region, Surface};
 use super::{font, OutputId, SeatId, WindowId};
 
-/// Identifies one pending `canoe --share-picker` request.
+/// Identifies one pending `canoe share-picker` request.
 pub type ShareRequestId = u64;
 
 /// Identifies one screenshot waiting for the user to pick what to capture.
@@ -23,7 +23,7 @@ pub type ScreenshotRequestId = u64;
 /// Who opened the picker, and gets the answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PickRequest {
-    /// `canoe --share-picker`, for the screencast portal.
+    /// `canoe share-picker`, for the screencast portal.
     Share(ShareRequestId),
     /// A screenshot tool.
     Screenshot(ScreenshotRequestId),

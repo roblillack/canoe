@@ -1,5 +1,5 @@
 //! Local IPC between the running canoe and its commands (`canoe reload`,
-//! ...) or `canoe --share-picker`.
+//! `canoe share-picker`, ...).
 //!
 //! The two talk over a Unix socket in `$XDG_RUNTIME_DIR`, named after the
 //! Wayland display, so a command reaches the canoe that `WAYLAND_DISPLAY`
@@ -8,7 +8,7 @@
 //! answers and closes the connection.
 //!
 //! - [`SHARE_HEADER`]: xdg-desktop-portal-wlr asks a "chooser" program what
-//!   to share. Canoe is that program (`canoe --share-picker`), but the
+//!   to share. Canoe is that program (`canoe share-picker`), but the
 //!   question has to be answered by the running canoe, which knows the
 //!   windows and can show the picker. The lines are what the portal offered,
 //!   one each; the answer is the chosen line, or nothing if the user
@@ -44,7 +44,7 @@ fn socket_path() -> Option<PathBuf> {
     Some(PathBuf::from(runtime_dir).join(format!("canoe-{display}.sock")))
 }
 
-/// A request from `canoe --share-picker`: the portal's offer, one line each.
+/// A request from `canoe share-picker`: the portal's offer, one line each.
 #[derive(Debug)]
 pub struct ShareRequest {
     pub id: ShareRequestId,
@@ -296,7 +296,8 @@ fn exchange(header: &str, body: &str) -> Result<String, String> {
     Ok(answer)
 }
 
-/// `canoe --share-picker`: a chooser for xdg-desktop-portal-wlr.
+/// `canoe share-picker` (or the older `canoe --share-picker`): a chooser for
+/// xdg-desktop-portal-wlr.
 ///
 /// Reads the portal's offer from stdin (empty for a "simple" chooser), lets
 /// the running canoe ask the user, and prints the choice. Printing nothing
@@ -328,6 +329,15 @@ pub fn run_share_picker() -> i32 {
 /// `canoe COMMAND ARGS...` (`args`, never empty): send a command to the
 /// running canoe and print its answer. Returns the exit status.
 pub fn run_command(args: Vec<String>) -> i32 {
+    // Not a command like the others: it reads the offer from stdin and its
+    // answer is the portal's, not `ok` or `error`.
+    if args[0] == "share-picker" {
+        if args.len() > 1 {
+            eprintln!("canoe: `canoe share-picker` takes no arguments");
+            return 2;
+        }
+        return run_share_picker();
+    }
     if args.iter().any(|a| a.contains('\n')) {
         eprintln!("canoe: arguments of commands can't contain line breaks");
         return 2;

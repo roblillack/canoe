@@ -249,7 +249,7 @@ same window or screen gets the same answer without asking, once.
    ```ini
    [screencast]
    chooser_type=dmenu
-   chooser_cmd=canoe --share-picker
+   chooser_cmd=canoe share-picker
    ```
 
    The portal reads only the first configuration file it finds, and

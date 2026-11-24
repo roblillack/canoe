@@ -9,8 +9,6 @@ canoe \- a stacking Wayland compositor with Win 3.x looks
 .PP
 \f[B]canoe\f[R] \f[I]COMMAND\f[R] [\f[I]ARGUMENT\f[R]]\&...
 .PP
-\f[B]canoe\f[R] \f[B]\-\-share\-picker\f[R]
-.PP
 \f[B]canoe\f[R] \f[B]\-h\f[R] | \f[B]\-V\f[R]
 .SH DESCRIPTION
 Canoe is a stacking Wayland compositor and window manager.
@@ -66,10 +64,7 @@ ENVIRONMENT).
 Don\(cqt start Xwayland, so X11 programs don\(cqt run.
 .TP
 \f[B]\-\-share\-picker\f[R]
-Act as the screen\-sharing chooser of
-\f[B]xdg\-desktop\-portal\-wlr\f[R]: ask the running Canoe what to
-share, print the answer and exit.
-See SCREEN SHARING.
+The same as \f[B]canoe share\-picker\f[R], which it was called before.
 .TP
 \f[B]\-h\f[R], \f[B]\-\-help\f[R]
 Print a short help and exit.
@@ -106,6 +101,13 @@ Print the name of the primary output, or make output \f[I]NAME\f[R]
 (e.g.
 \f[B]eDP\-1\f[R]) the primary one for the monitors connected now.
 See MULTIPLE OUTPUTS.
+.TP
+\f[B]share\-picker\f[R]
+Act as the screen\-sharing chooser of
+\f[B]xdg\-desktop\-portal\-wlr\f[R]: read what the portal offers from
+standard input, let the running Canoe ask what to share, print the
+answer and exit.
+See SCREEN SHARING.
 .TP
 \f[B]help\f[R]
 Print a short help, like \f[B]\-\-help\f[R].
@@ -478,7 +480,7 @@ Canoe is the portal\(cqs chooser in Canoe sessions with
 .EX
 [screencast]
 chooser_type=dmenu
-chooser_cmd=canoe \-\-share\-picker
+chooser_cmd=canoe share\-picker
 .EE
 .PP
 The portal reads only the first configuration file it finds, and
@@ -509,12 +511,10 @@ close the lid.
 .TP
 \f[B]WAYLAND_DISPLAY\f[R], \f[B]DISPLAY\f[R]
 If either is set, Canoe defaults to the \f[B]winit\f[R] backend.
-For commands and \f[B]\-\-share\-picker\f[R], \f[B]WAYLAND_DISPLAY\f[R]
-names the Canoe to ask.
+For commands, \f[B]WAYLAND_DISPLAY\f[R] names the Canoe to ask.
 .TP
 \f[B]XDG_RUNTIME_DIR\f[R]
-Where the sockets for commands, \f[B]\-\-share\-picker\f[R] and
-\f[B]emulate_sway\f[R] are created.
+Where the sockets for commands and \f[B]emulate_sway\f[R] are created.
 .TP
 \f[B]XDG_STATE_HOME\f[R]
 Where output layouts are remembered.
@@ -560,7 +560,7 @@ Icons for minimized windows, named \f[I]APP\-ID.svg\f[R] or
 Remembered output layouts.
 .TP
 \f[I]$XDG_RUNTIME_DIR/canoe\-WAYLAND_DISPLAY.sock\f[R]
-The socket commands and \f[B]canoe \-\-share\-picker\f[R] talk to.
+The socket commands talk to.
 .TP
 \f[I]/usr/share/wayland\-sessions/canoe.desktop\f[R]
 Session file for display managers, shipped as
@@ -578,7 +578,7 @@ Makes Canoe the screen\-sharing chooser of
 \f[B]canoe\f[R] exits with 0 when it is asked to quit, 1 if it can\(cqt
 start (no seat, no GPU, \&...), and 2 for unknown options.
 .PP
-\f[B]canoe \-\-share\-picker\f[R] exits with 0 when the running Canoe
+\f[B]canoe share\-picker\f[R] exits with 0 when the running Canoe
 answered, whether something was picked or not, and 1 if it can\(cqt be
 reached.
 .PP

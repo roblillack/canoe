@@ -84,7 +84,9 @@ xdg-desktop-portal-wlr; see Installation in the README.
   re-reads the configuration and reports its errors instead of quietly falling
   back to the defaults, `canoe outputs` lists the outputs,
   `canoe outputs primary eDP-1` chooses the primary output, and
-  `canoe version`, `canoe lock` and `canoe quit` do what they say.
+  `canoe version`, `canoe lock` and `canoe quit` do what they say. The
+  screen-sharing chooser is `canoe share-picker` now; `canoe --share-picker`
+  keeps working.
 
 ### Changed
 
