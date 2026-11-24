@@ -432,14 +432,23 @@ windows).
 Route the portals with \f[I]canoe\-portals.conf\f[R] (shipped as
 \f[I]contrib/canoe\-portals.conf\f[R], installed into
 \f[I]/usr/share/xdg\-desktop\-portal/\f[R] or
-\f[I]\(ti/.config/xdg\-desktop\-portal/\f[R]) and make Canoe the chooser
-in \f[I]\(ti/.config/xdg\-desktop\-portal\-wlr/config\f[R]:
+\f[I]\(ti/.config/xdg\-desktop\-portal/\f[R]).
+Canoe is the portal\(cqs chooser in Canoe sessions with
+\f[I]contrib/xdg\-desktop\-portal\-wlr/canoe\f[R], installed as
+\f[I]/etc/xdg/xdg\-desktop\-portal\-wlr/canoe\f[R] or
+\f[I]\(ti/.config/xdg\-desktop\-portal\-wlr/canoe\f[R]:
 .IP
 .EX
 [screencast]
 chooser_type=dmenu
 chooser_cmd=canoe \-\-share\-picker
 .EE
+.PP
+The portal reads only the first configuration file it finds, and
+\f[I]\(ti/.config/xdg\-desktop\-portal\-wlr/config\f[R] comes before
+\f[I]/etc/xdg/xdg\-desktop\-portal\-wlr/canoe\f[R]: if you have one, add
+these lines to it or create
+\f[I]\(ti/.config/xdg\-desktop\-portal\-wlr/canoe\f[R].
 .PP
 When a program wants to share, Canoe dims all screens and highlights the
 window or screen under the pointer.
@@ -519,6 +528,15 @@ The socket \f[B]canoe \-\-share\-picker\f[R] talks to.
 \f[I]/usr/share/wayland\-sessions/canoe.desktop\f[R]
 Session file for display managers, shipped as
 \f[I]contrib/canoe.desktop\f[R].
+.TP
+\f[I]/usr/share/xdg\-desktop\-portal/canoe\-portals.conf\f[R]
+Which portal backends Canoe sessions use, shipped as
+\f[I]contrib/canoe\-portals.conf\f[R].
+.TP
+\f[I]/etc/xdg/xdg\-desktop\-portal\-wlr/canoe\f[R]
+Makes Canoe the screen\-sharing chooser of
+\f[B]xdg\-desktop\-portal\-wlr\f[R] in Canoe sessions, shipped as
+\f[I]contrib/xdg\-desktop\-portal\-wlr/canoe\f[R].
 .SH EXIT STATUS
 \f[B]canoe\f[R] exits with 0 when it is asked to quit, 1 if it can\(cqt
 start (no seat, no GPU, \&...), and 2 for unknown options.

@@ -50,16 +50,17 @@ off. An X11 window's app id, as window rules match it, is its `WM_CLASS`
 class (e.g. `XTerm`).
 
 To start Canoe from a display manager (GDM, SDDM, LightDM, greetd with
-tuigreet, …), install the session file and the portal configuration:
+tuigreet, …), install the session file and the portal configurations:
 
 ```bash
 sudo install -Dm644 contrib/canoe.desktop /usr/share/wayland-sessions/canoe.desktop
 sudo install -Dm644 contrib/canoe-portals.conf /usr/share/xdg-desktop-portal/canoe-portals.conf
+sudo install -Dm644 contrib/xdg-desktop-portal-wlr/canoe /etc/xdg/xdg-desktop-portal-wlr/canoe
 ```
 
-The session sets `XDG_CURRENT_DESKTOP` to `canoe`, and `canoe-portals.conf`
-picks the portal backends for that desktop (see [Screen
-Sharing](#screen-sharing)).
+The session sets `XDG_CURRENT_DESKTOP` to `canoe`; `canoe-portals.conf` picks
+the portal backends for that desktop, and `xdg-desktop-portal-wlr/canoe` makes
+Canoe the screen-sharing chooser in it (see [Screen Sharing](#screen-sharing)).
 
 The display manager looks up `canoe` in its own `PATH`, which does not include
 your home directory, so changes in `~/.profile` or `~/.config/environment.d/`
@@ -230,13 +231,24 @@ same window or screen gets the same answer without asking, once.
    org.freedesktop.impl.portal.Screenshot=wlr
    ```
 
-3. Make Canoe its chooser in `~/.config/xdg-desktop-portal-wlr/config`:
+3. Make Canoe its chooser with
+   [`contrib/xdg-desktop-portal-wlr/canoe`](contrib/xdg-desktop-portal-wlr/canoe),
+   installed as `/etc/xdg/xdg-desktop-portal-wlr/canoe` or
+   `~/.config/xdg-desktop-portal-wlr/canoe` (`make install` does the former).
+   The portal reads it only in Canoe sessions, so other desktops keep their
+   own chooser. It contains:
 
    ```ini
    [screencast]
    chooser_type=dmenu
    chooser_cmd=canoe --share-picker
    ```
+
+   The portal reads only the first configuration file it finds, and
+   `~/.config/xdg-desktop-portal-wlr/config` comes before
+   `/etc/xdg/xdg-desktop-portal-wlr/canoe`. If you have one, add these lines
+   to it or create `~/.config/xdg-desktop-portal-wlr/canoe`. On NixOS, set
+   `xdg.portal.wlr.settings.screencast` to the same values instead.
 
    The portal runs as a systemd user service, whose `PATH` may not include
    `~/.cargo/bin`; give the full path to `canoe` if it lives there.

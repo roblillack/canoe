@@ -19,8 +19,10 @@ and themes carry over, and X11 programs run through Xwayland. (#66)
 
 Canoe now needs libinput, libseat (seatd or systemd-logind), libgbm, libdrm,
 Mesa (EGL and OpenGL ES 2), pixman, and Xwayland for X11 programs. Packages
-should install the session file `contrib/canoe.desktop` and the portal
-configuration `contrib/canoe-portals.conf`; see Installation in the README.
+should install the session file `contrib/canoe.desktop`, the portal
+configuration `contrib/canoe-portals.conf` and the screen-sharing chooser
+configuration `contrib/xdg-desktop-portal-wlr/canoe`, and depend on
+xdg-desktop-portal-wlr; see Installation in the README.
 
 ### Added
 
@@ -74,6 +76,10 @@ configuration `contrib/canoe-portals.conf`; see Installation in the README.
 - A manpage, `man canoe`, and a Makefile: `make && sudo make install` installs
   Canoe, its manpage, the session file and the portal configuration under
   `/usr/local`. (#102)
+- `make install` makes Canoe the screen-sharing chooser of
+  xdg-desktop-portal-wlr in Canoe sessions, by installing
+  `/etc/xdg/xdg-desktop-portal-wlr/canoe`, so screen sharing needs no
+  configuration of your own.
 
 ### Changed
 
