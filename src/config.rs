@@ -1133,6 +1133,26 @@ fn rules_from_file(rules: Vec<RuleFile>) -> Vec<Rule> {
         .collect()
 }
 
+/// Whether the configuration file parses: `Err` names the file and what is
+/// wrong with it. [`load_config`] quietly falls back to the defaults on such
+/// errors, so check first where they can be reported. A missing file is fine.
+pub fn check_config_file(skip_config: bool) -> Result<(), String> {
+    if skip_config {
+        return Ok(());
+    }
+    let Some(path) = config_path() else {
+        return Ok(());
+    };
+    let contents = match std::fs::read_to_string(&path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(format!("{}: {e}", path.display())),
+    };
+    toml::from_str::<FileConfig>(&contents)
+        .map(|_| ())
+        .map_err(|e| format!("{}: {}", path.display(), e.to_string().trim_end()))
+}
+
 /// Load config from ~/.config/canoe/canoe.toml and apply overrides to defaults.
 ///
 /// When `skip_config` is true the file is never read and the built-in defaults

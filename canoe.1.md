@@ -10,6 +10,8 @@ canoe - a stacking Wayland compositor with Win 3.x looks
 
 **canoe** [**-n**] [**-s** *COMMAND*]... [**\-\-backend** *BACKEND*] [**\-\-no-xwayland**]
 
+**canoe** *COMMAND* [*ARGUMENT*]...
+
 **canoe** **\-\-share-picker**
 
 **canoe** **-h** | **-V**
@@ -69,6 +71,37 @@ Programs Canoe launches find it through **DISPLAY**.
 
 **-V**, **\-\-version**
 : Print the version and exit.
+
+# COMMANDS
+
+Given a command instead of options, **canoe** passes it to the running Canoe,
+the one **WAYLAND_DISPLAY** names, prints the answer and exits.
+
+**version**
+: Print the running Canoe's version, which may differ from the one installed.
+
+**reload**
+: Re-read the configuration file, like **SIGHUP**. If the file has errors,
+  print them and keep the configuration in use.
+
+**lock**
+: Lock the screen with **lock_cmd**.
+
+**quit**
+: End the session.
+
+**outputs** [**list**]
+: List the outputs, one per line: the connector, the monitor's make, model and
+  serial number, and how it is set up, e.g.
+  **DP-1 "Dell Inc. DELL U2723QE 5KX": 3840x2160@59.997, at 0,0, scale 1.5, primary**.
+
+**outputs primary** [*NAME*]
+: Print the name of the primary output, or make output *NAME* (e.g.
+  **eDP-1**) the primary one for the monitors connected now. See MULTIPLE
+  OUTPUTS.
+
+**help**
+: Print a short help, like **\-\-help**.
 
 # KEYBOARD SHORTCUTS
 
@@ -182,7 +215,8 @@ lid is closed counts as part of the combination.
 
 Each combination can have a primary output: the one new windows open on when
 monitors come or go, and the one launchers and panels without an output of
-their own appear on. Output tools choose it through Canoe's experimental
+their own appear on. Choose it with **canoe outputs primary** *NAME*;
+output tools can choose it through Canoe's experimental
 **xx-primary-output-v1** protocol.
 
 # DESKTOP ICONS
@@ -202,7 +236,7 @@ of its **WM_CLASS**.
 
 Canoe reads *~/.config/canoe/canoe.toml*. Every setting is optional. If the
 file can't be parsed, Canoe ignores all of it and uses the built-in defaults.
-Send **SIGHUP** to re-read it without restarting. A sample listing every
+Run **canoe reload** or send **SIGHUP** to re-read it without restarting. A sample listing every
 setting with its default comes with Canoe as *contrib/canoe.toml*.
 
 ## Top-level settings
@@ -438,11 +472,12 @@ arrow keys and **Return**; **Escape** or a right click cancels.
 
 **WAYLAND_DISPLAY**, **DISPLAY**
 : If either is set, Canoe defaults to the **winit** backend. For
-  **\-\-share-picker**, **WAYLAND_DISPLAY** names the Canoe to ask.
+  commands and **\-\-share-picker**, **WAYLAND_DISPLAY** names the Canoe to
+  ask.
 
 **XDG_RUNTIME_DIR**
-: Where the sockets for **\-\-share-picker** and **emulate_sway** are
-  created.
+: Where the sockets for commands, **\-\-share-picker** and **emulate_sway**
+  are created.
 
 **XDG_STATE_HOME**
 : Where output layouts are remembered. Defaults to *~/.local/state*.
@@ -487,7 +522,7 @@ Programs Canoe launches see **WAYLAND_DISPLAY** naming its socket,
 : Remembered output layouts.
 
 *$XDG_RUNTIME_DIR/canoe-WAYLAND_DISPLAY.sock*
-: The socket **canoe \-\-share-picker** talks to.
+: The socket commands and **canoe \-\-share-picker** talk to.
 
 */usr/share/wayland-sessions/canoe.desktop*
 : Session file for display managers, shipped as *contrib/canoe.desktop*.
@@ -507,6 +542,9 @@ seat, no GPU, ...), and 2 for unknown options.
 
 **canoe \-\-share-picker** exits with 0 when the running Canoe answered,
 whether something was picked or not, and 1 if it can't be reached.
+
+**canoe** *COMMAND* exits with 0 when the command worked, 1 when it failed
+or the running Canoe can't be reached, and 2 when it is given options.
 
 # BUGS
 

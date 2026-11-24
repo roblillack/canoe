@@ -7,6 +7,8 @@ canoe \- a stacking Wayland compositor with Win 3.x looks
 \f[B]canoe\f[R] [\f[B]\-n\f[R]] [\f[B]\-s\f[R] \f[I]COMMAND\f[R]]\&...
 [\f[B]\-\-backend\f[R] \f[I]BACKEND\f[R]] [\f[B]\-\-no\-xwayland\f[R]]
 .PP
+\f[B]canoe\f[R] \f[I]COMMAND\f[R] [\f[I]ARGUMENT\f[R]]\&...
+.PP
 \f[B]canoe\f[R] \f[B]\-\-share\-picker\f[R]
 .PP
 \f[B]canoe\f[R] \f[B]\-h\f[R] | \f[B]\-V\f[R]
@@ -74,6 +76,39 @@ Print a short help and exit.
 .TP
 \f[B]\-V\f[R], \f[B]\-\-version\f[R]
 Print the version and exit.
+.SH COMMANDS
+Given a command instead of options, \f[B]canoe\f[R] passes it to the
+running Canoe, the one \f[B]WAYLAND_DISPLAY\f[R] names, prints the
+answer and exits.
+.TP
+\f[B]version\f[R]
+Print the running Canoe\(cqs version, which may differ from the one
+installed.
+.TP
+\f[B]reload\f[R]
+Re\-read the configuration file, like \f[B]SIGHUP\f[R].
+If the file has errors, print them and keep the configuration in use.
+.TP
+\f[B]lock\f[R]
+Lock the screen with \f[B]lock_cmd\f[R].
+.TP
+\f[B]quit\f[R]
+End the session.
+.TP
+\f[B]outputs\f[R] [\f[B]list\f[R]]
+List the outputs, one per line: the connector, the monitor\(cqs make,
+model and serial number, and how it is set up, e.g.
+\f[B]DP\-1 \(lqDell Inc.\ DELL U2723QE 5KX\(rq: 3840x2160\(at59.997, at
+0,0, scale 1.5, primary\f[R].
+.TP
+\f[B]outputs primary\f[R] [\f[I]NAME\f[R]]
+Print the name of the primary output, or make output \f[I]NAME\f[R]
+(e.g.
+\f[B]eDP\-1\f[R]) the primary one for the monitors connected now.
+See MULTIPLE OUTPUTS.
+.TP
+\f[B]help\f[R]
+Print a short help, like \f[B]\-\-help\f[R].
 .SH KEYBOARD SHORTCUTS
 \f[I]Super\f[R] stands for the main modifier, which can be changed to
 \f[I]Alt\f[R] with \f[B]main_modifier\f[R] in the configuration file.
@@ -189,7 +224,8 @@ combination.
 Each combination can have a primary output: the one new windows open on
 when monitors come or go, and the one launchers and panels without an
 output of their own appear on.
-Output tools choose it through Canoe\(cqs experimental
+Choose it with \f[B]canoe outputs primary\f[R] \f[I]NAME\f[R]; output
+tools can choose it through Canoe\(cqs experimental
 \f[B]xx\-primary\-output\-v1\f[R] protocol.
 .SH DESKTOP ICONS
 A minimized window\(cqs icon is the first of these that exists:
@@ -211,7 +247,8 @@ Canoe reads \f[I]\(ti/.config/canoe/canoe.toml\f[R].
 Every setting is optional.
 If the file can\(cqt be parsed, Canoe ignores all of it and uses the
 built\-in defaults.
-Send \f[B]SIGHUP\f[R] to re\-read it without restarting.
+Run \f[B]canoe reload\f[R] or send \f[B]SIGHUP\f[R] to re\-read it
+without restarting.
 A sample listing every setting with its default comes with Canoe as
 \f[I]contrib/canoe.toml\f[R].
 .SS Top\-level settings
@@ -472,11 +509,11 @@ close the lid.
 .TP
 \f[B]WAYLAND_DISPLAY\f[R], \f[B]DISPLAY\f[R]
 If either is set, Canoe defaults to the \f[B]winit\f[R] backend.
-For \f[B]\-\-share\-picker\f[R], \f[B]WAYLAND_DISPLAY\f[R] names the
-Canoe to ask.
+For commands and \f[B]\-\-share\-picker\f[R], \f[B]WAYLAND_DISPLAY\f[R]
+names the Canoe to ask.
 .TP
 \f[B]XDG_RUNTIME_DIR\f[R]
-Where the sockets for \f[B]\-\-share\-picker\f[R] and
+Where the sockets for commands, \f[B]\-\-share\-picker\f[R] and
 \f[B]emulate_sway\f[R] are created.
 .TP
 \f[B]XDG_STATE_HOME\f[R]
@@ -523,7 +560,7 @@ Icons for minimized windows, named \f[I]APP\-ID.svg\f[R] or
 Remembered output layouts.
 .TP
 \f[I]$XDG_RUNTIME_DIR/canoe\-WAYLAND_DISPLAY.sock\f[R]
-The socket \f[B]canoe \-\-share\-picker\f[R] talks to.
+The socket commands and \f[B]canoe \-\-share\-picker\f[R] talk to.
 .TP
 \f[I]/usr/share/wayland\-sessions/canoe.desktop\f[R]
 Session file for display managers, shipped as
@@ -544,6 +581,10 @@ start (no seat, no GPU, \&...), and 2 for unknown options.
 \f[B]canoe \-\-share\-picker\f[R] exits with 0 when the running Canoe
 answered, whether something was picked or not, and 1 if it can\(cqt be
 reached.
+.PP
+\f[B]canoe\f[R] \f[I]COMMAND\f[R] exits with 0 when the command worked,
+1 when it failed or the running Canoe can\(cqt be reached, and 2 when it
+is given options.
 .SH BUGS
 To report bugs, please create a ticket at
 https://github.com/roblillack/canoe/issues

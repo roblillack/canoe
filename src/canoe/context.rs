@@ -251,13 +251,19 @@ impl Context {
         }
     }
 
+    /// Whether the configuration file can be loaded; see
+    /// [`crate::config::check_config_file`].
+    pub fn check_config_file(&self) -> Result<(), String> {
+        crate::config::check_config_file(self.skip_config)
+    }
+
     /// Re-read the configuration and apply it to the running session.
     ///
-    /// Triggered by SIGHUP. The file is re-read honoring `--no-config`, then
-    /// the parts that affect already-managed objects are refreshed: every
-    /// titlebar is forced to repaint (the shadow and desktop caches already key
-    /// on their inputs, so they repaint on their own) and the desktop is marked
-    /// dirty. Window rules are re-applied via `set_capabilities` and friends,
+    /// Triggered by SIGHUP and `canoe reload`. The file is re-read honoring
+    /// `--no-config`, then the parts that affect already-managed objects are
+    /// refreshed: every titlebar is forced to repaint (the shadow and desktop
+    /// caches already key on their inputs, so they repaint on their own) and
+    /// the desktop is marked dirty. Window rules are re-applied via `set_capabilities` and friends,
     /// which are only valid inside a manage sequence, so that work is deferred
     /// to the next `manage_start` (see [`Context::pending_reapply_rules`]). The
     /// `manage_dirty` request kicks off that sequence; it is explicitly allowed
