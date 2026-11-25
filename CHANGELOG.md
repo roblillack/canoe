@@ -79,7 +79,7 @@ xdg-desktop-portal-wlr; see Installation in the README.
 - `make install` makes Canoe the screen-sharing chooser of
   xdg-desktop-portal-wlr in Canoe sessions, by installing
   `/etc/xdg/xdg-desktop-portal-wlr/canoe`, so screen sharing needs no
-  configuration of your own.
+  configuration of your own. (#111)
 
 ### Changed
 
