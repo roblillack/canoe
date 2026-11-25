@@ -10,6 +10,7 @@
 pub mod apply;
 pub mod backend;
 pub mod capture;
+pub mod commands;
 pub mod cursor;
 pub mod focus;
 pub mod handlers;
@@ -473,13 +474,14 @@ pub struct State {
         smithay::reexports::wayland_protocols::ext::session_lock::v1::server::ext_session_lock_v1::ExtSessionLockV1,
     >,
 
-    /// Where `canoe --share-picker` requests arrive.
-    pub share_server: Option<crate::ipc::ShareServer>,
+    /// Where commands like `canoe reload` and `canoe share-picker` arrive.
+    pub ipc_server: Option<crate::ipc::Server>,
     /// KWin's screenshot interface, while emulated (`emulate_kwin`).
     pub kwin_screenshot: Option<kwin_screenshot::KwinScreenshot>,
     /// sway's IPC socket, while emulated (`emulate_sway`).
     pub sway_ipc: Option<sway_ipc::SwayIpc>,
-    pub share_timer: Option<smithay::reexports::calloop::RegistrationToken>,
+    /// Looks after `ipc_server`'s connections while there are any.
+    pub ipc_timer: Option<smithay::reexports::calloop::RegistrationToken>,
     /// Trims the heap after windows closed; see [`memory`].
     pub trim_timer: Option<smithay::reexports::calloop::RegistrationToken>,
     /// The startup commands are still to be launched.
@@ -698,10 +700,10 @@ impl State {
             lock_state: LockState::Unlocked,
             locker: None,
             session_lock: None,
-            share_server: None,
+            ipc_server: None,
             kwin_screenshot: None,
             sway_ipc: None,
-            share_timer: None,
+            ipc_timer: None,
             trim_timer: None,
             startup_pending: true,
             cli_startup_cmds: Vec::new(),

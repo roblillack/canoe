@@ -186,9 +186,17 @@ monitors come or go, and the one launchers and other panels without an output
 of their own appear on. Iconlets always start there, wherever the focus is,
 and move along when another output becomes primary.
 Choosing it moves the focus there. Canoe starts with the pointer in the middle
-of the primary output (or, without one, of the output at the top left). Output
-tools choose it through Canoe's experimental `xx-primary-output-v1` protocol;
-for now `tools/wlinput` has a small client for it:
+of the primary output (or, without one, of the output at the top left).
+
+```sh
+canoe outputs                  # list the outputs; the primary one says so
+canoe outputs primary          # print the primary output
+canoe outputs primary eDP-1    # make eDP-1 primary for the monitors connected now
+```
+
+Output tools choose it through Canoe's experimental `xx-primary-output-v1`
+protocol; `tools/wlinput` has a small client for it, which can also unset it
+and follow changes:
 
 ```sh
 wlprimary              # print the primary output
@@ -241,7 +249,7 @@ same window or screen gets the same answer without asking, once.
    ```ini
    [screencast]
    chooser_type=dmenu
-   chooser_cmd=canoe --share-picker
+   chooser_cmd=canoe share-picker
    ```
 
    The portal reads only the first configuration file it finds, and
@@ -309,10 +317,12 @@ emulate_kwin = true   # Spectacle
 
 ## Configuration
 
-Canoe reads `~/.config/canoe/canoe.toml`. After editing it, send `SIGHUP` to
-re-read it without restarting (e.g. `pkill -HUP canoe`); this refreshes the
-theme, desktop, window rules, and key bindings. Pass `--no-config` to ignore the
-file and use the built-in defaults (reloads keep honoring this).
+Canoe reads `~/.config/canoe/canoe.toml`. After editing it, run `canoe reload`
+to re-read it without restarting; this refreshes the theme, desktop, window
+rules, and key bindings. If the file has errors, they are printed and the
+configuration in use stays as it is. (`SIGHUP`, e.g. `pkill -HUP canoe`,
+reloads too, but falls back to the defaults on errors.) Pass `--no-config` to
+ignore the file and use the built-in defaults (reloads keep honoring this).
 
 [`contrib/canoe.toml`](contrib/canoe.toml) lists every setting with its
 default and is a good starting point for your own configuration;

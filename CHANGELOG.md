@@ -80,6 +80,13 @@ xdg-desktop-portal-wlr; see Installation in the README.
   xdg-desktop-portal-wlr in Canoe sessions, by installing
   `/etc/xdg/xdg-desktop-portal-wlr/canoe`, so screen sharing needs no
   configuration of your own. (#111)
+- Commands control the running Canoe from the command line: `canoe reload`
+  re-reads the configuration and reports its errors instead of quietly falling
+  back to the defaults, `canoe outputs` lists the outputs,
+  `canoe outputs primary eDP-1` chooses the primary output, and
+  `canoe version`, `canoe lock` and `canoe quit` do what they say. The
+  screen-sharing chooser is `canoe share-picker` now; `canoe --share-picker`
+  keeps working. (#112)
 
 ### Changed
 

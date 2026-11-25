@@ -101,7 +101,9 @@ fn activation_environment_argv(
 const USAGE: &str = "\
 canoe - a stacking Wayland compositor
 
-Usage: canoe [OPTIONS]
+Usage: canoe [OPTIONS]       Start a session
+       canoe <COMMAND>         Control the running canoe (the one
+                               WAYLAND_DISPLAY names)
 
 Options:
   -n, --no-config   Ignore ~/.config/canoe/canoe.toml and use built-in defaults
@@ -117,12 +119,25 @@ Options:
                     CANOE_HEADLESS_OUTPUTS, e.g. 1920x1080@1.5,1280x720)
       --no-xwayland Don't start Xwayland, so X11 programs don't run
       --share-picker
-                    Act as the screen-sharing chooser of xdg-desktop-portal-wlr:
-                    let the running canoe ask what to share, print the answer
+                    The same as `canoe share-picker`
   -h, --help        Print this help and exit
   -V, --version     Print version and exit
 
-Send SIGHUP (e.g. `pkill -HUP canoe`) to re-read the configuration file.";
+Commands:
+  version               Print the running canoe's version
+  reload                Re-read the configuration file; if it has errors,
+                        print them and keep the configuration as it is
+  lock                  Lock the screen with lock_cmd
+  quit                  End the session
+  outputs [list]        List the outputs
+  outputs primary       Print the name of the primary output
+  outputs primary NAME  Make the output NAME (e.g. eDP-1) the primary one
+  share-picker          Ask what to share on the screen, as the chooser of
+                        xdg-desktop-portal-wlr: reads the offer from stdin,
+                        prints the choice, or nothing if declined
+  help                  Print this help
+
+Run `canoe reload` (or send SIGHUP) to re-read the configuration file.";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum BackendKind {
@@ -140,8 +155,9 @@ struct CliArgs {
     startup: Vec<String>,
 }
 
-/// Parse command-line arguments, exiting the process for --help/--version or on
-/// an unknown flag. Kept deliberately tiny so we avoid a full arg-parsing dep.
+/// Parse command-line arguments, exiting the process for --help/--version, on
+/// an unknown flag, or after running a command (a first argument that isn't
+/// an option). Kept deliberately tiny so we avoid a full arg-parsing dep.
 fn parse_args(argv: impl IntoIterator<Item = String>) -> CliArgs {
     let nested =
         std::env::var_os("WAYLAND_DISPLAY").is_some() || std::env::var_os("DISPLAY").is_some();
@@ -155,7 +171,18 @@ fn parse_args(argv: impl IntoIterator<Item = String>) -> CliArgs {
             BackendKind::Udev
         },
     };
-    let mut iter = argv.into_iter();
+    let mut iter = argv.into_iter().peekable();
+    // A command for the running canoe: everything is its arguments.
+    match iter.peek().map(String::as_str) {
+        Some("help") => {
+            println!("{USAGE}");
+            std::process::exit(0);
+        }
+        Some(command) if !command.starts_with('-') => {
+            std::process::exit(ipc::run_command(iter.collect()));
+        }
+        _ => {}
+    }
     while let Some(arg) = iter.next() {
         let (flag, inline) = match arg.split_once('=') {
             Some((flag, value)) if flag.starts_with("--") => {
@@ -173,6 +200,8 @@ fn parse_args(argv: impl IntoIterator<Item = String>) -> CliArgs {
                     std::process::exit(2);
                 }
             },
+            // `canoe share-picker` from before commands, which portal
+            // configurations still name.
             "--share-picker" => std::process::exit(ipc::run_share_picker()),
             "--backend" => {
                 let value = inline.or_else(|| iter.next()).unwrap_or_default();
@@ -193,6 +222,12 @@ fn parse_args(argv: impl IntoIterator<Item = String>) -> CliArgs {
             "-V" | "--version" => {
                 println!("canoe {}", env!("CARGO_PKG_VERSION"));
                 std::process::exit(0);
+            }
+            other if !other.starts_with('-') => {
+                eprintln!(
+                    "canoe: `{other}` is a command for the running canoe; give it without options"
+                );
+                std::process::exit(2);
             }
             other => {
                 eprintln!("canoe: unrecognized argument '{other}'\n\n{USAGE}");
@@ -239,14 +274,7 @@ fn handle_signals(state: &mut State, fd: &OwnedFd) {
                         Ok(Signal::SIGINT) | Ok(Signal::SIGTERM) | Ok(Signal::SIGQUIT) => {
                             state.loop_signal.stop();
                         }
-                        Ok(Signal::SIGHUP) => {
-                            state.context.borrow_mut().reload_config();
-                            state.apply_keyboard_config();
-                            state.apply_sway_emulation();
-                            state.apply_kwin_emulation();
-                            state.update_x11_settings();
-                            state.schedule_wm();
-                        }
+                        Ok(Signal::SIGHUP) => state.reload_config(),
                         // For tests: open or close the headless lid.
                         Ok(Signal::SIGUSR1) => compositor::backend::headless::toggle_lid(state),
                         Ok(Signal::SIGCHLD) => loop {
@@ -325,36 +353,34 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Ok(PostAction::Continue)
         })?;
 
-    // Answer screen-sharing requests from `canoe --share-picker`.
-    match ipc::ShareServer::bind() {
-        Ok(server) => state.share_server = Some(server),
-        Err(e) => eprintln!("canoe: screen-sharing picker unavailable: {e}"),
+    // Answer commands like `canoe reload` and `canoe share-picker`.
+    match ipc::Server::bind() {
+        Ok(server) => state.ipc_server = Some(server),
+        Err(e) => {
+            eprintln!("canoe: commands like `canoe reload` and screen sharing won't work: {e}")
+        }
     }
     // Connections wake the loop up; while requests are in flight (they are
     // short-lived) a timer looks after them.
-    if let Some(fd) = state
-        .share_server
-        .as_ref()
-        .and_then(|s| s.listener_fd().ok())
-    {
+    if let Some(fd) = state.ipc_server.as_ref().and_then(|s| s.listener_fd().ok()) {
         event_loop.handle().insert_source(
             Generic::new(fd, Interest::READ, Mode::Level),
             |_, _, state| {
-                compositor::wm_glue::poll_share_server(state);
-                if state.share_timer.is_none() {
+                compositor::wm_glue::poll_ipc_server(state);
+                if state.ipc_timer.is_none() {
                     let timer = Timer::from_duration(Duration::from_millis(50));
-                    state.share_timer = state
+                    state.ipc_timer = state
                         .loop_handle
                         .insert_source(timer, |_, _, state| {
-                            compositor::wm_glue::poll_share_server(state);
+                            compositor::wm_glue::poll_ipc_server(state);
                             let busy = state
-                                .share_server
+                                .ipc_server
                                 .as_ref()
                                 .is_some_and(|s| s.has_connections());
                             if busy {
                                 TimeoutAction::ToDuration(Duration::from_millis(50))
                             } else {
-                                state.share_timer = None;
+                                state.ipc_timer = None;
                                 TimeoutAction::Drop
                             }
                         })

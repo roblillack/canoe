@@ -500,6 +500,50 @@ fn write_store(path: &Path, store: &Store) -> Result<(), Box<dyn std::error::Err
 }
 
 impl State {
+    /// The outputs as `canoe outputs list` shows them, one line each:
+    /// connector, identity, and how it is set up, e.g.
+    /// `DP-1 "Dell Inc. DELL U2723QE 5KX": 3840x2160@59.997, at 0,0, scale 1.5, primary`.
+    pub fn describe_outputs(&self) -> String {
+        let primary = self.primary_output_state.primary();
+        let mut text = String::new();
+        for o in &self.outputs {
+            let output = &o.output;
+            let name = output.name();
+            let mut details = Vec::new();
+            if o.enabled {
+                let setup = setup_of(output, name.clone(), true);
+                details.extend(setup.mode);
+                if let Some((x, y)) = setup.position {
+                    details.push(format!("at {x},{y}"));
+                }
+                if let Some(scale) = setup.scale {
+                    details.push(format!("scale {scale}"));
+                }
+                if let Some(transform) = setup.transform.filter(|t| t != "normal") {
+                    details.push(format!("transform {transform}"));
+                }
+                if !o.powered {
+                    details.push("powered off".to_string());
+                }
+            } else {
+                details.push("disabled".to_string());
+            }
+            if is_internal(output) {
+                details.push(format!("lid {}", self.output_profiles.lid.name()));
+            }
+            if primary == Some(name.as_str()) {
+                details.push("primary".to_string());
+            }
+            let identity = identity(output);
+            text.push_str(&name);
+            if identity != name {
+                text.push_str(&format!(" \"{identity}\""));
+            }
+            text.push_str(&format!(": {}\n", details.join(", ")));
+        }
+        text
+    }
+
     /// Whether profiles are saved and restored.
     fn remembering_outputs(&self) -> bool {
         self.output_profiles.path.is_some() && self.context.borrow().config.remember_outputs

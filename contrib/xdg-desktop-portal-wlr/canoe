@@ -8,4 +8,4 @@
 # /etc/xdg/xdg-desktop-portal-wlr/canoe: if you have one, copy this there.
 [screencast]
 chooser_type=dmenu
-chooser_cmd=canoe --share-picker
+chooser_cmd=canoe share-picker

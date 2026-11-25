@@ -844,17 +844,17 @@ pub(super) fn render_all_desktop_surfaces(state: &mut State) {
     state.update_icon_geometry();
 }
 
-/// Answer a `canoe --share-picker` request without asking the user.
+/// Answer a `canoe share-picker` request without asking the user.
 pub(super) fn decline_share_request(
     state: &mut State,
     request: canoe::share_picker::ShareRequestId,
 ) {
-    if let Some(server) = state.share_server.as_mut() {
+    if let Some(server) = state.ipc_server.as_mut() {
         server.reply(request, None);
     }
 }
 
-/// Open the screen-sharing picker for a `canoe --share-picker` request: an
+/// Open the screen-sharing picker for a `canoe share-picker` request: an
 /// overlay on every output that highlights the window or screen under the
 /// pointer.
 pub(super) fn start_share_picker(state: &mut State, request: ipc::ShareRequest) {
@@ -872,7 +872,7 @@ pub(super) fn start_share_picker(state: &mut State, request: ipc::ShareRequest) 
     // same answer.
     let repeated = state.context.borrow_mut().repeat_share_choice(&candidates);
     if let Some(candidate) = repeated {
-        if let Some(server) = state.share_server.as_mut() {
+        if let Some(server) = state.ipc_server.as_mut() {
             server.reply(request.id, Some(&candidate.reply));
         }
         return;
@@ -1082,7 +1082,7 @@ pub(super) fn finish_share_picker(state: &mut State, confirm: bool, restore_mode
                     None => context.share_last_choice = None,
                 }
             }
-            if let Some(server) = state.share_server.as_mut() {
+            if let Some(server) = state.ipc_server.as_mut() {
                 server.reply(request, choice.as_deref());
             }
         }
@@ -1548,12 +1548,12 @@ pub(super) fn configure_canoe_layers(state: &mut State, output_id: canoe::Output
     }
 }
 
-/// Handle `canoe --share-picker` requests.
+/// Handle commands like `canoe reload` and `canoe share-picker`.
 /// Runs from a timer, as the server's connections come and go.
-pub fn poll_share_server(state: &mut State) {
+pub fn poll_ipc_server(state: &mut State) {
     use nix::poll::{poll, PollFd, PollFlags};
 
-    let Some(server) = state.share_server.as_ref() else {
+    let Some(server) = state.ipc_server.as_ref() else {
         return;
     };
     let (ready, hung_up) = {
@@ -1592,7 +1592,7 @@ pub fn poll_share_server(state: &mut State) {
     if !ready {
         return;
     }
-    let (requests, gone) = match state.share_server.as_mut() {
+    let (requests, gone) = match state.ipc_server.as_mut() {
         Some(server) => server.dispatch(&hung_up),
         None => (Vec::new(), Vec::new()),
     };
@@ -1607,7 +1607,15 @@ pub fn poll_share_server(state: &mut State) {
         finish_share_picker(state, false, true);
     }
     for request in requests {
-        start_share_picker(state, request);
+        match request {
+            ipc::Request::Share(request) => start_share_picker(state, request),
+            ipc::Request::Command(request) => {
+                let result = super::commands::run(state, &request.args);
+                if let Some(server) = state.ipc_server.as_mut() {
+                    server.reply_command(request.id, result);
+                }
+            }
+        }
     }
     state.queue_redraw_all();
 }
