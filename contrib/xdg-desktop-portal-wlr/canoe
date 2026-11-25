@@ -1,0 +1,11 @@
+# xdg-desktop-portal-wlr settings for Canoe sessions (XDG_CURRENT_DESKTOP=canoe):
+# Canoe asks what to share, single windows included.
+#
+# Install it for everyone as /etc/xdg/xdg-desktop-portal-wlr/canoe, or for
+# yourself as ~/.config/xdg-desktop-portal-wlr/canoe. Other desktops don't
+# read it. xdg-desktop-portal-wlr reads only the first file it finds, and
+# ~/.config/xdg-desktop-portal-wlr/config comes before
+# /etc/xdg/xdg-desktop-portal-wlr/canoe: if you have one, copy this there.
+[screencast]
+chooser_type=dmenu
+chooser_cmd=canoe --share-picker

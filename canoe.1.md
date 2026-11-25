@@ -398,14 +398,21 @@ Programs share the screen through the screencast portal, which for Canoe is
 **xdg-desktop-portal-wlr** (0.8 or newer for single windows). Route the
 portals with *canoe-portals.conf* (shipped as *contrib/canoe-portals.conf*,
 installed into */usr/share/xdg-desktop-portal/* or
-*~/.config/xdg-desktop-portal/*) and make Canoe the chooser in
-*~/.config/xdg-desktop-portal-wlr/config*:
+*~/.config/xdg-desktop-portal/*). Canoe is the portal's chooser in Canoe
+sessions with *contrib/xdg-desktop-portal-wlr/canoe*, installed as
+*/etc/xdg/xdg-desktop-portal-wlr/canoe* or
+*~/.config/xdg-desktop-portal-wlr/canoe*:
 
 ```
 [screencast]
 chooser_type=dmenu
 chooser_cmd=canoe --share-picker
 ```
+
+The portal reads only the first configuration file it finds, and
+*~/.config/xdg-desktop-portal-wlr/config* comes before
+*/etc/xdg/xdg-desktop-portal-wlr/canoe*: if you have one, add these lines to
+it or create *~/.config/xdg-desktop-portal-wlr/canoe*.
 
 When a program wants to share, Canoe dims all screens and highlights the
 window or screen under the pointer. Click to share it, or use **Tab**, the
@@ -484,6 +491,14 @@ Programs Canoe launches see **WAYLAND_DISPLAY** naming its socket,
 
 */usr/share/wayland-sessions/canoe.desktop*
 : Session file for display managers, shipped as *contrib/canoe.desktop*.
+
+*/usr/share/xdg-desktop-portal/canoe-portals.conf*
+: Which portal backends Canoe sessions use, shipped as
+  *contrib/canoe-portals.conf*.
+
+*/etc/xdg/xdg-desktop-portal-wlr/canoe*
+: Makes Canoe the screen-sharing chooser of **xdg-desktop-portal-wlr** in
+  Canoe sessions, shipped as *contrib/xdg-desktop-portal-wlr/canoe*.
 
 # EXIT STATUS
 
