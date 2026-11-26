@@ -171,6 +171,9 @@ Unfocus the current window and deselect icons.
 .TP
 Double\-click a desktop icon
 Bring its window back.
+.TP
+Right\-click a desktop icon
+Select it, and open its menu if its program gave it one.
 .SH MULTIPLE OUTPUTS
 Windows belong to the output they were opened or last moved on, and keep
 their place on it when the output layout changes.
@@ -203,8 +206,9 @@ the \f[B]Icon=\f[R] of the program\(cqs desktop entry,
 .IP "4." 3
 the first letter of the window\(cqs title.
 .PP
-Programs can draw a minimized window\(cqs icon themselves with
-Canoe\(cqs experimental \f[B]xx\-iconlet\-v1\f[R] protocol.
+Programs can draw a minimized window\(cqs icon themselves, and give it a
+tooltip and a menu, with Canoe\(cqs experimental
+\f[B]xx\-iconlet\-v1\f[R] protocol.
 An X11 window\(cqs app id is the class of its \f[B]WM_CLASS\f[R].
 .SH CONFIGURATION
 Canoe reads \f[I]\(ti/.config/canoe/canoe.toml\f[R].

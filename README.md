@@ -609,7 +609,9 @@ program that lives only as its icon, like a clock or a battery gauge: its
 window starts out minimized and never comes up, double-clicking its icon
 tells the program instead, it stays out of the window menu, Super+Tab and
 taskbars, and its icon comes before those of other minimized windows, so it
-keeps its place.
+keeps its place. Any program can also give its icon a tooltip, shown when the
+pointer rests on the icon, and a menu, opened by right-clicking the icon, and
+hear when its icon is selected.
 
 **If you use a separate program to show a background image** (`swaybg`,
 `shaderbg`, `wpaperd`, …), set:

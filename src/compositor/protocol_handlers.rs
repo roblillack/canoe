@@ -257,4 +257,14 @@ impl IconletHandler for State {
     fn icon_surface_changed(&mut self, surface: &WlSurface) {
         self.toplevel_icon_surface_changed(surface);
     }
+
+    fn icon_tooltip_changed(&mut self, surface: &WlSurface) {
+        if let Some(id) = self.window_for_surface(surface).map(|w| w.id) {
+            self.refresh_icon_tooltip(id);
+        }
+    }
+
+    fn icon_menu_changed(&mut self, surface: &WlSurface) {
+        self.toplevel_icon_menu_changed(surface);
+    }
 }

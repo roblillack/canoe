@@ -18,6 +18,81 @@ pub struct MenuItem {
     pub title: String,
     pub hidden: bool,
     pub active: bool,
+    /// An item of the menu of `window_id`'s icon (xx-iconlet-v1): the
+    /// client's id of it, which picking it sends instead of activating the
+    /// window.
+    pub action: Option<u32>,
+    pub mark: MenuMark,
+    /// Shown, but can't be picked.
+    pub disabled: bool,
+    /// A line between items rather than an item.
+    pub separator: bool,
+}
+
+impl MenuItem {
+    /// An item of the window list.
+    pub fn window(window_id: WindowId, title: String, hidden: bool, active: bool) -> Self {
+        Self {
+            window_id,
+            title,
+            hidden,
+            active,
+            action: None,
+            mark: MenuMark::None,
+            disabled: false,
+            separator: false,
+        }
+    }
+
+    /// An entry of the menu the client of `window_id` gave its icon.
+    pub fn icon_entry(window_id: WindowId, entry: &IconMenuEntry) -> Self {
+        let mut item = Self::window(window_id, String::new(), false, false);
+        match entry {
+            IconMenuEntry::Item {
+                id,
+                label,
+                mark,
+                disabled,
+            } => {
+                item.title = label.clone();
+                item.action = Some(*id);
+                item.mark = *mark;
+                item.disabled = *disabled;
+            }
+            IconMenuEntry::Separator => item.separator = true,
+        }
+        item
+    }
+
+    /// Whether the item can be hovered and picked.
+    fn selectable(&self) -> bool {
+        !self.disabled && !self.separator
+    }
+}
+
+/// An entry of the menu a client gave its window's desktop icon
+/// (xx-iconlet-v1).
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum IconMenuEntry {
+    Item {
+        /// The client's id of the item.
+        id: u32,
+        label: String,
+        mark: MenuMark,
+        disabled: bool,
+    },
+    Separator,
+}
+
+/// What is shown left of an item's label besides the window list's marks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum MenuMark {
+    #[default]
+    None,
+    /// A check box, checked or not.
+    Check(bool),
+    /// A radio button, on or not.
+    Radio(bool),
 }
 
 /// Window menu surface and state.
@@ -60,6 +135,10 @@ const ITEM_PADDING_Y: i32 = 5;
 const ICON_SIZE: i32 = 13;
 const ICON_GAP: i32 = 8;
 const ACTIVE_DIAMOND_SIZE: i32 = 11;
+/// Size of a check box.
+const CHECK_SIZE: i32 = 11;
+/// Height of a separator row.
+const SEPARATOR_HEIGHT: i32 = 9;
 const FALLBACK_WIDTH: i32 = 160;
 
 /// Fallback flat drop-shadow size used when soft shadows are disabled.
@@ -197,10 +276,9 @@ impl WindowMenu {
         scale: Scale,
     ) -> Self {
         let inner_width = measure_inner_width(&items, &theme, header_title.as_deref(), &scale);
-        let row_count = items.len() as i32 + i32::from(header_title.is_some());
+        let rows_height = rows_height(&items, &theme, header_title.is_some());
         let width = theme.shadow_left() + inner_width + 2 + theme.shadow_right();
-        let height =
-            theme.shadow_top() + row_count * item_height(&theme) + 2 + theme.shadow_bottom();
+        let height = theme.shadow_top() + rows_height + 2 + theme.shadow_bottom();
         Self {
             surface,
             layer_surface,
@@ -225,14 +303,21 @@ impl WindowMenu {
         }
     }
 
-    fn row_count(&self) -> i32 {
-        self.items.len() as i32 + i32::from(self.header_title.is_some())
+    /// Where item `idx`'s row starts, in logical pixels below the top
+    /// border, and its height.
+    fn row(&self, idx: usize) -> (i32, i32) {
+        let top = self.header_height()
+            + self.items[..idx]
+                .iter()
+                .map(|item| row_height(item, &self.theme))
+                .sum::<i32>();
+        (top, row_height(&self.items[idx], &self.theme))
     }
 
     fn geometry(&self) -> MenuGeometry {
         let scale = &self.scale;
         let line = scale.line();
-        let rows = self.row_count() * item_height(&self.theme);
+        let rows = rows_height(&self.items, &self.theme, self.header_title.is_some());
         MenuGeometry {
             menu: Rect {
                 x: scale.px(self.theme.shadow_left()),
@@ -257,12 +342,13 @@ impl WindowMenu {
             return None;
         }
 
-        let item_h = item_height(&self.theme);
-        let header_h = self.header_height();
-        (0..self.items.len()).find(|&idx| {
-            let (top, bottom) = geometry.row(&self.scale, header_h + idx as i32 * item_h, item_h);
-            y >= top && y < bottom
-        })
+        (0..self.items.len())
+            .find(|&idx| {
+                let (top, height) = self.row(idx);
+                let (top, bottom) = geometry.row(&self.scale, top, height);
+                y >= top && y < bottom
+            })
+            .filter(|&idx| self.items[idx].selectable())
     }
 
     /// Keep items from being hovered by the pointer until it moves away from
@@ -358,14 +444,11 @@ impl WindowMenu {
 
         let geometry = self.geometry();
         let theme = self.theme.clone();
-        let hovered_idx = self.hovered;
-        let hovered_item = hovered_idx.and_then(|idx| self.items.get(idx).cloned());
-        let item_h = item_height(&theme);
-        let header_h = self.header_height();
+        let hovered_idx = self.hovered.filter(|&idx| idx < self.items.len());
+        let hovered = hovered_idx.map(|idx| (self.items[idx].clone(), self.row(idx)));
         let scale = self.scale;
         let row_ctx = MenuRowContext {
             geometry: &geometry,
-            item_h,
             scale: &scale,
             theme: &theme,
         };
@@ -389,9 +472,8 @@ impl WindowMenu {
                 None => return,
             };
 
-            if let (Some(idx), Some(item)) = (hovered_idx, hovered_item.as_ref()) {
-                let row_top = header_h + idx as i32 * item_h;
-                draw_menu_row(&mut renderer, item, row_top, true, &row_ctx);
+            if let Some((item, row)) = hovered.as_ref() {
+                draw_menu_row(&mut renderer, item, *row, true, &row_ctx);
             }
         });
     }
@@ -484,6 +566,25 @@ fn item_height(theme: &MenuTheme) -> i32 {
     (font_h + ITEM_PADDING_Y * 2).max(1)
 }
 
+/// Height of `item`'s row, in logical pixels.
+fn row_height(item: &MenuItem, theme: &MenuTheme) -> i32 {
+    if item.separator {
+        SEPARATOR_HEIGHT
+    } else {
+        item_height(theme)
+    }
+}
+
+/// Height of all rows, the header's included, in logical pixels.
+fn rows_height(items: &[MenuItem], theme: &MenuTheme, header: bool) -> i32 {
+    let header = if header { item_height(theme) } else { 0 };
+    header
+        + items
+            .iter()
+            .map(|item| row_height(item, theme))
+            .sum::<i32>()
+}
+
 /// Width of the rows between the borders, in logical pixels. The text is
 /// measured at the size it will be drawn at, then taken back to logical
 /// pixels, so hinting at that size can't push it past its slot.
@@ -516,6 +617,10 @@ fn items_hash(items: &[MenuItem]) -> u64 {
         item.title.hash(&mut hasher);
         item.hidden.hash(&mut hasher);
         item.active.hash(&mut hasher);
+        item.action.hash(&mut hasher);
+        item.mark.hash(&mut hasher);
+        item.disabled.hash(&mut hasher);
+        item.separator.hash(&mut hasher);
     }
     hasher.finish()
 }
@@ -585,11 +690,8 @@ impl WindowMenu {
             rgba_to_argb(BORDER_COLOR),
         );
 
-        let item_h = item_height(&self.theme);
-        let header_h = self.header_height();
         let row_ctx = MenuRowContext {
             geometry: &geometry,
-            item_h,
             scale: &scale,
             theme: &self.theme,
         };
@@ -597,8 +699,7 @@ impl WindowMenu {
             draw_menu_header(&mut renderer, title, &row_ctx);
         }
         for (idx, item) in self.items.iter().enumerate() {
-            let row_top = header_h + idx as i32 * item_h;
-            draw_menu_row(&mut renderer, item, row_top, false, &row_ctx);
+            draw_menu_row(&mut renderer, item, self.row(idx), false, &row_ctx);
         }
 
         self.cache = Some(MenuCache { key, pixels });
@@ -608,19 +709,23 @@ impl WindowMenu {
 
 struct MenuRowContext<'a> {
     geometry: &'a MenuGeometry,
-    /// Row height, in logical pixels.
-    item_h: i32,
     scale: &'a Scale,
     theme: &'a MenuTheme,
 }
 
 impl MenuRowContext<'_> {
-    /// Fill the row starting `row_top` logical pixels below the top border,
-    /// border to border; returns its device-pixel `(top, height)`.
-    fn fill_row(&self, renderer: &mut Renderer, row_top: i32, color_argb: u32) -> (i32, i32) {
+    /// Fill the row starting `row_top` logical pixels below the top border
+    /// and `row_h` high, border to border; returns its device-pixel
+    /// `(top, height)`.
+    fn fill_row(
+        &self,
+        renderer: &mut Renderer,
+        (row_top, row_h): (i32, i32),
+        color_argb: u32,
+    ) -> (i32, i32) {
         let menu = self.geometry.menu;
         let line = self.geometry.line;
-        let (top, bottom) = self.geometry.row(self.scale, row_top, self.item_h);
+        let (top, bottom) = self.geometry.row(self.scale, row_top, row_h);
         renderer.fill_rect(
             menu.x + line,
             top,
@@ -667,7 +772,7 @@ impl MenuRowContext<'_> {
 fn draw_menu_header(renderer: &mut Renderer, title: &str, ctx: &MenuRowContext<'_>) {
     let bg = rgba_to_argb(ctx.theme.titlebar_bg);
     let text_color = rgba_to_argb(ctx.theme.titlebar_text);
-    let row = ctx.fill_row(renderer, 0, bg);
+    let row = ctx.fill_row(renderer, (0, item_height(ctx.theme)), bg);
     // The header is styled like an inactive titlebar.
     let color_glyphs = ColorGlyphs::Tinted;
     ctx.text(
@@ -683,7 +788,7 @@ fn draw_menu_header(renderer: &mut Renderer, title: &str, ctx: &MenuRowContext<'
 fn draw_menu_row(
     renderer: &mut Renderer,
     item: &MenuItem,
-    row_top: i32,
+    row_rect: (i32, i32),
     is_active: bool,
     ctx: &MenuRowContext<'_>,
 ) {
@@ -694,6 +799,8 @@ fn draw_menu_row(
     };
     let text_color = if is_active {
         rgba_to_argb(ctx.theme.highlight_text)
+    } else if item.disabled {
+        blend_argb(rgba_to_argb(ctx.theme.text), bg)
     } else {
         rgba_to_argb(ctx.theme.text)
     };
@@ -703,9 +810,23 @@ fn draw_menu_row(
         rgba_to_argb(ctx.theme.text)
     };
 
-    let row = ctx.fill_row(renderer, row_top, bg);
+    let row = ctx.fill_row(renderer, row_rect, bg);
     let (top, height) = row;
     let scale = ctx.scale;
+
+    if item.separator {
+        let menu = ctx.geometry.menu;
+        let line = ctx.geometry.line;
+        let inset = scale.px(ITEM_PADDING_X / 2);
+        renderer.fill_rect(
+            menu.x + line + inset,
+            top + (height - line) / 2,
+            menu.width - (line + inset) * 2,
+            line,
+            blend_argb(rgba_to_argb(ctx.theme.text), bg),
+        );
+        return;
+    }
 
     let icon_x = ctx.x(ITEM_PADDING_X);
     let icon_size = scale.px(ICON_SIZE);
@@ -732,6 +853,40 @@ fn draw_menu_row(
             text_color,
         );
     }
+    match item.mark {
+        MenuMark::None => {}
+        // A filled box marks a checked checkbox; unchecked ones show
+        // nothing.
+        MenuMark::Check(true) => {
+            let size = scale.px(CHECK_SIZE);
+            let line = ctx.geometry.line;
+            let rect = Rect {
+                x: icon_x + (icon_size - size) / 2,
+                y: top + (height - size) / 2,
+                width: size,
+                height: size,
+            };
+            draw_border_rect(renderer, rect, line, text_color);
+            // Filled, a line's gap inside the box.
+            let inset = line * 2;
+            renderer.fill_rect(
+                rect.x + inset,
+                rect.y + inset,
+                rect.width - inset * 2,
+                rect.height - inset * 2,
+                text_color,
+            );
+        }
+        MenuMark::Check(false) => {}
+        // A diamond marks the radio button that is on; the others show
+        // nothing.
+        MenuMark::Radio(true) => {
+            let size = scale.px(ACTIVE_DIAMOND_SIZE);
+            let (x, y) = (icon_x + (icon_size - size) / 2, top + (height - size) / 2);
+            draw_diamond(renderer, x, y, size, text_color);
+        }
+        MenuMark::Radio(false) => {}
+    }
 
     let text_x = ITEM_PADDING_X + ICON_SIZE + ICON_GAP;
     let color_glyphs = if is_active {
@@ -740,6 +895,12 @@ fn draw_menu_row(
         ColorGlyphs::Tinted
     };
     ctx.text(renderer, &item.title, text_x, row, text_color, color_glyphs);
+}
+
+/// Halfway between two opaque ARGB colors.
+fn blend_argb(a: u32, b: u32) -> u32 {
+    let mix = |shift: u32| ((((a >> shift) & 0xff) + ((b >> shift) & 0xff)) / 2) << shift;
+    0xff00_0000 | mix(16) | mix(8) | mix(0)
 }
 
 fn rgba_to_argb(rgba: u32) -> u32 {
@@ -857,8 +1018,92 @@ fn draw_diamond(renderer: &mut Renderer, x: i32, y: i32, size: i32, color_argb: 
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
+    use crate::canoe::surface::Layer;
+
+    fn theme() -> MenuTheme {
+        MenuTheme {
+            font_name: None,
+            font_size: 13.0,
+            bg: 0xFFFFFFFF,
+            text: 0x000000FF,
+            highlight_bg: 0x000080FF,
+            highlight_text: 0xFFFFFFFF,
+            titlebar_bg: 0xC0C0C0FF,
+            titlebar_text: 0x000000FF,
+            shadows_enabled: false,
+            shadow_size: 0,
+            shadow_color: 0,
+        }
+    }
+
+    /// A menu of `entries` for window 7's icon, headed by a title.
+    pub(crate) fn icon_menu(entries: &[IconMenuEntry]) -> WindowMenu {
+        let surface = Surface::new();
+        let layer_surface = LayerSurface::new(&surface, Some(1), Layer::Overlay, "test");
+        let items = entries
+            .iter()
+            .map(|entry| MenuItem::icon_entry(7, entry))
+            .collect();
+        WindowMenu::new(
+            surface,
+            layer_surface,
+            FractionalSurface::new(),
+            1,
+            items,
+            Some("Title".into()),
+            0,
+            0,
+            theme(),
+            Scale::default(),
+        )
+    }
+
+    fn item(id: u32, mark: MenuMark, disabled: bool) -> IconMenuEntry {
+        IconMenuEntry::Item {
+            id,
+            label: format!("Item {id}"),
+            mark,
+            disabled,
+        }
+    }
+
+    #[test]
+    fn separators_are_short_rows_that_cant_be_picked() {
+        let menu = icon_menu(&[
+            item(1, MenuMark::None, false),
+            IconMenuEntry::Separator,
+            item(2, MenuMark::Radio(true), false),
+        ]);
+        let row_h = item_height(&menu.theme);
+        assert_eq!(
+            menu.height,
+            2 + row_h * 3 + SEPARATOR_HEIGHT + L_SHADOW_SIZE
+        );
+        // Rows start below the border and the header.
+        let y = |row_top: i32| 1 + row_top + 2;
+        assert_eq!(menu.item_at(20, y(row_h)), Some(0));
+        assert_eq!(menu.item_at(20, y(row_h * 2)), None);
+        assert_eq!(menu.item_at(20, y(row_h * 2 + SEPARATOR_HEIGHT)), Some(2));
+    }
+
+    #[test]
+    fn disabled_items_cant_be_picked() {
+        let menu = icon_menu(&[item(1, MenuMark::Check(false), true)]);
+        let row_h = item_height(&menu.theme);
+        assert_eq!(menu.item_at(20, 1 + row_h + 2), None);
+    }
+
+    #[test]
+    fn icon_entries_become_items_that_send_their_id() {
+        let entry = item(5, MenuMark::Check(true), false);
+        let item = MenuItem::icon_entry(7, &entry);
+        assert_eq!((item.window_id, item.action), (7, Some(5)));
+        assert_eq!(item.mark, MenuMark::Check(true));
+        assert_eq!(item.title, "Item 5");
+        assert!(MenuItem::icon_entry(7, &IconMenuEntry::Separator).separator);
+    }
 
     #[test]
     fn pointer_moved_ignores_rounding_slack() {

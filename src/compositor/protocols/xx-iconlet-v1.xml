@@ -29,6 +29,9 @@
     ext-image-copy-capture-v1's cursor sessions. A compositor may hide this
     global from clients it doesn't trust with it.
 
+    An icon can also have a tooltip and a menu of actions, and its client
+    learns when the user selects it.
+
     This is an experimental protocol: backward-incompatible changes may be
     made, and the interface names carry the "xx" prefix until it is
     stabilized.
@@ -62,6 +65,14 @@
       </description>
       <arg name="id" type="new_id" interface="xx_iconic_toplevel_v1"/>
       <arg name="toplevel" type="object" interface="xdg_toplevel"/>
+    </request>
+
+    <request name="create_menu">
+      <description summary="create a menu for icons">
+        Create an empty xx_icon_menu_v1, to be filled with items and set as
+        the menu of icons with xx_iconic_toplevel_v1.set_menu.
+      </description>
+      <arg name="id" type="new_id" interface="xx_icon_menu_v1"/>
     </request>
   </interface>
 
@@ -171,6 +182,67 @@
       </description>
       <arg name="token" type="string"/>
     </event>
+
+    <request name="set_tooltip">
+      <description summary="set the icon's tooltip">
+        Set a text the compositor shows near the icon while the pointer
+        rests on it. It is UTF-8 and may have several lines, separated by
+        newline characters. An empty text removes the tooltip, as does
+        destroying this object.
+
+        Like set_iconlet, this applies right away. A tooltip that is shown
+        changes or goes away with it.
+      </description>
+      <arg name="text" type="string"/>
+    </request>
+
+    <request name="set_menu">
+      <description summary="set the icon's menu">
+        Make the items of the menu the icon's menu, which the compositor
+        offers when the user asks for one, for example by right-clicking
+        the icon; null removes it, as does destroying this object. The menu
+        can't be changed afterwards and may be destroyed right away; to
+        change the icon's menu, for example to check another item, set a
+        new one.
+
+        Like set_iconlet, this applies right away. A menu that is open may
+        be closed or updated in place.
+      </description>
+      <arg name="menu" type="object" interface="xx_icon_menu_v1" allow-null="true"/>
+    </request>
+
+    <event name="selected">
+      <description summary="the user selected the icon">
+        The user selected the icon, for example by clicking it once, or by
+        moving to it among the desktop's icons with the keyboard. The
+        client may show that, for example by having the icon look up.
+
+        Only sent while the icon is shown (after icon_geometry); deselected
+        ends it.
+      </description>
+    </event>
+
+    <event name="deselected">
+      <description summary="the icon is no longer selected">
+        The icon is no longer selected, because the user selected something
+        else or the icon is no longer shown. Sent only after selected, and
+        before icon_hidden.
+      </description>
+    </event>
+
+    <event name="menu_action">
+      <description summary="the user picked an item of the icon's menu">
+        The user picked an enabled item of the icon's menu. The id is the
+        one the item was added with. The compositor doesn't change the
+        menu: if picking an item should check or uncheck it, set a new menu.
+
+        The token is an xdg_activation_v1 token that lets a window the
+        client opens in response take focus, as for activate. It may be
+        empty.
+      </description>
+      <arg name="id" type="uint" summary="the item's id"/>
+      <arg name="token" type="string"/>
+    </event>
   </interface>
 
   <interface name="xx_icon_surface_v1" version="1">
@@ -196,5 +268,69 @@
       <arg name="width" type="int"/>
       <arg name="height" type="int"/>
     </event>
+  </interface>
+
+  <interface name="xx_icon_menu_v1" version="1">
+    <description summary="a menu of actions for icons">
+      A list of items and separators, in the order they are added, for
+      xx_iconic_toplevel_v1.set_menu. Created with
+      xx_iconlet_manager_v1.create_menu.
+
+      Items are actions, checkboxes or radio buttons. The compositor shows
+      their labels and their state, and tells the client of the icon which
+      one the user picked with xx_iconic_toplevel_v1.menu_action; it never
+      checks or unchecks items itself.
+    </description>
+
+    <enum name="error">
+      <entry name="immutable" value="0"
+        summary="the menu was changed after it was set"/>
+    </enum>
+
+    <enum name="kind">
+      <description summary="what an item does">
+        How an item looks. Picking any of them only sends menu_action.
+      </description>
+      <entry name="action" value="0" summary="a command"/>
+      <entry name="checkbox" value="1"
+        summary="an option that is on or off, shown with a check box"/>
+      <entry name="radio" value="2"
+        summary="one of several choices, shown with a radio button"/>
+    </enum>
+
+    <enum name="state" bitfield="true">
+      <entry name="checked" value="1"
+        summary="a checkbox or radio item is on; ignored for actions"/>
+      <entry name="disabled" value="2"
+        summary="the item is shown but can't be picked"/>
+    </enum>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the menu">
+        Destroy the menu. Icons it was set for keep it.
+      </description>
+    </request>
+
+    <request name="add_item">
+      <description summary="add an item">
+        Add an item at the end of the menu. The id is passed back in
+        menu_action when the user picks the item, and need not be unique.
+        The label is a single line of UTF-8; the compositor may shorten it.
+
+        Raises immutable if the menu was set with set_menu.
+      </description>
+      <arg name="id" type="uint" summary="id for menu_action"/>
+      <arg name="label" type="string"/>
+      <arg name="kind" type="uint" enum="kind"/>
+      <arg name="state" type="uint" enum="state"/>
+    </request>
+
+    <request name="add_separator">
+      <description summary="add a separator">
+        Add a line between the items before and after it.
+
+        Raises immutable if the menu was set with set_menu.
+      </description>
+    </request>
   </interface>
 </protocol>

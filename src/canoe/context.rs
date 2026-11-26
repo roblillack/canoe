@@ -108,6 +108,9 @@ pub struct Context {
     /// Iconlets whose icon the user activated, for the compositor to tell
     /// their clients.
     pub iconlet_activations: Vec<WindowId>,
+    /// Items picked from icons' menus (xx-iconlet-v1), with the client's
+    /// ids of them, to be sent to the windows' clients.
+    pub icon_menu_actions: Vec<(WindowId, u32)>,
 
     // Configuration
     pub config: Config,
@@ -151,6 +154,8 @@ pub struct Context {
     /// Window menu surface and state
     pub window_menu: Option<WindowMenu>,
     pub window_menu_mode: Option<WindowMenuMode>,
+    /// The tooltip of the desktop icon under the pointer, while shown.
+    pub icon_tooltip: Option<super::IconTooltip>,
     pub window_menu_shield: Option<super::ShieldSurface>,
     window_menu_alt_tab_stack: Option<Vec<WindowId>>,
     window_menu_alt_tab_focused: Option<WindowId>,
@@ -212,6 +217,7 @@ impl Context {
             next_minimize_seq: 0,
             show_desktop: None,
             iconlet_activations: Vec::new(),
+            icon_menu_actions: Vec::new(),
 
             config: load_config(skip_config),
             skip_config,
@@ -231,6 +237,7 @@ impl Context {
 
             window_menu: None,
             window_menu_mode: None,
+            icon_tooltip: None,
             window_menu_shield: None,
             window_menu_alt_tab_stack: None,
             window_menu_alt_tab_focused: None,
@@ -325,6 +332,18 @@ impl Context {
     /// Remove a window from context
     pub fn destroy_window(&mut self, window_id: WindowId) {
         let was_focused = self.focused_window == Some(window_id);
+
+        // Its icon's tooltip and menu go with it.
+        if self
+            .icon_tooltip
+            .as_ref()
+            .is_some_and(|t| t.window_id == window_id)
+        {
+            self.icon_tooltip = None;
+        }
+        if self.icon_menu_open(window_id) {
+            self.close_window_menu();
+        }
 
         self.focus_stack.retain(|&id| id != window_id);
         let was_minimized = self
@@ -3423,17 +3442,21 @@ impl Context {
         let Some(idx) = menu.hovered else {
             return;
         };
-        let window_id = menu.items.get(idx).map(|item| item.window_id);
+        let item = menu
+            .items
+            .get(idx)
+            .map(|item| (item.window_id, item.action));
         self.clear_alt_tab_state();
         self.window_menu = None;
         self.window_menu_mode = None;
         self.window_menu_shield = None;
 
-        let Some(window_id) = window_id else {
-            return;
-        };
-
-        self.activate_window(window_id);
+        match item {
+            // An item of an icon's menu: its client hears of it.
+            Some((window_id, Some(action))) => self.icon_menu_actions.push((window_id, action)),
+            Some((window_id, None)) => self.activate_window(window_id),
+            None => {}
+        }
     }
 
     /// Restore a window if it is minimized, raise and focus it. An iconlet
@@ -3460,6 +3483,15 @@ impl Context {
             self.mark_all_desktops_dirty();
         }
         self.focus(window_id);
+    }
+
+    /// Whether the menu of `window_id`'s icon is open.
+    pub fn icon_menu_open(&self, window_id: WindowId) -> bool {
+        self.window_menu.as_ref().is_some_and(|menu| {
+            menu.items
+                .iter()
+                .any(|item| item.window_id == window_id && item.action.is_some())
+        })
     }
 
     /// Close the window menu if open.
@@ -3710,13 +3742,14 @@ impl Context {
             self.exit_icon_focus(seat_id);
             return;
         };
+        // An iconlet stays an icon, and selected: its client hears that it
+        // was activated.
         if self
             .windows
             .get(&window_id)
             .is_some_and(|w| w.borrow().iconlet)
         {
             self.iconlet_activations.push(window_id);
-            self.exit_icon_focus(seat_id);
             return;
         }
         // Show and focus the window
@@ -4589,12 +4622,7 @@ fn menu_item_from_window(
             .unwrap_or_else(|| format!("Window {}", window_id)),
     };
 
-    MenuItem {
-        window_id,
-        title,
-        hidden: window.hidden,
-        active: focused == Some(window_id),
-    }
+    MenuItem::window(window_id, title, window.hidden, focused == Some(window_id))
 }
 
 /// Proportionally map a rect from one output area to another, clamped to
@@ -4751,6 +4779,7 @@ fn icon_grid_step(current: usize, count: usize, cols: i32, dx: i32, dy: i32) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::canoe::{IconMenuEntry, MenuMark};
 
     #[test]
     fn icon_grid_steps_up_into_the_rows_above() {
@@ -6238,6 +6267,31 @@ mod tests {
         // Nothing else shows it either.
         ctx.windows[&11].borrow_mut().show();
         assert!(hidden(&ctx, 11));
+    }
+
+    #[test]
+    fn picking_an_icon_menu_item_tells_the_client_instead_of_showing_the_window() {
+        let mut ctx = context_with_output_ids(&[1]);
+        add_stacked_window(&mut ctx, 7, 1, true);
+        let mut menu = super::super::menu::tests::icon_menu(&[
+            IconMenuEntry::Separator,
+            IconMenuEntry::Item {
+                id: 42,
+                label: "Do it".into(),
+                mark: MenuMark::None,
+                disabled: false,
+            },
+        ]);
+        menu.hovered = Some(1);
+        ctx.window_menu = Some(menu);
+        ctx.window_menu_mode = Some(WindowMenuMode::Pointer);
+        assert!(ctx.icon_menu_open(7));
+
+        ctx.activate_menu_hovered();
+
+        assert!(ctx.window_menu.is_none());
+        assert_eq!(ctx.icon_menu_actions, vec![(7, 42)]);
+        assert!(hidden(&ctx, 7));
     }
 
     #[test]
