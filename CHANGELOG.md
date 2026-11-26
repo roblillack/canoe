@@ -70,7 +70,7 @@ xdg-desktop-portal-wlr; see Installation in the README.
   The protocol also lets a program give its icon a tooltip, shown
   when the pointer rests on the icon, and a menu of actions, checkboxes and
   radio buttons, opened by right-clicking the icon, and tells it when its
-  icon is selected. Activating an iconlet leaves its icon selected.
+  icon is selected. Activating an iconlet leaves its icon selected. (#113)
 - `org_kde_plasma_shell`, of which only `set_skip_switcher` is supported, to
   keep a window out of the window menu, Super+Tab and focus cycling. (#70)
 - `xdg-toplevel-tag-v1`, without which Spectacle crashes. (#81)
