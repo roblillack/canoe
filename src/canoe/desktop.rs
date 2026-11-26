@@ -411,6 +411,23 @@ impl DesktopSurface {
             .collect()
     }
 
+    /// Where the icon of `window_id` is, in logical pixels: its image's
+    /// left, top and width, and the height down to the bottom of its cell,
+    /// below the label.
+    pub fn icon_extent(&self, window_id: WindowId) -> Option<(i32, i32, i32, i32)> {
+        let layout = self.icons.iter().find(|l| l.window_id == window_id)?;
+        let device = self.scale.device();
+        let logical = |v: i32| (v as f64 / device).round() as i32;
+        let icon_px = self.scale.px(ICON_SIZE);
+        let x = layout.x + (layout.width - icon_px) / 2;
+        Some((
+            logical(x),
+            logical(layout.y),
+            logical(icon_px),
+            logical(layout.height),
+        ))
+    }
+
     /// Find the index of the currently selected icon.
     pub fn selected_icon_index(&self) -> Option<usize> {
         let selected = self.selected_icon?;

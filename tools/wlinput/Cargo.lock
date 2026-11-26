@@ -224,6 +224,7 @@ dependencies = [
 name = "wlinput"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "rustix",
  "wayland-client",
  "wayland-protocols",

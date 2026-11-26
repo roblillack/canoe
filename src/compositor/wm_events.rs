@@ -558,6 +558,56 @@ impl State {
             let token = token.to_string();
             super::protocols::iconlet::send_activate(&surface, &token);
         }
+        let actions = std::mem::take(&mut self.context.borrow_mut().icon_menu_actions);
+        for (id, action) in actions {
+            let Some(surface) = self.window_by_id(id).map(|w| w.wl_surface().clone()) else {
+                continue;
+            };
+            let (token, _) = self.xdg_activation_state.create_external_token(None);
+            let token = token.to_string();
+            super::protocols::iconlet::send_menu_action(&surface, action, &token);
+        }
+    }
+
+    /// Tell clients whose windows' desktop icon was selected or deselected.
+    pub fn send_icon_selection(&mut self) {
+        let selected = {
+            let context = self.context.borrow();
+            context.outputs.values().find_map(|output| {
+                output
+                    .borrow()
+                    .desktop_surface
+                    .as_ref()
+                    .and_then(|d| d.selected_icon)
+            })
+        };
+        let surface = selected
+            .and_then(|id| self.window_by_id(id))
+            .map(|w| w.wl_surface().clone());
+        if self.selected_icon != surface {
+            if let Some(previous) = self.selected_icon.take() {
+                super::protocols::iconlet::set_selected(&previous, false);
+            }
+            self.selected_icon = surface.clone();
+        }
+        // Also tells a client that only now has its icon shown or an
+        // xx_iconic_toplevel_v1.
+        if let Some(surface) = surface {
+            super::protocols::iconlet::set_selected(&surface, true);
+        }
+    }
+
+    /// The menu of toplevel `surface`'s icon changed: close it if it is
+    /// open, rather than have the user pick from the old one.
+    pub fn toplevel_icon_menu_changed(&mut self, surface: &WlSurface) {
+        let Some(id) = self.window_for_surface(surface).map(|w| w.id) else {
+            return;
+        };
+        let menu_open = self.context.borrow().icon_menu_open(id);
+        if menu_open {
+            self.context.borrow_mut().close_window_menu();
+            self.queue_redraw_all();
+        }
     }
 
     pub fn remove_toplevel(&mut self, surface: &WlSurface) {
@@ -1037,7 +1087,7 @@ impl State {
     // ------------------------------------------------------------------
     // Seat events
 
-    fn wm_seat(&self) -> Option<Rc<std::cell::RefCell<canoe::Seat>>> {
+    pub(super) fn wm_seat(&self) -> Option<Rc<std::cell::RefCell<canoe::Seat>>> {
         let context = self.context.borrow();
         context
             .current_seat
@@ -1406,6 +1456,7 @@ impl State {
                 self.schedule_wm();
             }
         }
+        self.update_icon_tooltip();
     }
 
     /// wl_pointer.leave on one of the window manager's surfaces.
@@ -1419,9 +1470,12 @@ impl State {
                 self.schedule_wm();
             }
         }
-        let mut seat = seat.borrow_mut();
-        seat.pointer_target = canoe::PointerTarget::None;
-        seat.cursor_shape = None;
+        {
+            let mut seat = seat.borrow_mut();
+            seat.pointer_target = canoe::PointerTarget::None;
+            seat.cursor_shape = None;
+        }
+        self.update_icon_tooltip();
     }
 
     /// wl_pointer.motion on one of the window manager's surfaces.
@@ -1460,10 +1514,14 @@ impl State {
                 self.schedule_wm();
             }
         }
+        self.update_icon_tooltip();
     }
 
     /// wl_pointer.button on one of the window manager's surfaces.
     pub fn canoe_pointer_button(&mut self, button: u32, pressed: bool) {
+        if pressed {
+            self.suppress_icon_tooltip();
+        }
         self.canoe_pointer_button_inner(button, pressed);
         self.schedule_wm();
         self.queue_redraw_all();
@@ -1600,7 +1658,8 @@ impl State {
                                 })
                             };
                             if let Some(icon_window_id) = icon_hit {
-                                // Right-click on an icon: just select it, no menu.
+                                // Right-click on an icon: select it, and
+                                // open its menu if its client gave it one.
                                 seat.borrow_mut().last_icon_click = None;
                                 state.context.borrow_mut().enter_icon_focus(
                                     output_id,
@@ -1608,6 +1667,10 @@ impl State {
                                     seat_id,
                                 );
                                 render_desktop_surface(state, output_id);
+                                if open_icon_menu(state, output_id, icon_window_id, (px, py)) {
+                                    update_menu_hover_from_global(state, seat_id);
+                                    seat.borrow_mut().menu_click_button = Some(button);
+                                }
                             } else {
                                 if state.context.borrow().config.ui.desktop_menu {
                                     let mut context = state.context.borrow_mut();

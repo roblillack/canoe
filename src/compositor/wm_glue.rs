@@ -202,6 +202,50 @@ pub(super) fn open_window_menu(
     );
 }
 
+/// Open the menu the client of `window_id` gave its desktop icon
+/// (xx-iconlet-v1) at `pointer`. Returns whether there was one to open.
+pub(super) fn open_icon_menu(
+    state: &mut State,
+    output_id: canoe::OutputId,
+    window_id: canoe::WindowId,
+    pointer: (i32, i32),
+) -> bool {
+    let Some(surface) = state
+        .window_by_id(window_id)
+        .map(|w| w.wl_surface().clone())
+    else {
+        return false;
+    };
+    let entries = super::protocols::iconlet::menu(&surface);
+    if !entries
+        .iter()
+        .any(|entry| matches!(entry, canoe::IconMenuEntry::Item { .. }))
+    {
+        return false;
+    }
+    let items = entries
+        .iter()
+        .map(|entry| canoe::MenuItem::icon_entry(window_id, entry))
+        .collect();
+    {
+        let mut context = state.context.borrow_mut();
+        if context.window_menu.is_some() {
+            context.close_window_menu();
+        }
+    }
+    open_window_menu_with_items(
+        state,
+        output_id,
+        pointer,
+        false,
+        canoe::WindowMenuMode::Pointer,
+        items,
+        None,
+        None,
+    );
+    state.context.borrow().window_menu.is_some()
+}
+
 pub(super) fn ensure_window_menu_shield(state: &mut State, output_id: canoe::OutputId) {
     let output = {
         let context = state.context.borrow();
@@ -1508,6 +1552,7 @@ pub(super) fn configure_canoe_layers(state: &mut State, output_id: canoe::Output
     if menu_here {
         render_window_menu(state);
     }
+    super::icon_tooltip::configure_icon_tooltip(state, output_id, output_size);
 
     {
         let mut context = state.context.borrow_mut();

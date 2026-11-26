@@ -1,0 +1,32 @@
+# xx-iconlet-v1: an icon's tooltip shows after the pointer rests
+# on it, clicking it selects it (its client hears) and hides the tooltip,
+# and right-clicking opens the menu its client gave it, whose items the
+# client hears of when picked.
+spawn $WLTEST --app-id dude --title Stan --size 300x200 --iconlet --icon-surface 3070d0 --icon-tooltip 'Stan\n“Oh my God, they killed Kenny!”' --icon-menu 'Say something|-|(*)Stan|( )Kyle|[x]Doze off|[ ]Snore|~Can’t pick this'
+wait-toplevel dude 4000
+sleep 300
+move 53 667
+sleep 900
+shot 01-tooltip
+btn click left
+sleep 200
+shot 02-selected
+btn click right
+sleep 300
+shot 03-menu
+# Picking "Kyle" tells the client (icon: menu action 4).
+move 90 595
+sleep 100
+shot 04-hover-item
+btn click left
+sleep 200
+# Double-clicking activates the icon, which stays selected (icon:
+# activated, with no deselected before the next one).
+move 53 667
+btn click left ; btn click left
+sleep 300
+shot 05-activated
+# Clicking the desktop deselects the icon.
+move 600 300 ; btn click left
+sleep 200
+shot 06-deselected

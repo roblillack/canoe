@@ -72,6 +72,7 @@ mod iconlet {
     wayland_scanner::generate_client_code!("../../src/compositor/protocols/xx-iconlet-v1.xml");
 }
 use iconlet::{
+    xx_icon_menu_v1::{self, XxIconMenuV1},
     xx_icon_surface_v1::{self, XxIconSurfaceV1},
     xx_iconic_toplevel_v1::{self, XxIconicToplevelV1},
     xx_iconlet_manager_v1::XxIconletManagerV1,
@@ -122,13 +123,19 @@ xdg-toplevel-icon (repeatable; applies to the window --title etc. describe):
                          (reset to the default icon)
 
 xx-iconlet-v1 (canoe's; reports icon: shown X Y WxH | icon: hidden |
-icon: activated | icon surface: WxH):
+icon: activated | icon surface: WxH | icon: selected | icon: deselected |
+icon: menu action ID):
   --iconlet              declare the window an iconlet before its first commit
   --icon-surface RRGGBB[@MS]
                          draw the window's icon with a surface of its own, in
                          that color with a white top left quarter, from before
                          the first commit, or in a new color MS after the
                          first configure (repeatable)
+  --icon-tooltip TEXT    give the icon a tooltip; \n in TEXT starts a new line
+  --icon-menu SPEC       give the icon a menu of entries separated by |: -
+                         is a separator, others are labels, which [x] or [ ]
+                         make a checkbox, (*) or ( ) a radio button and a
+                         leading ~ disabled. Items' ids count entries from 1.
 
 Layer surface:
   --layer background|bottom|top|overlay   create a layer surface instead
@@ -190,6 +197,8 @@ struct Options {
     /// Colors to draw the icon surface in, each with its delay after the
     /// first configure (`None`: from the start).
     icon_surfaces: Vec<(u32, Option<u64>)>,
+    icon_tooltip: Option<String>,
+    icon_menu: Option<String>,
 }
 
 #[derive(Clone, PartialEq)]
@@ -276,6 +285,8 @@ fn parse_args() -> Result<Options> {
         retitles: Vec::new(),
         iconlet: false,
         icon_surfaces: Vec::new(),
+        icon_tooltip: None,
+        icon_menu: None,
     };
     let parent_default = || WinSpec {
         title: "parent".into(),
@@ -343,6 +354,8 @@ fn parse_args() -> Result<Options> {
             "--icon",
             "--retitle",
             "--icon-surface",
+            "--icon-tooltip",
+            "--icon-menu",
         ];
         if !VALUED.contains(&flag.as_str()) {
             return Err(format!("unknown option {flag:?} (see --help)"));
@@ -449,6 +462,8 @@ fn parse_args() -> Result<Options> {
                 };
                 o.icon_surfaces.push((parse_color(color)?, delay));
             }
+            "--icon-tooltip" => o.icon_tooltip = Some(val.replace("\\n", "\n")),
+            "--icon-menu" => o.icon_menu = Some(val.clone()),
             "--retitle" => {
                 let (title, ms) = val
                     .rsplit_once('@')
@@ -493,14 +508,52 @@ fn parse_args() -> Result<Options> {
     if o.layer.is_some() && !o.retitles.is_empty() {
         return Err("--layer cannot be combined with --retitle".into());
     }
-    let iconic = o.iconlet || !o.icon_surfaces.is_empty();
-    if iconic && (o.layer.is_some() || o.parent.is_some() || o.dialog.is_some()) {
+    if iconic(&o) && (o.layer.is_some() || o.parent.is_some() || o.dialog.is_some()) {
         return Err(
-            "--iconlet and --icon-surface need a single toplevel (no --layer, --parent-*, --dialog)"
+            "--iconlet and --icon-* need a single toplevel (no --layer, --parent-*, --dialog)"
                 .into(),
         );
     }
     Ok(o)
+}
+
+/// Whether the options ask for an xx_iconic_toplevel_v1.
+fn iconic(o: &Options) -> bool {
+    o.iconlet || !o.icon_surfaces.is_empty() || o.icon_tooltip.is_some() || o.icon_menu.is_some()
+}
+
+/// Fill `menu` from an --icon-menu spec.
+fn fill_icon_menu(menu: &XxIconMenuV1, spec: &str) {
+    for (i, entry) in spec.split('|').enumerate() {
+        if entry == "-" {
+            menu.add_separator();
+            continue;
+        }
+        let (disabled, entry) = match entry.strip_prefix('~') {
+            Some(rest) => (true, rest),
+            None => (false, entry),
+        };
+        let marks = [
+            ("[x]", xx_icon_menu_v1::Kind::Checkbox, true),
+            ("[ ]", xx_icon_menu_v1::Kind::Checkbox, false),
+            ("(*)", xx_icon_menu_v1::Kind::Radio, true),
+            ("( )", xx_icon_menu_v1::Kind::Radio, false),
+        ];
+        let (kind, checked, label) = marks
+            .iter()
+            .find_map(|(prefix, kind, checked)| {
+                entry.strip_prefix(prefix).map(|l| (*kind, *checked, l))
+            })
+            .unwrap_or((xx_icon_menu_v1::Kind::Action, false, entry));
+        let mut state = xx_icon_menu_v1::State::empty();
+        if checked {
+            state |= xx_icon_menu_v1::State::Checked;
+        }
+        if disabled {
+            state |= xx_icon_menu_v1::State::Disabled;
+        }
+        menu.add_item(i as u32 + 1, label.trim().to_owned(), kind, state);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -913,7 +966,8 @@ impl Dispatch<ZxdgExportedV2, String> for State {
         if let zxdg_exported_v2::Event::Handle { handle } = event {
             // Write it atomically: the importer waits for the file to appear.
             let tmp = format!("{path}.tmp");
-            if let Err(e) = std::fs::write(&tmp, &handle).and_then(|()| std::fs::rename(&tmp, path)) {
+            if let Err(e) = std::fs::write(&tmp, &handle).and_then(|()| std::fs::rename(&tmp, path))
+            {
                 eprintln!("wltest: writing {path}: {e}");
             }
             state.say(None, format_args!("exported: {handle}"));
@@ -1151,6 +1205,7 @@ delegate_noop!(State: ZxdgImporterV2);
 delegate_noop!(State: ignore XdgToplevelIconManagerV1);
 delegate_noop!(State: XdgToplevelIconV1);
 delegate_noop!(State: XxIconletManagerV1);
+delegate_noop!(State: XxIconMenuV1);
 
 impl Dispatch<XxIconicToplevelV1, ()> for State {
     fn event(
@@ -1175,6 +1230,16 @@ impl Dispatch<XxIconicToplevelV1, ()> for State {
             xx_iconic_toplevel_v1::Event::Activate { token } => {
                 let token = if token.is_empty() { " (no token)" } else { "" };
                 state.say(None, format_args!("icon: activated{token}"));
+            }
+            xx_iconic_toplevel_v1::Event::Selected => {
+                state.say(None, format_args!("icon: selected"))
+            }
+            xx_iconic_toplevel_v1::Event::Deselected => {
+                state.say(None, format_args!("icon: deselected"))
+            }
+            xx_iconic_toplevel_v1::Event::MenuAction { id, token } => {
+                let token = if token.is_empty() { " (no token)" } else { "" };
+                state.say(None, format_args!("icon: menu action {id}{token}"));
             }
         }
     }
@@ -1210,9 +1275,18 @@ struct App {
     state: State,
     globals: GlobalList,
     compositor: WlCompositor,
-    /// For the next toplevel: whether it is an iconlet, and the first
-    /// color of its icon surface.
-    iconic: Option<(bool, Option<u32>)>,
+    /// What the next toplevel's icon gets through xx-iconlet-v1.
+    iconic: Option<IconicSpec>,
+}
+
+/// A toplevel's xx-iconlet-v1 setup.
+struct IconicSpec {
+    iconlet: bool,
+    /// The first color of its icon surface.
+    color: Option<u32>,
+    tooltip: Option<String>,
+    /// An --icon-menu spec.
+    menu: Option<String>,
 }
 
 fn top_of(win: &Win) -> XdgToplevel {
@@ -1292,12 +1366,27 @@ impl App {
         for icon in icons {
             self.state.set_icon(idx, icon, &self.qh)?;
         }
-        if let Some((iconlet, color)) = self.iconic.take() {
+        if let Some(IconicSpec {
+            iconlet,
+            color,
+            tooltip,
+            menu,
+        }) = self.iconic.take()
+        {
             let manager: XxIconletManagerV1 = bind(&self.globals, &self.qh, 1..=1)?;
             let object =
                 manager.get_iconic_toplevel(&top_of(&self.state.windows[idx]), &self.qh, ());
             if iconlet {
                 object.set_iconlet();
+            }
+            if let Some(text) = tooltip {
+                object.set_tooltip(text);
+            }
+            if let Some(spec) = menu {
+                let menu = manager.create_menu(&self.qh, ());
+                fill_icon_menu(&menu, &spec);
+                object.set_menu(Some(&menu));
+                menu.destroy();
             }
             let surface = color.map(|color| {
                 let surface = self.compositor.create_surface(&self.qh, ());
@@ -1478,12 +1567,17 @@ fn run(opts: Options) -> Result<()> {
         state,
         globals,
         compositor,
-        iconic: (opts.iconlet || !opts.icon_surfaces.is_empty()).then(|| {
+        iconic: iconic(&opts).then(|| {
             let first = opts.icon_surfaces.iter().find(|(_, delay)| delay.is_none());
             let first = first
                 .or(opts.icon_surfaces.first())
                 .map(|(color, _)| *color);
-            (opts.iconlet, first)
+            IconicSpec {
+                iconlet: opts.iconlet,
+                color: first,
+                tooltip: opts.icon_tooltip.clone(),
+                menu: opts.icon_menu.clone(),
+            }
         }),
     };
     app.queue.roundtrip(&mut app.state).map_err(wl_err)?;
@@ -1627,7 +1721,8 @@ fn run(opts: Options) -> Result<()> {
                 let w = &app.state.windows[main_idx];
                 if let (true, Role::Toplevel { top, .. }) = (w.alive, &w.role) {
                     top.set_title(title.clone());
-                    app.state.say(Some(main_idx), format_args!("title: {title}"));
+                    app.state
+                        .say(Some(main_idx), format_args!("title: {title}"));
                 }
                 retitles.pop();
                 continue;

@@ -14,6 +14,7 @@ pub mod share_picker;
 mod shield;
 pub mod surface;
 pub mod titlebar;
+mod tooltip;
 pub mod window;
 
 pub use app_info::app_name;
@@ -22,12 +23,13 @@ pub use desktop::{
     desktop_input_area, regular_weight_font_query, ClientIcon, DesktopSurface, IconTheme,
     CLIENT_ICON_MAX_EDGE, ICON_SIZE,
 };
-pub use menu::{MenuItem, MenuTheme, WindowMenu};
+pub use menu::{IconMenuEntry, MenuItem, MenuMark, MenuTheme, WindowMenu};
 pub use output::{Output, OutputId};
 pub use seat::{PointerTarget, Seat, SeatId, DOUBLE_CLICK};
 pub use shadow::WindowShadow;
 pub use shield::ShieldSurface;
 pub use titlebar::Titlebar;
+pub use tooltip::IconTooltip;
 pub use window::{Window, WindowEvent, WindowId};
 
 /// Window menu interaction modes.

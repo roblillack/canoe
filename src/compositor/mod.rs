@@ -13,6 +13,7 @@ pub mod capture;
 pub mod cursor;
 pub mod focus;
 pub mod handlers;
+pub mod icon_tooltip;
 pub mod input;
 pub mod kwin_screenshot;
 pub mod memory;
@@ -455,6 +456,12 @@ pub struct State {
     pub pointer_window: Option<canoe::WindowId>,
     pub pointer_canoe_target: canoe::PointerTarget,
     pub pointer_location: Point<f64, Logical>,
+    /// The desktop icon the pointer is on, for its tooltip.
+    pub icon_tooltip_hover: Option<icon_tooltip::TooltipHover>,
+    pub icon_tooltip_serial: u64,
+    /// The toplevel whose icon its client was told is selected
+    /// (xx-iconlet-v1).
+    pub selected_icon: Option<WlSurface>,
     /// The cursor the window manager asked for over its own surfaces and
     /// during pointer operations; `None` hides it.
     pub wm_cursor: Option<CursorShape>,
@@ -690,6 +697,9 @@ impl State {
             pointer_window: None,
             pointer_canoe_target: canoe::PointerTarget::None,
             pointer_location: (0.0, 0.0).into(),
+            icon_tooltip_hover: None,
+            icon_tooltip_serial: 0,
+            selected_icon: None,
             wm_cursor: Some(CursorShape::Default),
             client_cursor: smithay::input::pointer::CursorImageStatus::default_named(),
             dnd: None,
@@ -878,6 +888,7 @@ impl State {
         // Windows and outputs move under a pointer that stays put.
         self.update_capture_cursors();
         self.send_iconlet_activations();
+        self.send_icon_selection();
         let _ = self.display_handle.flush_clients();
     }
 }

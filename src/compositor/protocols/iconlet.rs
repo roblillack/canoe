@@ -12,6 +12,11 @@
 //! * `set_iconlet` marks the window as an iconlet ([`is_iconlet`]), which the
 //!   window manager keeps minimized, out of window lists and ahead of other
 //!   icons; activating its icon sends `activate` ([`send_activate`]).
+//! * `set_tooltip` gives the icon a tooltip ([`tooltip`])
+//!   and `set_menu` a menu of actions ([`menu`]) built with an
+//!   `xx_icon_menu_v1`; picking one of them sends `menu_action`
+//!   ([`send_menu_action`]). The window manager says which icon is selected
+//!   ([`set_selected`]), and the client hears of changes.
 //!
 //! The state lives with the toplevel's wl_surface, so it can be read when
 //! the window is created. The handler hears about changes of the iconlet
@@ -23,7 +28,7 @@
 //! IconletManagerState::new::<State>(&display_handle);
 //! ```
 
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use smithay::output::Output;
 use smithay::reexports::wayland_server::backend::{ClientId, GlobalId};
@@ -53,10 +58,13 @@ pub mod server {
 }
 
 use server::{
+    xx_icon_menu_v1::{self, XxIconMenuV1},
     xx_icon_surface_v1::XxIconSurfaceV1,
     xx_iconic_toplevel_v1::{self, XxIconicToplevelV1},
     xx_iconlet_manager_v1::{self, XxIconletManagerV1},
 };
+
+pub use crate::canoe::{IconMenuEntry, MenuMark};
 
 const VERSION: u32 = 1;
 /// The wl_surface role of icon surfaces.
@@ -71,6 +79,7 @@ pub trait IconletHandler:
     + Dispatch<XxIconletManagerV1, ()>
     + Dispatch<XxIconicToplevelV1, IconicData>
     + Dispatch<XxIconSurfaceV1, IconSurfaceData>
+    + Dispatch<XxIconMenuV1, IconMenuData>
     + 'static
 {
     /// The client of toplevel `surface` declared it an iconlet, or stopped
@@ -80,6 +89,12 @@ pub trait IconletHandler:
     /// Toplevel `surface` got or lost its icon surface, or the icon surface
     /// committed.
     fn icon_surface_changed(&mut self, surface: &WlSurface);
+
+    /// The tooltip of toplevel `surface`'s icon changed.
+    fn icon_tooltip_changed(&mut self, surface: &WlSurface);
+
+    /// The menu of toplevel `surface`'s icon changed.
+    fn icon_menu_changed(&mut self, surface: &WlSurface);
 }
 
 /// Data of an `xx_iconic_toplevel_v1`: its toplevel's surface, or nothing
@@ -94,6 +109,17 @@ pub struct IconSurfaceData {
     toplevel: Option<Weak<WlSurface>>,
 }
 
+/// Data of an `xx_icon_menu_v1`: its entries, which can't change once it
+/// was set as an icon's menu.
+#[derive(Default)]
+pub struct IconMenuData(Mutex<IconMenu>);
+
+#[derive(Default)]
+struct IconMenu {
+    entries: Vec<IconMenuEntry>,
+    set: bool,
+}
+
 /// What a toplevel's surface keeps of this protocol.
 #[derive(Default)]
 struct Iconic(Mutex<IconicState>);
@@ -105,6 +131,12 @@ struct IconicState {
     icon_surface: Option<(WlSurface, XxIconSurfaceV1)>,
     /// What the client was told about its icon's position.
     geometry: Option<(Output, Rectangle<i32, Logical>)>,
+    /// The icon's tooltip; empty for none.
+    tooltip: String,
+    /// The icon's menu; empty for none.
+    menu: Arc<[IconMenuEntry]>,
+    /// Whether the client was told that the icon is selected.
+    selected: bool,
 }
 
 /// The icon surface of a surface's role, telling the toplevel it draws.
@@ -145,6 +177,24 @@ pub fn icon_surface(surface: &WlSurface) -> Option<WlSurface> {
     (icon.is_alive() && has_buffer).then_some(icon)
 }
 
+/// The tooltip of toplevel `surface`'s icon, if it has one.
+pub fn tooltip(surface: &WlSurface) -> Option<String> {
+    if !surface.is_alive() {
+        return None;
+    }
+    with_iconic(surface, |state| {
+        (!state.tooltip.is_empty()).then(|| state.tooltip.clone())
+    })
+}
+
+/// The menu of toplevel `surface`'s icon; empty if it has none.
+pub fn menu(surface: &WlSurface) -> Arc<[IconMenuEntry]> {
+    if !surface.is_alive() {
+        return Arc::new([]);
+    }
+    with_iconic(surface, |state| state.menu.clone())
+}
+
 /// The toplevel surface whose icon `surface` is, if it is an icon surface.
 pub fn icon_surface_owner(surface: &WlSurface) -> Option<WlSurface> {
     with_states(surface, |states| {
@@ -164,16 +214,21 @@ pub fn set_icon_geometry(surface: &WlSurface, geometry: Option<(Output, Rectangl
     if !surface.is_alive() {
         return;
     }
-    let (object, previous) = with_iconic(surface, |state| {
+    let (object, previous, deselect) = with_iconic(surface, |state| {
         if state.geometry == geometry {
-            return (None, None);
+            return (None, None, false);
         }
         let previous = std::mem::replace(&mut state.geometry, geometry.clone());
-        (state.object.clone(), Some(previous))
+        // An icon that goes away is no longer selected.
+        let deselect = geometry.is_none() && std::mem::take(&mut state.selected);
+        (state.object.clone(), Some(previous), deselect)
     });
     let (Some(object), Some(previous)) = (object, previous) else {
         return;
     };
+    if deselect {
+        object.deselected();
+    }
     let Some(client) = object.client() else {
         return;
     };
@@ -209,6 +264,40 @@ pub fn send_activate(surface: &WlSurface, token: &str) {
     });
     if let Some(object) = object {
         object.activate(token.to_owned());
+    }
+}
+
+/// Tell the client of toplevel `surface` whether its icon is the selected
+/// one. Only changes are sent, and only while the icon is shown.
+pub fn set_selected(surface: &WlSurface, selected: bool) {
+    if !surface.is_alive() {
+        return;
+    }
+    let object = with_iconic(surface, |state| {
+        let object = state.object.clone()?;
+        if state.selected == selected || (selected && state.geometry.is_none()) {
+            return None;
+        }
+        state.selected = selected;
+        Some(object)
+    });
+    match object {
+        Some(object) if selected => object.selected(),
+        Some(object) => object.deselected(),
+        None => {}
+    }
+}
+
+/// Tell the client of toplevel `surface` that the user picked the item
+/// with `id` from its icon's menu, with an xdg-activation `token` for a
+/// window it may open in response.
+pub fn send_menu_action(surface: &WlSurface, id: u32, token: &str) {
+    if !surface.is_alive() {
+        return;
+    }
+    let object = with_iconic(surface, |state| state.object.clone());
+    if let Some(object) = object {
+        object.menu_action(id, token.to_owned());
     }
 }
 
@@ -287,7 +376,11 @@ impl<D: IconletHandler> Dispatch<XxIconletManagerV1, (), D> for IconletManagerSt
                     state.object = Some(object);
                     // Tell the new object about an icon that is shown.
                     state.geometry = None;
+                    state.selected = false;
                 });
+            }
+            xx_iconlet_manager_v1::Request::CreateMenu { id } => {
+                data_init.init(id, IconMenuData::default());
             }
             xx_iconlet_manager_v1::Request::Destroy => {}
         }
@@ -370,6 +463,38 @@ impl<D: IconletHandler> Dispatch<XxIconicToplevelV1, IconicData, D> for IconletM
                 });
                 state.icon_surface_changed(&toplevel);
             }
+            xx_iconic_toplevel_v1::Request::SetTooltip { text } => {
+                let Some(toplevel) = toplevel_of(object, data) else {
+                    return;
+                };
+                let changed = with_iconic(&toplevel, |state| {
+                    std::mem::replace(&mut state.tooltip, text.clone()) != text
+                });
+                if changed {
+                    state.icon_tooltip_changed(&toplevel);
+                }
+            }
+            xx_iconic_toplevel_v1::Request::SetMenu { menu } => {
+                let entries: Arc<[IconMenuEntry]> = match &menu {
+                    Some(menu) => {
+                        let mut menu = menu.data::<IconMenuData>().unwrap().0.lock().unwrap();
+                        menu.set = true;
+                        menu.entries.as_slice().into()
+                    }
+                    None => Arc::new([]),
+                };
+                let Some(toplevel) = toplevel_of(object, data) else {
+                    return;
+                };
+                let changed = with_iconic(&toplevel, |state| {
+                    let changed = state.menu != entries;
+                    state.menu = entries;
+                    changed
+                });
+                if changed {
+                    state.icon_menu_changed(&toplevel);
+                }
+            }
             xx_iconic_toplevel_v1::Request::Destroy => {}
         }
     }
@@ -378,20 +503,31 @@ impl<D: IconletHandler> Dispatch<XxIconicToplevelV1, IconicData, D> for IconletM
         let Some(toplevel) = data.toplevel.as_ref().and_then(|t| t.upgrade().ok()) else {
             return;
         };
-        let (iconlet, icon_surface) = with_iconic(&toplevel, |state| {
+        let (iconlet, icon_surface, tooltip, menu) = with_iconic(&toplevel, |state| {
             if state.object.as_ref() != Some(object) {
-                return (false, None);
+                return (false, None, false, false);
             }
             state.object = None;
             state.geometry = None;
+            state.selected = false;
+            let tooltip = !std::mem::take(&mut state.tooltip).is_empty();
+            let menu = !std::mem::replace(&mut state.menu, Arc::new([])).is_empty();
             (
                 std::mem::take(&mut state.iconlet),
                 state.icon_surface.take(),
+                tooltip,
+                menu,
             )
         });
         if let Some((surface, _)) = icon_surface {
             unlink_icon_surface(&surface);
             state.icon_surface_changed(&toplevel);
+        }
+        if tooltip {
+            state.icon_tooltip_changed(&toplevel);
+        }
+        if menu {
+            state.icon_menu_changed(&toplevel);
         }
         if iconlet {
             state.iconlet_changed(&toplevel, false);
@@ -445,6 +581,62 @@ impl<D: IconletHandler> Dispatch<XxIconSurfaceV1, IconSurfaceData, D> for Iconle
     }
 }
 
+impl<D: IconletHandler> Dispatch<XxIconMenuV1, IconMenuData, D> for IconletManagerState {
+    fn request(
+        _state: &mut D,
+        _client: &Client,
+        resource: &XxIconMenuV1,
+        request: xx_icon_menu_v1::Request,
+        data: &IconMenuData,
+        _dh: &DisplayHandle,
+        _data_init: &mut DataInit<'_, D>,
+    ) {
+        let entry = match request {
+            xx_icon_menu_v1::Request::AddItem {
+                id,
+                label,
+                kind,
+                state,
+            } => {
+                let state = match state {
+                    smithay::reexports::wayland_server::WEnum::Value(state) => state,
+                    smithay::reexports::wayland_server::WEnum::Unknown(bits) => {
+                        xx_icon_menu_v1::State::from_bits_truncate(bits)
+                    }
+                };
+                let checked = state.contains(xx_icon_menu_v1::State::Checked);
+                let mark = match kind {
+                    smithay::reexports::wayland_server::WEnum::Value(
+                        xx_icon_menu_v1::Kind::Checkbox,
+                    ) => MenuMark::Check(checked),
+                    smithay::reexports::wayland_server::WEnum::Value(
+                        xx_icon_menu_v1::Kind::Radio,
+                    ) => MenuMark::Radio(checked),
+                    _ => MenuMark::None,
+                };
+                IconMenuEntry::Item {
+                    id,
+                    // A menu row has room for one line.
+                    label: label.lines().next().unwrap_or_default().to_owned(),
+                    mark,
+                    disabled: state.contains(xx_icon_menu_v1::State::Disabled),
+                }
+            }
+            xx_icon_menu_v1::Request::AddSeparator => IconMenuEntry::Separator,
+            xx_icon_menu_v1::Request::Destroy => return,
+        };
+        let mut menu = data.0.lock().unwrap();
+        if menu.set {
+            resource.post_error(
+                xx_icon_menu_v1::Error::Immutable,
+                "the menu was already set as an icon's menu",
+            );
+            return;
+        }
+        menu.entries.push(entry);
+    }
+}
+
 macro_rules! delegate_iconlet {
     ($ty: ty) => {
         smithay::reexports::wayland_server::delegate_global_dispatch!($ty: [
@@ -460,6 +652,10 @@ macro_rules! delegate_iconlet {
         smithay::reexports::wayland_server::delegate_dispatch!($ty: [
             $crate::compositor::protocols::iconlet::server::xx_icon_surface_v1::XxIconSurfaceV1:
                 $crate::compositor::protocols::iconlet::IconSurfaceData
+        ] => $crate::compositor::protocols::iconlet::IconletManagerState);
+        smithay::reexports::wayland_server::delegate_dispatch!($ty: [
+            $crate::compositor::protocols::iconlet::server::xx_icon_menu_v1::XxIconMenuV1:
+                $crate::compositor::protocols::iconlet::IconMenuData
         ] => $crate::compositor::protocols::iconlet::IconletManagerState);
     };
 }

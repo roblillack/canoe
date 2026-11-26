@@ -166,6 +166,9 @@ Left-click the empty desktop
 Double-click a desktop icon
 : Bring its window back.
 
+Right-click a desktop icon
+: Select it, and open its menu if its program gave it one.
+
 # MULTIPLE OUTPUTS
 
 Windows belong to the output they were opened or last moved on, and keep
@@ -194,8 +197,8 @@ A minimized window's icon is the first of these that exists:
 3. the **Icon=** of the program's desktop entry, *APP-ID.desktop*;
 4. the first letter of the window's title.
 
-Programs can draw a minimized window's icon themselves with Canoe's
-experimental **xx-iconlet-v1** protocol. An X11 window's app id is the class
+Programs can draw a minimized window's icon themselves, and give it a tooltip
+and a menu, with Canoe's experimental **xx-iconlet-v1** protocol. An X11 window's app id is the class
 of its **WM_CLASS**.
 
 # CONFIGURATION

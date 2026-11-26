@@ -554,6 +554,22 @@ impl State {
                 }
             }
         }
+        if let Some(tooltip) = context.icon_tooltip.as_ref() {
+            if tooltip.output_id == output_id {
+                if let Some(origin) =
+                    canoe_layer_origin(&tooltip.surface, geometry.loc, output_size)
+                {
+                    bottom_up.extend(canoe_surface(
+                        renderer,
+                        &tooltip.surface,
+                        origin,
+                        output_loc,
+                        scale,
+                        1.0,
+                    ));
+                }
+            }
+        }
         if let Some(picker) = context.share_picker.as_ref() {
             for surface in picker.surfaces.iter().filter(|s| s.output_id == output_id) {
                 if let Some(origin) =
